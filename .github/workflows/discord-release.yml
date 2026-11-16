@@ -12,6 +12,8 @@ permissions:
 
 jobs:
   announce:
+    # Per-commit Android builds are not announcements.
+    if: ${{ !startsWith(github.event.release.tag_name, 'android-v') }}
     name: Announce On Discord
     runs-on: ubuntu-latest
     timeout-minutes: 10

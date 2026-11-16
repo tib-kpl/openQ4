@@ -29,12 +29,15 @@ import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
+import java.io.File;
 import java.util.Locale;
 
 /** Setup runs before SDL loads. Every game launch remains an explicit player action. */
 public final class LauncherActivity extends Activity implements SetupTask.Observer<RetailData.Report> {
     private static final int PICK_FOLDER = 1, EXPORT_SAVES = 2, EXPORT_LOGS = 3;
     static final String EXTRA_PAGE = "setup_page", PAGE_TOUCH_LAYOUT = "touch_layout";
+    /** Set when the player asks for setup (from the game); otherwise verified data starts the game directly. */
+    static final String EXTRA_SHOW_MENU = "show_menu";
     /** Debuggable builds only: "sp" or "mp" starts the game once setup's own data check succeeds (device qualification). */
     static final String EXTRA_DIAGNOSTIC_LAUNCH = "diagnostic_launch";
     /** Debuggable builds only: "hold" keeps setup's screen on between qualification runs. */
@@ -66,6 +69,8 @@ public final class LauncherActivity extends Activity implements SetupTask.Observ
     private ProgressBar progress;
     private Button choose, check, retry, cancel, sp, mp, returnGame, saves, logs;
     private boolean started;
+    private Boolean trustedCache;
+    private RetailData.Report recordedResult;
     private boolean controlsPage;
     private boolean interfacePage;
     private boolean layoutPage;
@@ -116,6 +121,7 @@ public final class LauncherActivity extends Activity implements SetupTask.Observ
             diagnosticLaunch = diagnosticLaunch(getIntent(), getApplicationInfo().flags);
             diagnosticHold = diagnosticHold(getIntent(), getApplicationInfo().flags);
         }
+        if (state == null && launchDirectly()) { finish(); return; }
         theme = new SetupTheme(this);
         build();
         if (state != null) scroll.post(() -> scroll.scrollTo(0, state.getInt("scroll", 0)));
@@ -151,7 +157,41 @@ public final class LauncherActivity extends Activity implements SetupTask.Observ
         }
     }
 
+    /** Installed archives unchanged since a complete check passed: no new check is needed. */
+    private boolean trusted() {
+        if (trustedCache == null) {
+            String saved = session.prefs.getString("verified", "");
+            File external = getExternalFilesDir(null);
+            trustedCache = !saved.isEmpty() && external != null
+                && saved.equals(VerifiedData.fingerprint(new File(external, "q4base")));
+        }
+        return trustedCache;
+    }
+
+    private boolean dataReady(SetupTask.State<RetailData.Report> state) {
+        if (state.status == SetupTask.Status.SUCCEEDED) return state.result != null && state.result.ready();
+        return state.status == SetupTask.Status.IDLE && trusted();
+    }
+
+    /** Verified data and nothing asking for the menu: go straight to the game, as the last session played. */
+    private boolean launchDirectly() {
+        Intent intent = getIntent();
+        if (intent == null || intent.getBooleanExtra(EXTRA_SHOW_MENU, false) || intent.getStringExtra(EXTRA_PAGE) != null) return false;
+        if (diagnosticLaunch != null || diagnosticHold) return false;
+        if (!session.prefs.getBoolean("language_chosen", false) || session.prefs.getBoolean("pending", false)) return false;
+        if (StorageSession.INSTANCE.activityActive() || StorageSession.INSTANCE.gameActive() || !trusted()) return false;
+        try {
+            startActivity(gameIntent(session.prefs.getBoolean("last_multiplayer", false)));
+            session.consumed = true;
+            return true;
+        } catch (ActivityNotFoundException unavailable) {
+            return false;
+        }
+    }
+
     @Override protected void onStart() {
+        trustedCache = null;
+        if (!StorageSession.INSTANCE.activityActive()) session.consumed = false;
         super.onStart(); started = true; session.task.bind(this); session.export.bind(exportObserver);
     }
     @Override protected void onStop() {
@@ -407,17 +447,22 @@ public final class LauncherActivity extends Activity implements SetupTask.Observ
 
     private void launch(boolean multiplayer) {
         SetupTask.State<RetailData.Report> state = session.task.state();
-        if (!available() || session.consumed || state.result == null || !state.result.ready() || state.status != SetupTask.Status.SUCCEEDED) return;
-        Intent game = new Intent(this, OpenQ4Activity.class).putExtra("multiplayer", multiplayer);
-        boolean languagePending = session.prefs.getBoolean("language_pending", false);
-        if (languagePending) game.putExtra("setup_language", session.prefs.getString("language", SetupLanguage.systemDefault()));
+        if (!available() || session.consumed || !dataReady(state)) return;
         try {
             session.consumed = true;
-            startActivity(game);
+            session.prefs.edit().putBoolean("last_multiplayer", multiplayer).apply();
+            startActivity(gameIntent(multiplayer));
         } catch (ActivityNotFoundException unavailable) {
             session.consumed = false; session.notice = R.string.setup_launch_failed;
         }
         changed(state);
+    }
+
+    private Intent gameIntent(boolean multiplayer) {
+        Intent game = new Intent(this, OpenQ4Activity.class).putExtra("multiplayer", multiplayer);
+        if (session.prefs.getBoolean("language_pending", false))
+            game.putExtra("setup_language", session.prefs.getString("language", SetupLanguage.systemDefault()));
+        return game;
     }
 
     private boolean refreshGameReturn() {
@@ -441,7 +486,15 @@ public final class LauncherActivity extends Activity implements SetupTask.Observ
         // behind the lock screen. Play keeps its own (SDL) wake state.
         if (busy || diagnosticLaunch != null || diagnosticHold) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        boolean ready = !session.consumed && state.status == SetupTask.Status.SUCCEEDED && state.result != null && state.result.ready();
+        if (!busy && !session.exporting && state.status == SetupTask.Status.SUCCEEDED && state.result != null && state.result != recordedResult) {
+            // Remember a complete pass (and forget a failed one) so the next start skips the check.
+            recordedResult = state.result;
+            File external = getExternalFilesDir(null);
+            session.prefs.edit().putString("verified", state.result.ready() && external != null
+                ? VerifiedData.fingerprint(new File(external, "q4base")) : "").apply();
+            trustedCache = null;
+        }
+        boolean ready = !session.consumed && dataReady(state);
         if (!busy && operation.status != SetupTask.Status.IDLE && session.prefs.getBoolean("pending", false))
             session.prefs.edit().putBoolean("pending", false).apply();
         choose.setEnabled(available()); check.setEnabled(available()); retry.setEnabled(available());

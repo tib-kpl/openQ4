@@ -1,0 +1,77 @@
+name: Android APK Release On Commit
+
+# Every commit to main builds the signed release APK and publishes it as a
+# regular (non-draft, non-prerelease) GitHub release tagged android-v<version>.
+# These releases are never marked "latest": that slot, which the desktop
+# updater reads, stays with the manual release workflow.
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Queue instead of cancelling: a cancelled run would leave a commit without its APK.
+  group: openq4-android-commit-release
+  cancel-in-progress: false
+
+jobs:
+  metadata:
+    name: Android version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Derive a unique, increasing version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Three numeric components, each at most 999 (versionCode = major*1e6 + minor*1e3 + patch).
+          # 0.14.1xx..: above the shipped 0.14.x releases, below the next minor.
+          patch=$((100 + GITHUB_RUN_NUMBER))
+          if [ "${patch}" -gt 999 ]; then
+            echo "Run number ${GITHUB_RUN_NUMBER} no longer fits the CI version scheme; raise the minor base." >&2
+            exit 1
+          fi
+          echo "version=0.14.${patch}" >> "${GITHUB_OUTPUT}"
+
+  android:
+    name: Android APK
+    needs: metadata
+    uses: ./.github/workflows/android-build.yml
+    with:
+      version: ${{ needs.metadata.outputs.version }}
+    secrets: inherit
+
+  release:
+    name: Publish Release
+    needs: [metadata, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.metadata.outputs.version }}
+    steps:
+      - name: Download signed APK
+        uses: actions/download-artifact@v8
+        with:
+          name: openq4-release-${{ needs.metadata.outputs.version }}-android-arm64
+          path: ${{ runner.temp }}/android
+      - name: Create the release
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="android-v${VERSION}"
+          gh release create "${tag}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --title "openQ4 Android ${VERSION}" \
+            --notes "Android build of commit ${GITHUB_SHA}. Install the signed APK; it needs your own Quake 4 game files." \
+            --latest=false \
+            "${RUNNER_TEMP}"/android/*.apk "${RUNNER_TEMP}"/android/*-dependency-sources.tar.xz

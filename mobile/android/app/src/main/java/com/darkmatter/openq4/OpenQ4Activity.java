@@ -14,10 +14,16 @@ import android.os.Build;
 import android.os.Bundle;
 import android.system.ErrnoException;
 import android.system.Os;
+import android.hardware.input.InputManager;
+import android.view.Gravity;
+import android.view.InputDevice;
 import android.view.KeyEvent;
+import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.util.Log;
+import android.widget.FrameLayout;
+import android.widget.TextView;
 import android.widget.Toast;
 import org.libsdl.app.SDLActivity;
 import java.io.File;
@@ -84,12 +90,72 @@ public final class OpenQ4Activity extends SDLActivity {
         if (command != COMMAND_USER) return super.onUnhandledMessage(command, param);
         // SDL delivers user messages on the Android UI thread. Reuse the
         // single-task launcher; never finish/recreate the live game here.
-        if (setupOpening || isFinishing() || mBrokenLibraries || !mActivityCreated) return true;
+        openSetup(param instanceof Integer ? (Integer) param : SETUP_PAGE_HOME);
+        return true;
+    }
+
+    /** Start and Select held together, or the on-screen gear when no controller is connected. */
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        int code = event.getKeyCode();
+        if (code == KeyEvent.KEYCODE_BUTTON_START || code == KeyEvent.KEYCODE_BUTTON_SELECT) {
+            boolean down = event.getAction() == KeyEvent.ACTION_DOWN;
+            if (code == KeyEvent.KEYCODE_BUTTON_START) startHeld = down; else selectHeld = down;
+            if (down && startHeld && selectHeld) {
+                openSetup(SETUP_PAGE_HOME);
+                return true;
+            }
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
+    private boolean startHeld, selectHeld;
+    private TextView gear;
+
+    private static boolean controllerConnected() {
+        for (int id : InputDevice.getDeviceIds()) {
+            InputDevice device = InputDevice.getDevice(id);
+            if (device == null || device.isVirtual()) continue;
+            int sources = device.getSources();
+            if ((sources & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
+                    || (sources & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK) return true;
+        }
+        return false;
+    }
+
+    private void updateGear() {
+        if (gear != null) gear.setVisibility(controllerConnected() ? View.GONE : View.VISIBLE);
+    }
+
+    private void addGear() {
+        gear = new TextView(this);
+        gear.setText("⚙");
+        gear.setTextSize(28);
+        gear.setTextColor(Color.WHITE);
+        gear.setAlpha(0.35f);
+        gear.setGravity(Gravity.CENTER);
+        gear.setContentDescription(getString(R.string.setup_open_menu));
+        gear.setOnClickListener(view -> openSetup(SETUP_PAGE_HOME));
+        FrameLayout.LayoutParams layout = new FrameLayout.LayoutParams(
+            (int) (56 * getResources().getDisplayMetrics().density), (int) (56 * getResources().getDisplayMetrics().density),
+            Gravity.TOP | Gravity.END);
+        addContentView(gear, layout);
+        InputManager manager = (InputManager) getSystemService(INPUT_SERVICE);
+        manager.registerInputDeviceListener(new InputManager.InputDeviceListener() {
+            @Override public void onInputDeviceAdded(int id) { updateGear(); }
+            @Override public void onInputDeviceRemoved(int id) { updateGear(); }
+            @Override public void onInputDeviceChanged(int id) { updateGear(); }
+        }, null);
+        updateGear();
+    }
+
+    private void openSetup(int page) {
+        if (setupOpening || isFinishing() || mBrokenLibraries || !mActivityCreated) return;
         setupOpening = true;
         try {
-            Intent setup = new Intent(this, LauncherActivity.class);
+            Intent setup = new Intent(this, LauncherActivity.class).putExtra(LauncherActivity.EXTRA_SHOW_MENU, true);
             // The game's Settings > Controls > Touch layout opens the editor itself.
-            if (param instanceof Integer && (Integer) param == SETUP_PAGE_TOUCH_LAYOUT)
+            if (page == SETUP_PAGE_TOUCH_LAYOUT)
                 setup.putExtra(LauncherActivity.EXTRA_PAGE, LauncherActivity.PAGE_TOUCH_LAYOUT);
             startActivity(setup);
             Log.i("openQ4", "Opened Android setup from the game");
@@ -98,7 +164,6 @@ public final class OpenQ4Activity extends SDLActivity {
             Log.e("openQ4", "Could not reopen Android setup", unavailable);
             Toast.makeText(this, R.string.setup_open_failed, Toast.LENGTH_LONG).show();
         }
-        return true;
     }
 
     @Override
@@ -117,6 +182,7 @@ public final class OpenQ4Activity extends SDLActivity {
         if (!mBrokenLibraries && mLayout != null && Build.VERSION.SDK_INT >= 30) {
             keepOutOfDisplayCutout(mLayout);
         }
+        if (!mBrokenLibraries && !isHeadsetBuild()) addGear();
     }
 
     @Override

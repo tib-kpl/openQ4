@@ -23,6 +23,7 @@
     <string name="setup_issue_warning">Aviso: %1$s</string>
     <string name="setup_game_active">El juego está en marcha o cerrándose. Puedes volver al juego; podrás cambiar los archivos cuando termine.</string>
     <string name="setup_return">Volver al juego</string>
+    <string name="setup_open_menu">Abrir el menú de configuración</string>
     <string name="setup_play_sp">Un jugador</string>
     <string name="setup_play_mp">Multijugador</string>
     <string name="setup_change_language">Cambiar idioma</string>

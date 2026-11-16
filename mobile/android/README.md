@@ -202,9 +202,10 @@ recipes. [SDL](https://github.com/libsdl-org/SDL) retains its zlib license and
 are dynamically linked; rebuild with replacement libraries and sign your own
 APK when modifying them.
 
-The workflow requires four repository Actions secrets:
-`ANDROID_RELEASE_KEYSTORE_BASE64`, `ANDROID_RELEASE_STORE_PASSWORD`,
-`ANDROID_RELEASE_KEY_PASSWORD` and `ANDROID_RELEASE_KEY_ALIAS`. It builds an
+The workflow requires two repository Actions secrets,
+`ANDROID_RELEASE_KEYSTORE_BASE64` and `ANDROID_RELEASE_STORE_PASSWORD` (the
+key shares the store password), and the Actions variable
+`ANDROID_RELEASE_KEY_ALIAS`. It builds an
 unsigned release APK, aligns it, signs it using `apksigner`, then checks the
 signature against the public certificate in `release-signing-cert.pem`.
 Private keys and passwords never belong in Git or downloadable artifacts.

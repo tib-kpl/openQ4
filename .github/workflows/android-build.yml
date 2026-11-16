@@ -22,10 +22,6 @@ on:
         required: true
       ANDROID_RELEASE_STORE_PASSWORD:
         required: true
-      ANDROID_RELEASE_KEY_PASSWORD:
-        required: true
-      ANDROID_RELEASE_KEY_ALIAS:
-        required: true
 
 permissions:
   contents: read
@@ -87,8 +83,8 @@ jobs:
         env:
           ANDROID_RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
           ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
-          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
-          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          # The alias is public (it is in the certificate); a PKCS#12 key shares the store password.
+          ANDROID_RELEASE_KEY_ALIAS: ${{ vars.ANDROID_RELEASE_KEY_ALIAS }}
         shell: bash
         run: |
           set -euo pipefail
@@ -102,7 +98,7 @@ jobs:
             builddir/android-apk/app/outputs/apk/release/app-release-unsigned.apk "${apk}"
           "${tools_dir}/apksigner" sign --ks "${key_file}" \
             --ks-key-alias "${ANDROID_RELEASE_KEY_ALIAS}" \
-            --ks-pass env:ANDROID_RELEASE_STORE_PASSWORD --key-pass env:ANDROID_RELEASE_KEY_PASSWORD \
+            --ks-pass env:ANDROID_RELEASE_STORE_PASSWORD \
             --v4-signing-enabled false "${apk}"
           python tools/build/verify_android_apk.py --apk "${apk}" \
             --stage .install/android/arm64-v8a --version "${OPENQ4_ANDROID_VERSION}" \

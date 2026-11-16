@@ -30,6 +30,7 @@
     <string name="setup_issue_warning">Warning: %1$s</string>
     <string name="setup_game_active">The game is running or closing. Return to it now; file changes become available after it exits.</string>
     <string name="setup_return">Return to game</string>
+<string name="setup_open_menu">Open setup menu</string>
     <string name="setup_play_sp">Single player</string>
     <string name="setup_play_mp">Multiplayer</string>
     <string name="setup_change_language">Change language</string>
