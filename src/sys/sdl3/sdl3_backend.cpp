@@ -7188,8 +7188,7 @@ static bool SDL3_WindowServices_MakeGLContextCurrent(void *context) {
 		// Detach first so SDL attaches the context to the surface made on resume.
 		(void)SDL_GL_MakeCurrent(s_sdlWindow, NULL);
 		const bool bound = SDL_GL_MakeCurrent(s_sdlWindow, (SDL_GLContext)context);
-		common->Printf("SDL3: GL context rebound to the resumed window surface: %s%s%s
-",
+		common->Printf("SDL3: GL context rebound to the resumed window surface: %s%s%s\n",
 			bound ? "ok" : "failed", bound ? "" : " - ", bound ? "" : SDL_GetError());
 		if (bound) {
 			SDL_SetAtomicInt(&s_sdlGLSurfaceRebind, 0);
