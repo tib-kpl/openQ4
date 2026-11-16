@@ -368,6 +368,9 @@ void S_TrimMemory(const char *reason);
 // Main-thread state consumed outside SDL's pump, before gameplay/audio resume.
 static bool s_sdlAppSuspendedSinceQuery = false;
 static SDL_AtomicInt s_sdlAppBackgrounded = { 0 };
+// Android destroys the window surface in the background and makes a new one on
+// return; the GL context must be bound to it again or every frame stays black.
+static SDL_AtomicInt s_sdlGLSurfaceRebind = { 0 };
 static int s_sdlAppSuspendedAt = 0, s_sdlAppSuspendedMs = 0;
 void S_SetDevicePaused(bool paused);
 // Session.cpp: single player's "Suspended" save, written while the app goes to
@@ -2783,6 +2786,7 @@ static void SDL3_HandleAppForegroundTransition(int eventTime, const char *reason
 	s_sdlAppInBackground = false;
 #if defined(__ANDROID__)
 	SDL_SetAtomicInt(&s_sdlAppBackgrounded, 0);
+	SDL_SetAtomicInt(&s_sdlGLSurfaceRebind, 1);
 	s_sdlAppSuspendedMs = Sys_Milliseconds() - s_sdlAppSuspendedAt;
 	Session_AppForeground(s_sdlAppSuspendedMs);
 #endif
@@ -7179,6 +7183,20 @@ static bool SDL3_WindowServices_MakeGLContextCurrent(void *context) {
 	if (!s_sdlWindow) {
 		return false;
 	}
+#if defined(__ANDROID__)
+	if (SDL_GetAtomicInt(&s_sdlGLSurfaceRebind) != 0) {
+		// Detach first so SDL attaches the context to the surface made on resume.
+		(void)SDL_GL_MakeCurrent(s_sdlWindow, NULL);
+		const bool bound = SDL_GL_MakeCurrent(s_sdlWindow, (SDL_GLContext)context);
+		common->Printf("SDL3: GL context rebound to the resumed window surface: %s%s%s
+",
+			bound ? "ok" : "failed", bound ? "" : " - ", bound ? "" : SDL_GetError());
+		if (bound) {
+			SDL_SetAtomicInt(&s_sdlGLSurfaceRebind, 0);
+		}
+		return bound;
+	}
+#endif
 	return SDL_GL_MakeCurrent(s_sdlWindow, (SDL_GLContext)context);
 }
 
@@ -7189,6 +7207,11 @@ static void SDL3_WindowServices_DestroyGLContext(void *context) {
 }
 
 static bool SDL3_WindowServices_IsGLContextCurrent(void *context) {
+#if defined(__ANDROID__)
+	if (SDL_GetAtomicInt(&s_sdlGLSurfaceRebind) != 0) {
+		return false;
+	}
+#endif
 	return s_sdlWindow != NULL && context != NULL
 		&& SDL_GL_GetCurrentWindow() == s_sdlWindow
 		&& SDL_GL_GetCurrentContext() == (SDL_GLContext)context;
