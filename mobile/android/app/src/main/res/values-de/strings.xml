@@ -23,6 +23,7 @@
     <string name="setup_issue_warning">Warnung: %1$s</string>
     <string name="setup_game_active">Das Spiel läuft oder wird beendet. Kehre zum Spiel zurück; Dateien können nach dessen Ende geändert werden.</string>
     <string name="setup_return">Zurück zum Spiel</string>
+    <string name="setup_open_menu">Einrichtungsmenü öffnen</string>
     <string name="setup_play_sp">Einzelspieler</string>
     <string name="setup_play_mp">Mehrspieler</string>
     <string name="setup_change_language">Sprache ändern</string>
