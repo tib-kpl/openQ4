@@ -1251,6 +1251,8 @@ idPlayer::idPlayer
 ==============
 */
 idPlayer::idPlayer() {
+	aimAssistLastTime = 0;
+	aimAssistLastAngles.Zero();
 	vrButtonCrouch = false;
 	vrVehicleDeltaYaw = 0.0f;
 	vrVehicleYaw = 0.0f;
@@ -8893,6 +8895,7 @@ void idPlayer::UpdateViewAngles( void ) {
 		deltaViewAngles.pitch = 0.0f;
 		deltaViewAngles.roll = 0.0f;
 	}
+	const idAngles aimAssistPreviousView = viewAngles;
 	for ( i = 0; i < 3; i++ ) {
 		cmdAngles[i] = SHORT2ANGLE( usercmd.angles[i] );
 		if ( influenceActive == INFLUENCE_LEVEL3 ) {
@@ -8901,6 +8904,8 @@ void idPlayer::UpdateViewAngles( void ) {
 			viewAngles[i] = idMath::AngleNormalize180( SHORT2ANGLE( usercmd.angles[i] ) + deltaViewAngles[i] );
 		}
 	}
+	// openQ4: friction, stickiness and tracking for a gamepad player
+	AimAssistUpdateView( aimAssistPreviousView );
 	// centring the view levels a mouse's pitch; a hand's is wherever the hand is
 	if ( !vrAim && !centerView.IsDone( gameLocal.time ) ) {
 		viewAngles.pitch = centerView.GetCurrentValue( gameLocal.time );
@@ -11460,6 +11465,7 @@ void idPlayer::ApplyTestInput( void ) {
 }
 
 #include "gamesys/WeaponWheel.inl"
+#include "gamesys/AimAssist.inl"
 #include "gamesys/RetainedStatusBar.inl"
 
 bool idPlayer::CanZoom( void  )

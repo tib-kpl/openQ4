@@ -7,6 +7,27 @@ later entries are unreleased development work. Historical CI/publication success
 does not restore the withdrawn release. See
 [player release status](../user/release-status.md).
 
+## Aim assist on a controller, and an Android display menu that no longer freezes, 17 November 2026
+
+- **Aim Assist for controller players (single player).** Options > Controller has
+  a new **Aim Assist** row: Off, Low, Medium (the default) or High. The game
+  slows your view as the crosshair nears an enemy, nudges it toward the enemy
+  while you hold the stick, follows an enemy that strafes, and bends a shot
+  that passes close onto it. Quake 4 only had this on consoles; the PC game had
+  none. It only acts while a controller was the last device you used, so a mouse
+  is never touched, and it is not active online. Nothing changes if you pick Off.
+- **Android: Apply in the display settings no longer freezes.** Applying a
+  display change used to fail on Android, where the system owns the window, and
+  the recovery failed with it, so the game stopped at the next start with
+  "Settings display recovery failed". It now adopts the window the system gives.
+  The window and fullscreen size fields, which cannot do anything there, are
+  greyed out.
+- **Android: the screen no longer turns lighter.** Android tinted the whole game
+  picture with its focus highlight after you moved around the settings with the
+  D-pad. The picture stays as it was, and the status and navigation bars are
+  hidden while you play (swipe from the edge to bring them back).
+- **Reinstall note:** none. Your settings and game data are kept.
+
 ## Updates are found, and install from the game (#227), 16 November 2026
 
 - **The Updates button finds openQ4 releases.** It used to ask Quake 4's old

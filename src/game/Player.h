@@ -605,6 +605,8 @@ public:
 	void					StopRadioChatter ( void );
 
 	void					WeaponFireFeedback( const idDict *weaponDef );
+// openQ4: bends a shot onto a nearby target for a gamepad player (gamesys/AimAssist.inl)
+bool					AimAssistRedirect( const idVec3 &origin, idMat3 &axis );
 
  	float					DefaultFov( void ) const;
  	float					CalcFov( bool honorZoom );
@@ -1234,6 +1236,13 @@ private:
 	void					ClearCheatState				( void );
 // RAVEN END
 	void					UpdateViewAngles			( void );
+	// openQ4: gamepad aim assist (gamesys/AimAssist.inl)
+	const void *			AimAssistTuning				( void ) const;
+	idEntity *				AimAssistFindTarget			( const idVec3 &eye, const idAngles &view, float coneDeg, float range, idVec3 &point, idAngles &targetAngles, float &effectiveCone );
+	void					AimAssistUpdateView			( const idAngles &previousView );
+	int						aimAssistLastTime;
+	idEntityPtr<idEntity>	aimAssistTarget;
+	idAngles				aimAssistLastAngles;
 	bool					UpdateBenchmarkViewSweep	( void );
 	void					UpdatePowerUps				( void );
  	void					UpdateDeathSkin				( bool state_hitch );

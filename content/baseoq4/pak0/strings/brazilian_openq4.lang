@@ -1770,4 +1770,6 @@
 	"#str_232510"	"O openQ4 foi atualizado para %s."
 	"#str_232511"	"Não foi possível instalar o openQ4 %s. O openQ4 %s não foi alterado.\n\nAbrir a página de download para instalá-lo você mesmo?"
 	"#str_232512"	"O openQ4 não conseguiu abrir de novo após a atualização. Abra-o pela pasta dele."
+	"#str_232513"	"Assistência de mira"
+	"#str_232514"	"Desativada;Baixa;Média;Alta"
 }

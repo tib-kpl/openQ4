@@ -19,6 +19,7 @@ extern idCVar	g_fixedHorizFOV;
 
 extern idCVar	g_monsters;
 extern idCVar	g_decals;
+extern idCVar	g_aimAssist;
 extern idCVar	g_knockback;
 extern idCVar	g_skill;
 extern idCVar	g_turboMode;

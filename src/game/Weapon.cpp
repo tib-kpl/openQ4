@@ -3299,6 +3299,9 @@ void rvWeapon::Attack( bool altAttack, int num_attacks, float spread, float fuse
 		muzzleOrigin += playerViewAxis[0] * muzzleOffset;
 	}
 
+	// openQ4: a gamepad player's shot that passes close to a target is bent onto it
+	owner->AimAssistRedirect( muzzleOrigin, muzzleAxis );
+
 	// add some to the kick time, incrementally moving repeat firing weapons back
 	if ( kick_endtime < gameLocal.realClientTime ) {
 		kick_endtime = gameLocal.realClientTime;

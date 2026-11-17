@@ -81,6 +81,7 @@ SECTIONS = (
     ("controller", "#str_229924", (
         toggle("game_controller", "#str_229925", "in_joystick"),
         choice("game_southpaw", "#str_229930", "in_joystickSouthpaw", "#str_229934", (0, 1)),
+        choice("game_aimassist", "#str_232513", "g_aimAssist", "#str_232514", (0, 1, 2, 3)),
         slider("game_deadzone", "#str_229926", "in_joystickDeadZone", 0, 0.95, 0.01, 2),
         slider("game_looksensitivity", "#str_229931", "in_joystickLookSensitivity", 0.1, 4, 0.05, 2),
         slider("game_wheelsensitivity", "#str_42840", "in_weaponWheelSensitivity", 0.25, 16, 0.25, 2),
