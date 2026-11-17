@@ -1455,6 +1455,14 @@ bool idUserInterfaceRetained::SetPresentationValue(const char* name, const char*
 bool idUserInterfaceRetained::GetTextInputState(idRectangle& area, float& cursorOffset) const {
 	if (!impl->view || !impl->active || !impl->interactive || impl->suspended) return false;
 	const auto id = impl->FocusedField();
+#if defined(__ANDROID__)
+	// A field only selected with the D-pad or a controller must not raise the soft keyboard (it
+	// trapped the cursor and covered the page); only a field being edited takes text input.
+	{
+		const auto widget = id ? impl->RuntimeView()->GetWidgetState(*id) : std::nullopt;
+		if (!widget || !widget->number || !widget->number->active) return false;
+	}
+#endif
 	Viewport viewport; Bounds bounds;
 	if (!id || !RetainedUI_DefaultViewport(viewport) || !impl->RuntimeView()->GetBounds(*id,bounds)) return false;
 	const CursorTransform transform(viewport);
