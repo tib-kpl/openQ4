@@ -278,6 +278,11 @@ bool BuildDisplayRestore(const rendererDisplayState_t& captured, const SystemDis
 
 bool MatchesDisplay(const SystemDisplayPlan& plan, const rendererDisplayState_t& observed, std::string& error) {
 	if (!Plan(plan,error) || !Ready(observed,error)) return false;
+#if defined(__ANDROID__)
+	// The activity owns the window and the device may refuse MSAA, so a request
+	// can never be reproduced exactly; the observed state is what applies.
+	error.clear(); return true;
+#endif
 	const auto& expected=plan.expected; const auto& w=observed.window;
 	const SystemDisplayDescriptor* monitor=nullptr;
 	for (const auto& item:plan.monitors) if (item.id==w.displayId) monitor=&item;

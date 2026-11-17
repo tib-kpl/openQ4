@@ -21,6 +21,7 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.util.Log;
 import android.widget.FrameLayout;
 import android.widget.TextView;
@@ -172,6 +173,47 @@ public final class OpenQ4Activity extends SDLActivity {
         setupOpening = false;
         // A new Apply in setup reaches the running game on its return.
         applyScreenOrientation();
+        hideSystemBars();
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) hideSystemBars();
+    }
+
+    // Android tints the focused view with a translucent white "focus highlight"
+    // once a D-pad, gamepad or keyboard key is used. The game's surface is the
+    // focused view and fills the screen, so the whole picture turned lighter
+    // after navigating the settings menu. The engine draws its own focus.
+    private static void disableFocusHighlight(View view) {
+        if (Build.VERSION.SDK_INT < 26) return;
+        view.setDefaultFocusHighlightEnabled(false);
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) disableFocusHighlight(group.getChildAt(i));
+        }
+    }
+
+    // SDL only hides the system bars while its window is fullscreen, which the
+    // activity window never reports. Keep the game and its menus edge to edge;
+    // a swipe from the screen edge shows the bars briefly.
+    @SuppressWarnings("deprecation")
+    private void hideSystemBars() {
+        if (mBrokenLibraries) return;
+        if (Build.VERSION.SDK_INT >= 30) {
+            // Do not reserve the hidden bars' space around the game's content.
+            getWindow().setDecorFitsSystemWindows(false);
+            WindowInsetsController controller = getWindow().getInsetsController();
+            if (controller == null) return;
+            controller.hide(WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars());
+            controller.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+        } else {
+            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_FULLSCREEN
+                | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+        }
     }
 
     @Override
@@ -179,6 +221,8 @@ public final class OpenQ4Activity extends SDLActivity {
         StorageSession.INSTANCE.activityCreated(this);
         super.onCreate(savedInstanceState);
         applyScreenOrientation();
+        hideSystemBars();
+        disableFocusHighlight(getWindow().getDecorView());
         if (!mBrokenLibraries && mLayout != null && Build.VERSION.SDK_INT >= 30) {
             keepOutOfDisplayCutout(mLayout);
         }

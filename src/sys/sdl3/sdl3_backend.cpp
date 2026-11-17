@@ -936,7 +936,14 @@ float Sys_SDL_GetWindowRefreshHz(void) {
 }
 
 static bool SDL3_UseAbsoluteWindowPlacement(void) {
+#if defined(__ANDROID__)
+	// The Android window manager owns the activity window; SDL_SetWindowPosition
+	// reports "not supported", which made every display apply fail and its
+	// recovery abort at startup.
+	return false;
+#else
 	return !SDL3_IsNativeWaylandVideoDriver();
+#endif
 }
 
 static void SDL3_PrintVideoDriverSummary(void) {
@@ -1387,6 +1394,20 @@ static void SDL3_UpdateTextInputArea(void) {
 	}
 }
 
+#if defined(__ANDROID__)
+// Android's soft keyboard takes the physical controller's key events while it
+// is shown, so the release of a button held as it opened (a D-pad press that
+// moved focus onto a text field) never reaches the game. The menu would repeat
+// that direction forever and keep its pressed state. Release what is held at
+// both transitions, as a pause does; a later press is still an ordinary press.
+static void SDL3_ReleaseGamepadState(int eventTime);
+static void SDL3_ReleaseJoystickState(int eventTime);
+static void SDL3_ReleaseControllerInputForSoftKeyboard(int eventTime) {
+	SDL3_ReleaseGamepadState(eventTime);
+	SDL3_ReleaseJoystickState(eventTime);
+}
+#endif
+
 static void SDL3_UpdateTextInputState(void) {
 	if (!s_sdlWindow) {
 		s_sdlTextInputActive = false;
@@ -1402,6 +1423,9 @@ static void SDL3_UpdateTextInputState(void) {
 		if (SDL_StartTextInput(s_sdlWindow)) {
 			s_sdlTextInputActive = true;
 			s_sdlTextInputFailureLogged = false;
+#if defined(__ANDROID__)
+			SDL3_ReleaseControllerInputForSoftKeyboard(Sys_Milliseconds());
+#endif
 		} else if (!s_sdlTextInputFailureLogged) {
 			common->Printf("SDL3: text input could not be enabled: %s\n", SDL_GetError());
 			s_sdlTextInputFailureLogged = true;
@@ -1411,6 +1435,9 @@ static void SDL3_UpdateTextInputState(void) {
 		(void)SDL_StopTextInput(s_sdlWindow);
 		s_sdlTextInputActive = false;
 		s_sdlTextInputFailureLogged = false;
+#if defined(__ANDROID__)
+		SDL3_ReleaseControllerInputForSoftKeyboard(Sys_Milliseconds());
+#endif
 	}
 
 	SDL3_UpdateTextInputArea();
@@ -7557,8 +7584,28 @@ static bool SDL3_WindowServices_ApplyScreenParmsStrict(const renderWindowRequest
 		(parms.hiddenWindow && (parms.fullScreen || parms.borderless)))
 		return SDL3_StrictWindowFailure("Invalid strict window dimensions, display or hidden-window policy",error,errorSize);
 	if (s_screenParmTransitionActive) return SDL3_StrictWindowFailure("A window transition is already active",error,errorSize);
-	if (request->restorePlacement && !SDL3_UseAbsoluteWindowPlacement())
-		return SDL3_StrictWindowFailure("Absolute restore placement is unavailable on this window system",error,errorSize);
+#if defined(__ANDROID__)
+	{
+		// The activity owns the window: SDL refuses to move, resize or change its
+		// fullscreen mode. Applying display settings adopts the window the system
+		// gave us instead of failing, which previously aborted every apply and
+		// its recovery.
+		renderWindowState_t actual = {};
+		if (!SDL3_WindowServices_QueryWindowState(&actual)) return SDL3_StrictWindowFailure("Cannot observe the existing window",error,errorSize,true);
+		win32.cdsFullscreen = actual.fullscreen;
+		SDL3_SetFullscreenState(actual.fullscreen);
+		SDL3_SetVidSize(actual.pixelWidth,actual.pixelHeight);
+		SDL3_SetUIViewport(actual.uiViewportX,actual.uiViewportY,actual.uiViewportWidth,actual.uiViewportHeight);
+		engineWindowState.displayScale = actual.displayScale;
+		engineWindowState.pixelDensityX = actual.pixelDensityX; engineWindowState.pixelDensityY = actual.pixelDensityY;
+		if (error && errorSize > 0) error[0] = '\0';
+		*outState = actual;
+		return true;
+	}
+#endif
+	// A saved window position is meaningless where the window system owns placement
+	// (Wayland, Android). Recovery data written earlier may still carry one.
+	const bool restorePlacement = request->restorePlacement && SDL3_UseAbsoluteWindowPlacement();
 	sdl3StrictDisplayList_t displays;
 	if (!displays.Valid()) return SDL3_StrictWindowFailure("Display enumeration failed",error,errorSize,true);
 	SDL_DisplayID display = request->displayId;
@@ -7619,7 +7666,7 @@ static bool SDL3_WindowServices_ApplyScreenParmsStrict(const renderWindowRequest
 			y = SDL3_SaturateWindowCoordinate(static_cast<int64_t>(bounds.y) + (static_cast<int64_t>(bounds.h)-targetHeight)/2);
 		}
 	}
-	if (request->restorePlacement) { x = request->windowX; y = request->windowY; }
+	if (restorePlacement) { x = request->windowX; y = request->windowY; }
 	else if (!SDL3_UseAbsoluteWindowPlacement()) x = y = SDL_WINDOWPOS_CENTERED_DISPLAY(display);
 	// Native Wayland refuses to move a toplevel ("cannot position non-popup
 	// windows") after SDL has recorded the requested display, which the next
@@ -7646,7 +7693,7 @@ static bool SDL3_WindowServices_ApplyScreenParmsStrict(const renderWindowRequest
 		return SDL3_StrictWindowFailure("Observed window flags or display do not match the request",error,errorSize);
 	if (!fullscreen && (actual.logicalWidth != targetWidth || actual.logicalHeight != targetHeight))
 		return SDL3_StrictWindowFailure("Observed logical window dimensions do not match the request",error,errorSize);
-	if (request->restorePlacement && (!actual.positionValid || actual.windowX != request->windowX || actual.windowY != request->windowY))
+	if (restorePlacement && (!actual.positionValid || actual.windowX != request->windowX || actual.windowY != request->windowY))
 		return SDL3_StrictWindowFailure("Observed window placement does not match the explicit restore coordinates",error,errorSize);
 	if (borderless && SDL3_UseAbsoluteWindowPlacement() && (!actual.positionValid || actual.windowX != bounds.x || actual.windowY != bounds.y))
 		return SDL3_StrictWindowFailure("Observed borderless placement does not match the requested bounds",error,errorSize);
