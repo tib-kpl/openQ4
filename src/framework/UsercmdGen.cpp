@@ -674,7 +674,17 @@ is user cmd generation inhibited
 ================
 */
 bool idUsercmdGenLocal::Inhibited( void ) {
-	return inhibitCommands != 0 || RetainedUI_IsOpen() || NativeInput_Inhibited();
+	const bool inhibited = inhibitCommands != 0 || RetainedUI_IsOpen() || NativeInput_Inhibited();
+#if defined( __ANDROID__ )
+	// Input lost with nothing on screen: say what is holding it, when that changes.
+	static int lastReasons = -1;
+	const int reasons = ( inhibitCommands != 0 ? 1 : 0 ) | ( RetainedUI_IsOpen() ? 2 : 0 ) | ( NativeInput_Inhibited() ? 4 : 0 );
+	if ( reasons != lastReasons ) {
+		lastReasons = reasons;
+		common->Printf( "INPUTGATE inhibitMask=0x%x retainedUIOpen=%d nativeInput=%d\n", inhibitCommands, RetainedUI_IsOpen() ? 1 : 0, NativeInput_Inhibited() ? 1 : 0 );
+	}
+#endif
+	return inhibited;
 }
 
 /*

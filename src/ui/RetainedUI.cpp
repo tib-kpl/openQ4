@@ -2167,6 +2167,7 @@ bool RetainedUI_ProcessEvent(const sysEvent_s* event) {
 	if (!RetainedUI_IsOpen() || !runtime) return transport;
 	if (decoded.kind == retainedUIInput_t::FOCUS) inputFocused = decoded.down;
 	if (!ready) {
+		common->Printf("RETAINED_INPUT dropped: preview not ready (suspended=%d focused=%d)\n",inputSuspended?1:0,InputFocused()?1:0);
 		// Keep focus/console suspension policy, but a resource wait alone must
 		// retain quarantine. Releases still retire it without reaching the view.
 		SuspendInput(!InputFocused() || (console && console->Active()) || engineWindowState.uiViewportWidth <= 0 || engineWindowState.uiViewportHeight <= 0);
