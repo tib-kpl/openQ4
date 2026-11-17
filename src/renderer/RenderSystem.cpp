@@ -2552,6 +2552,14 @@ void idRenderSystemLocal::BeginGuiRoot() {
 void idRenderSystemLocal::BindRenderTexture(idRenderTexture* renderTexture, idRenderTexture* feedbackRenderTexture) {
 	setRenderTargetCommand_t* cmd;
 
+	// A setting applied during play rebuilds the renderer, and the game still draws its
+	// paused scene before the next frame begins: there is no frame memory to take commands.
+	if ( !frameData ) {
+		activeRenderTexture = NULL;
+		return;
+	}
+
+
 	// DrawStretchPic batches into guiModel; flush pending surfaces before
 	// switching FBO targets so post-process passes execute on the intended target.
 	guiModel->EmitFullScreen();
