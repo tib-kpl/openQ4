@@ -161,7 +161,13 @@ bool ExpandPerformancePreset(const PerformancePreset& preset,PerformancePresetAs
   {"r_rendererBenchmarkPreset",std::string(preset.rendererBenchmarkPreset)},
   {"r_screenFraction",preset.screenFraction},
   {"r_multiSamples",preset.multiSamples},
+#if defined(__ANDROID__)
+  // SMAA cost this handheld GPU 20 frames per second in combat (40 against 60 in the same
+  // scene, measured on an Adreno 740); no profile turns it on there.
+  {"r_postAA",0},
+#else
   {"r_postAA",preset.postAA},
+#endif
   {"com_maxfps",preset.maxFps},
   {"image_anisotropy",preset.anisotropy},
   {"image_usePrecompressedTextures",preset.usePrecompressedTextures},
