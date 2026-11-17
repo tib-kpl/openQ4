@@ -4142,6 +4142,13 @@ static void RB_STD_MotionBlur( void ) {
 		RB_ResetMotionBlurHistory();
 		return;
 	}
+	// A headset's eyes are two views a frame with one camera history between
+	// them: an eye would blur by the distance to the other one, and a head
+	// turn smeared across a lens is the last thing a headset wants.
+	if ( backEnd.viewDef != NULL && backEnd.viewDef->renderView.asymmetricFov ) {
+		RB_ResetMotionBlurHistory();
+		return;
+	}
 	if ( r_skipPostProcess.GetBool() || !glConfig.GLSLProgramAvailable ) {
 		if ( RB_IsMainMotionBlurView() ) {
 			RB_MotionBlurRecordDisabled( r_skipPostProcess.GetBool() ? "r_skipPostProcess" : "no GLSL programs" );
@@ -14950,6 +14957,13 @@ static bool RB_LightGridAmbientStageCanProvideAlbedo( const idMaterial *shader, 
 		return false;
 	}
 	if ( stage->texture.texgen != TG_EXPLICIT && stage->texture.texgen != TG_POT_CORRECTION ) {
+		return false;
+	}
+	// A `maskcolor` stage writes only destination alpha for a later
+	// GL_DST_ALPHA stage. Its texture is usually makealpha(...), which is
+	// white RGB, so taking it as albedo adds a white indirect layer that
+	// washes out the surface (the bright MP marine's helmet).
+	if ( ( stage->drawStateBits & GLS_COLORMASK ) != 0 ) {
 		return false;
 	}
 	return RB_LightGridStageBlendBits( stage ) == 0;

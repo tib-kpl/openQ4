@@ -16,7 +16,7 @@ int main(){
  Seed();SystemSettingsHost host;std::string error;StateValues original;
  Check(host.Read(original,error),"complete host baseline");
  const std::set<std::string> keys(openq4::PerformancePresetTargets().begin(),openq4::PerformancePresetTargets().end());
- Check(keys.size()==55&&original.size()==76,"catalog union");
+ Check(keys.size()==55&&original.size()==77,"catalog union");
  for(const auto& preset:openq4::PerformancePresets()){
   SettingsTransaction tx(host);Check(tx.Begin(7).code==SettingsCode::Ok,"begin real host");
   Check(tx.Edit(7,{{"r_brightness",1.375},{"r_forceAmbient",0.1375}}).code==SettingsCode::Ok,"custom outside draft");
@@ -27,9 +27,9 @@ int main(){
    Check(SettingsValueEqual(tx.Draft().at(key),keys.contains(key)?patch.at(key):value),"55 replacements and exact outside preservation");
    if(!keys.contains(key))++untouched;
   }
-  Check(untouched==21&&SettingsValuesEqual(tx.Baseline(),original),"21 outside keys and baseline preserved");
+  Check(untouched==22&&SettingsValuesEqual(tx.Baseline(),original),"22 outside keys and baseline preserved");
   Check(writes==0,"draft preset never invokes setter");
-  StateValues readback;Check(host.Read(readback,error)&&SettingsValuesEqual(original,readback),"all 76 live unchanged");
+  StateValues readback;Check(host.Read(readback,error)&&SettingsValuesEqual(original,readback),"all 77 live unchanged");
   Check((SystemSettingsHost::ChangedEffects(tx.Baseline(),tx.Draft())&(SystemSettingPresetExpansion|SystemSettingImageReload|SystemSettingAudioRestart|SystemSettingRendererResources))!=0,"profile remains real unsupported effect footprint");
  }
  SettingsTransaction tx(host);Check(tx.Begin(1).code==SettingsCode::Ok,"detection owner");
@@ -111,7 +111,7 @@ static int SDL_GetNumLogicalCPUCores(){observations.push_back("cpu");return raw.
 // The display rate a detected start caps at (FPS-02); not an observation the
 // ordering checks count.
 static float Sys_SDL_GetWindowRefreshHz(){return (float)raw.displayRefreshHz;}
-struct Config{bool isInitialized=true;int dedicatedVideoMemoryMB=0,vidWidth=0,vidHeight=0,maxTextureSize=0;RendererGpuClass gpuClass=RendererGpuClass::Unknown;const char* version_string="OpenGL";bool GLSL130Available=true,GLSLProgramAvailable=true,ARBVertexProgramAvailable=true,ARBFragmentProgramAvailable=true;struct{bool hasFBO=true;}backendCaps;};
+struct Config{bool isInitialized=true;int dedicatedVideoMemoryMB=0,vidWidth=0,vidHeight=0,maxTextureSize=0;RendererGpuClass gpuClass=RendererGpuClass::Unknown;const char* version_string="OpenGL";const char* renderer_string="";bool GLSL130Available=true,GLSLProgramAvailable=true,ARBVertexProgramAvailable=true,ARBFragmentProgramAvailable=true;struct{bool hasFBO=true;}backendCaps;};
 struct Renderer{
  bool initialized=true;
  bool overrideConfig=false;Config config;
@@ -184,6 +184,13 @@ int main(){
  renderer.config.GLSL130Available=false;
  Check(Common_CapturePerformancePresetSignals(got,error)&&!got.legacyRenderer&&!got.modernEffects&&!got.postAAAvailable,"Apple GLSL 1.20 lacks modern effects, not classic material quality");
  Check(std::string(openq4::DetectPerformancePreset(got).preset->name)=="balanced","Apple compatibility context keeps native classic quality");
+ Check(!got.appleGpu,"an unnamed device is not Apple's");
+ for(const char* name:{"Apple M2 (G14G B1)","Apple M4 Pro","Apple GPU"}){renderer.config.renderer_string=name;
+  Check(Common_CapturePerformancePresetSignals(got,error)&&got.appleGpu,"Apple Silicon is recognized by its active renderer name, Asahi included");}
+ for(const char* name:{"V3D 7.1.7.0","Mali-G610 (Panfrost)","FD618","NVIDIA Tegra Orin (nvgpu)/integrated"}){renderer.config.renderer_string=name;
+  Check(Common_CapturePerformancePresetSignals(got,error)&&!got.appleGpu,"board GPUs are not Apple's");}
+ renderer.config.renderer_string=nullptr;Check(Common_CapturePerformancePresetSignals(got,error)&&!got.appleGpu,"a missing renderer name is not Apple's");
+ renderer.config.renderer_string="";
  renderer.config.GLSLProgramAvailable=false;
  Check(Common_CapturePerformancePresetSignals(got,error)&&!got.legacyRenderer,"complete ARB programs retain classic rendering without GLSL");
  renderer.config.ARBFragmentProgramAvailable=false;
@@ -390,6 +397,9 @@ def main():
     ('resolution-step','native','src/framework/PerformancePreset.cpp','ceiling=Balanced+capacity;','ceiling=Ultra;'),
     ('power-cap-ignored','native','src/framework/PerformancePreset.cpp','if(!powerLimited||signals.displayRefreshHz<result.maxFps)','if(true)'),
     ('phone-scene-budget','native','src/framework/PerformancePreset.cpp','if(ram<PerformancePresetMobileFlagshipRamMB)budget','if(false)budget'),
+    ('arm-board-ceiling','native','src/framework/PerformancePreset.cpp','if(armBoard&&tier>Performance)','if(false&&tier>Performance)'),
+    ('arm-board-cap','native','src/framework/PerformancePreset.cpp','signals.mobile||armBoard;','signals.mobile;'),
+    ('apple-gpu-ignored','common',None,'signals.appleGpu=RendererIsAppleGpu(config.renderer_string);','signals.appleGpu=false;'),
     ('fixed-specular','native','src/framework/PerformancePreset.cpp','{"image_downSizeSpecularLimit",64}','{"image_downSizeSpecularLimit",63}'),
     ('omit-edit','native','src/ui/application/SettingsTransaction.cpp','candidate[key]=value;','candidate[key]=declaration->second;'),
     ('merged-validation','native','src/ui/application/SettingsTransaction.cpp','if(!ValidateDraft(candidate,error))return false;','if(false)return false;'),

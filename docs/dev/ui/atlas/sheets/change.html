@@ -1,0 +1,61 @@
+<style>
+.chg-ctl{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center}
+.chg-ctl .pl{width:auto;min-width:150px;max-width:220px}
+.chg-ctl .pl[disabled]{opacity:.35;pointer-events:none}
+.chg-ctl label{display:inline-flex;align-items:center;gap:8px;font:500 14px/1 var(--f-low);color:var(--sec);cursor:pointer}
+.tl{position:relative;display:grid;grid-template-columns:120px minmax(0,1fr);gap:4px 12px;font:11.5px/1.3 var(--f-mono);color:var(--ter)}
+.tl .trk{position:relative;height:14px;background:rgba(255,255,255,.04)}
+.tl .bar{position:absolute;top:2px;bottom:2px;background:var(--bc,#8B964B);opacity:.8}
+.tl .bar.trap{clip-path:polygon(0 100%,8% 0,92% 0,100% 100%)}
+.tl .axis{grid-column:2;position:relative;height:16px}
+.tl .axis span{position:absolute;translate:-50% 0;color:var(--t40)}
+.tl .head{position:absolute;top:0;bottom:16px;width:1.5px;background:var(--orange);left:132px;pointer-events:none;opacity:0}
+.chg svg text{pointer-events:none}
+.chg svg .hit{cursor:pointer}
+#chg .nl{letter-spacing:2.3px;transform-box:fill-box;transform-origin:0 50%;transition:fill .3s linear,transform .3s linear}
+#chg .np:hover .nl,#chg .np.f .nl{transform:scale(1.03);transition:none}
+.chg-path{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;font:12px/1.3 var(--f-mono);color:var(--ter)}
+.chg-path b{font:600 11px/1.4 var(--f-low);letter-spacing:.08em;text-transform:uppercase;color:var(--t50)}
+.chg-path .lvl{display:inline-flex;gap:3px}
+.chg-path .lvl i{width:14px;height:6px;background:rgba(139,150,75,.25);clip-path:polygon(0 0,70% 0,100% 100%,0 100%)}
+.chg-path .lvl i.on{background:#8B964B}
+</style>
+<section class="sheet" id="change">
+  <h2 class="sheet-h">Atlas - screen change</h2>
+  <p class="sheet-p">Sections 8, 9 and 13.7. The menu has three levels: home, pages and sub-pages. Home to a page is the stock change: the framing bands dock while the home layer sweeps away and the title's signal breaks up. A page is a column of the home's dark plates ending in BACK, with the focused section's summary in the content column and the prompt bar in the docked bottom band. A section that leads deeper (Campaign and Arena; Join Game, Create Server and Demos; every settings category) takes one more step: only the top band moves on, one notch pitch, and its 45-degree step slides under the page title, which lifts into the band's thin span as the parent in the path. Back always climbs one level. Click a plate or use the buttons; input during a change retargets it from the current positions.</p>
+  <div class="stage chg" style="padding:0">
+    <svg id="chg" class="home" viewBox="-107 0 854 480" role="img" aria-label="Main menu changing between home, page and sub-page" style="display:block;width:100%;height:auto">
+      <defs id="chgDefs"></defs>
+      <g id="chgField"></g>
+      <g id="chgTitleView"></g>
+      <g id="chgGrid"></g>
+      <rect id="chgBackingRect" x="-107" y="0" width="854" height="480" opacity="0"/>
+      <g id="chgPages" opacity="0"></g>
+      <g id="chgSubs" opacity="0"></g>
+      <g id="chgStage"></g>
+      <g id="chgHome"><g id="chgNav"></g></g>
+      <g id="chgTop"><g id="chgTopArt"></g><text id="chgTitle" x="-284" y="94.6" font-family="Michroma, Eurostile, sans-serif" font-size="8.4" letter-spacing="1.75" fill="#fff" fill-opacity="0">SINGLE PLAYER</text></g>
+      <text id="chgCrumb" x="39" y="31.6" font-family="Michroma, Eurostile, sans-serif" font-size="8.4" letter-spacing="1.1" fill="#fff" fill-opacity="0"></text>
+      <g id="chgBot"></g>
+      <g id="chgLinks"></g>
+      <g id="chgBack" opacity="0"></g>
+      <text id="chgCarry" x="44" y="341.1" font-family="Michroma, Eurostile, sans-serif" font-size="11.2" letter-spacing="2.3" fill="#E38900" opacity="0"></text>
+    </svg>
+  </div>
+  <div class="chg-ctl">
+    <div class="segs" role="group" aria-label="Go to" id="chgGo"><span class="lbl">Go to</span></div>
+    <button class="pl act" id="goBack"><i class="mk"></i><span class="lb">Back</span></button>
+    <label><button class="box" id="slowBox" aria-pressed="false" aria-label="Slow motion"></button>Slow motion ×4</label>
+    <label><button class="box" id="rmBox" aria-pressed="false" aria-label="Reduced motion"></button>Reduced motion</label>
+    <label><button class="box on" id="carryBox" aria-pressed="true" aria-label="Title carry"></button>Title carry</label>
+  </div>
+  <p class="chg-path" id="chgWhere" aria-live="polite"></p>
+  <div class="tl" id="tl"></div>
+  <p class="cap" id="chgCap"></p>
+  <div class="mpkey">
+    <div><b>Levels</b>Home, pages and sub-pages. Single Player's Campaign and Arena open sub-pages; so do Multiplayer's Join Game, Create Server and Demos, and each settings category; Player Setup edits in place and Load Defaults asks first. A section's plate puts its summary (and a levelshot where the session names one, 140x105 u at 395,77 u) in the content column at 395,190 u; any other plate shows the page's description.</div>
+    <div><b>Sub-page dock</b>Only the top band moves on, one notch pitch (97 u) toward the trailing edge, on frame.step: accel(150, 150) over 300 ms from 50 ms. Its step falls at 122–136 u and its notches move one pitch along. The bottom band and the prompt bar never move, so nothing leaves the 4:3 canvas.</div>
+    <div><b>Path crumb</b>As the band steps, the page title rises 7 u into the thin leading span, steps down to 80% and dims to 0.40, clipped at the step. The band's own step then separates it from the sub-page's title, which starts at the step's foot (136,19 u).</div>
+    <div><b>Title signal</b>The title's backdrop faults with the menu's moves (13.8): it breaks up as the bands leave for a page, peaking at 0.85 at 400 ms and at rest by the hand-off at 550 ms, and settles over 480 ms as they dock home. Reduced motion and reduced flashing drop it.</div>
+  </div>
+</section>

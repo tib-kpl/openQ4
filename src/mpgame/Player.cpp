@@ -235,7 +235,9 @@ a free spectator is exactly who most needs to see everyone.
 ================
 */
 static idPlayer *Player_VisibilityReference( idPlayer *localViewer, bool &spectatorView ) {
-	spectatorView = localViewer->spectating;
+	// A participant in a spectator camera (eliminated, benched) keeps its own
+	// side's view: only someone who chose to watch sees everyone.
+	spectatorView = localViewer->spectating && localViewer->wantSpectate;
 	if ( !spectatorView ) {
 		return localViewer;
 	}
@@ -1470,6 +1472,28 @@ idPlayer::idPlayer() {
 	vrRoomScaleOriginValid = false;
 	vrRoomScaleStep.Zero();
 	vrRoomScaleStepTime = -1;
+	memset( &vrBodyRig, 0, sizeof( vrBodyRig ) );
+	vrBodyRigModel = NULL;
+	vrBodyRest = NULL;
+	vrBodyJoints = NULL;
+	vrBodyDefHandle = -1;
+	vrBodyYaw = 0.0f;
+	vrBodyYawTime = -1;
+	vrBodyPosed = false;
+	vrBodyMode = VR_BODY_OFF;
+	vrBodySeated = false;
+	vrModelYaw = 0.0f;
+	vrModelYawValid = false;
+	vrSnapshotDeltaYaw = 0.0f;
+	vrSnapshotDeltaYawValid = false;
+	vrBodyScale = 1.0f;
+	vrBodyOrigin.Zero();
+	vrBodyAxis.Identity();
+	for ( int vrHand = 0; vrHand < VR_NUM_HANDS; vrHand++ ) {
+		vrBodyViewArm[ vrHand ] = false;
+		vrBodyElbow[ vrHand ].Zero();
+		vrBodyWrist[ vrHand ].Zero();
+	}
 
 	alreadyDidTeamAnnouncerSound = false;
 
@@ -2679,6 +2703,13 @@ Release any resources used by the player.
 ==============
 */
 idPlayer::~idPlayer() {
+	FreeVRBody();
+	if ( vrBodyRest != NULL ) {
+		Mem_Free16( vrBodyRest );
+	}
+	if ( vrBodyJoints != NULL ) {
+		Mem_Free16( vrBodyJoints );
+	}
 	FreeClassicHookPresentation();
 	FreeWeaponWheelGui();
 	FreeQuickChatGui();
@@ -4149,6 +4180,8 @@ bool idPlayer::UserInfoChanged( void ) {
 	}
 
 	spec = ( idStr::Icmp( userInfo->GetString( "ui_spectate" ), "Spectate" ) == 0 );
+	// openQ4: someone whose first join is decided by this call (see the lock below)
+	const bool arriving = !gameLocal.isClient && initialJoinPending && !botManager.IsBot( entityNumber );
 	if ( !gameLocal.isClient && initialJoinPending ) {
 		if ( gameLocal.isServer && managedMatch ) {
 			// Managed userinfo has already been reconciled through the authoritative
@@ -4235,9 +4268,22 @@ bool idPlayer::UserInfoChanged( void ) {
  		const mpGameState_t liveState = gameLocal.mpGame.GetGameState()->GetMPGameState();
  		const bool livePlay = liveState == GAMEON || liveState == SUDDENDEATH;
  		const int spectatorLock = gameLocal.serverInfo.GetInt( "si_spectatorLock" );
- 		if ( ( liveState == SUDDENDEATH || ( livePlay && spectatorLock >= 1 ) ) && !spec && wantSpectate == true ) {
+ 		// A client that connects with ui_autoJoin has never been in play and its
+ 		// wantSpectate is still false, so the lock, which asked only about
+ 		// spectators coming back, let it straight into a live match or a sudden
+ 		// death: a locked-out spectator had only to reconnect. Bots fill by their
+ 		// own rules. The side a disconnect pause is held for may take its player
+ 		// back (idMultiplayerGame::DisconnectPauseAdmits).
+ 		const bool joiningPlay = !spec && ( wantSpectate == true || arriving );
+ 		const bool heldOpen = livePlay && gameLocal.mpGame.DisconnectPauseAdmits( userInfo->GetString( "ui_team" ) );
+ 		if ( ( liveState == SUDDENDEATH || ( livePlay && spectatorLock >= 1 ) ) && joiningPlay && !heldOpen ) {
  			userInfo->Set( "ui_spectate", "Spectate" );
  			modifiedInfo |= true;
+ 			wantSpectate = true;
+ 			if ( arriving && gameLocal.isServer ) {
+ 				// the client asked for nothing it could be answered for: say why it is watching
+ 				gameLocal.ServerSendChatMessage( entityNumber, "server", "#str_42776" );
+ 			}
  		} else if ( livePlay && spectatorLock >= 2 && spec && !wantSpectate ) {
  			userInfo->Set( "ui_spectate", "Play" );
  			modifiedInfo |= true;
@@ -6453,7 +6499,11 @@ void idPlayer::UpdatePowerUps( void ) {
 				int max			= inventory.StartingAmmoForWeaponIndex( i );
 
 				// only regen ammo if lower than starting
-				if( gameLocal.time > nextAmmoRegenPulse[ ammoIndex ] && inventory.ammo[ ammoIndex ] < max ) {
+				// openQ4: and not unlimited. A fixed loadout's ammunition is -1, which is
+				// lower than any start: the Ammo Regen rune in a weapon arena counted it
+				// up from there and left the carrier with none.
+				if( gameLocal.time > nextAmmoRegenPulse[ ammoIndex ] && inventory.ammo[ ammoIndex ] >= 0 &&
+					inventory.ammo[ ammoIndex ] < max ) {
 					int step		= inventory.AmmoRegenStepForWeaponIndex( i );
 					int time		= inventory.AmmoRegenTimeForWeaponIndex( i );
 
@@ -6498,8 +6548,12 @@ void idPlayer::UpdatePowerUps( void ) {
 			const int armorCap = Min( inventory.maxarmor + FC_ARMOR_REGEN_OVER_MAX, FC_ARMOR_REGEN_WIRE_MAX );
 			if ( inventory.armor < armorCap ) {
 				inventory.armor = Min( inventory.armor + FC_ARMOR_REGEN_STEP, armorCap );
-				nextArmorPulse = gameLocal.time + FC_ARMOR_REGEN_PULSE;
 			}
+			// openQ4: the clock runs for the whole powerup. Left to stand while the
+			// armour sat at its cap, it was up to twenty seconds stale when the
+			// powerup ran out, and the decay below then took a point a frame until
+			// it caught up: twenty armour gone in a third of a second.
+			nextArmorPulse = gameLocal.time + FC_ARMOR_REGEN_PULSE;
 		} else if ( inventory.armor > inventory.maxarmor && !gameLocal.IsClassicRuleset() ) {
 			// openQ4: Classic armour keeps its points; each tier has its own limit
 			nextArmorPulse += ARMOR_PULSE;
@@ -8040,7 +8094,12 @@ bool idPlayer::CycleSpectatorFollow( int direction ) {
 		candidate->UpdateHudWeapon( candidate->currentWeapon );
 		return true;
 	}
-	SpectateFreeFly( true );
+	// Nobody to follow. Release a followed player; a camera that is already free
+	// stays where it is. SpectateFreeFly with no one followed puts the camera on
+	// a spawn point, so every attack press alone on a server was a teleport.
+	if ( spectator != entityNumber ) {
+		SpectateFreeFly( true );
+	}
 	return false;
 }
 
@@ -8123,7 +8182,10 @@ void idPlayer::ServerSpectatorFollow( int operation, int targetSlot, int targetS
 		SetSpectatorAutoFollow( MP_AUTOTRACK_OFF );
 	}
 	if ( operation == SPECTATOR_FOLLOW_FREE ) {
-		SpectateFreeFly( true );
+		// already free: stay put (see CycleSpectatorFollow)
+		if ( spectator != entityNumber ) {
+			SpectateFreeFly( true );
+		}
 		gameLocal.ServerSendChatMessage( entityNumber, "server", "#str_42884", "" );
 		return;
 	}
@@ -8481,7 +8543,16 @@ void idPlayer::UpdateFocus( void ) {
 	}
 
 #ifndef _XENON
-	cvarSystem->SetCVarInteger( "pm_isZoomed", zoomed ? pm_zoomedSlow.GetInteger() : 0 );
+	// openQ4: pm_isZoomed is this process's look-sensitivity scale. Every player's
+	// Think wrote it, so on a listen server the host's mouse slowed whenever the
+	// player who thought last was scoped, and the host's own scope was undone by
+	// anyone who was not.
+	if ( IsLocalClient() ) {
+		const int zoomedSlow = zoomed ? pm_zoomedSlow.GetInteger() : 0;
+		if ( pm_isZoomed.GetInteger() != zoomedSlow ) {
+			pm_isZoomed.SetInteger( zoomedSlow );
+		}
+	}
 #endif
 
 #ifdef _XENON
@@ -9552,6 +9623,45 @@ idPlayer::SetViewAngles
 void idPlayer::SetViewAngles( const idAngles &angles ) {
 	UpdateDeltaViewAngles(angles);
 	viewAngles = angles;
+	// a new facing: the model takes it at once, wherever the gun points
+	vrModelYawValid = false;
+	// openQ4 VR: a facing is the head's. The usercmd turns with the weapon hand,
+	// so the facing above points the gun where the player was meant to look,
+	// wherever the hand happens to hang: a teleporter could leave the player
+	// facing a wall with the gun at their side. Turn the tracking space by the
+	// angle between hand and head as well, and the head faces there. A client
+	// does not own its delta: it turns its body when the server's facing
+	// arrives instead (ReadFromSnapshot).
+	float handFromHead;
+	if ( !gameLocal.isClient && ( usercmd.buttons & BUTTON_VRAIM ) != 0 && GetVRHandFromHead( handFromHead ) ) {
+		idAngles delta = deltaViewAngles;
+		delta.yaw = idMath::AngleNormalize180( delta.yaw + handFromHead );
+		SetDeltaViewAngles( delta );
+		viewAngles.yaw = idMath::AngleNormalize180( viewAngles.yaw + handFromHead );
+	}
+}
+
+/*
+================
+idPlayer::GetVRHandFromHead
+
+openQ4 VR: how far the weapon hand's aim is turned from the head's heading,
+degrees, for the local player aiming with a tracked hand.
+================
+*/
+bool idPlayer::GetVRHandFromHead( float &handFromHead ) const {
+	handFromHead = 0.0f;
+	if ( vrSystem == NULL || !vrSystem->IsActive() || gameLocal.GetLocalPlayer() != this ) {
+		return false;
+	}
+	vrFrameState_t frame;
+	vrSystem->GetFrameState( frame );
+	const vrPose_t &aim = frame.aim[ frame.weaponHand == VR_HAND_LEFT ? VR_HAND_LEFT : VR_HAND_RIGHT ];
+	if ( !frame.active || frame.aimMode != VR_AIM_HAND || !frame.head.valid || !aim.valid ) {
+		return false;
+	}
+	handFromHead = idMath::AngleNormalize180( aim.axis[0].ToYaw() - VR_PoseHeading( frame.head ) );
+	return true;
 }
 
 /*
@@ -9560,8 +9670,15 @@ idPlayer::UpdateViewAngles
 ================
 */
 void idPlayer::UpdateViewAngles( void ) {
+	// openQ4 VR: a headset's view is where the head is. Holding the view still
+	// against a tracked weapon hand would turn the tracked world by however far
+	// the hand moved meanwhile, so a frozen view leaves the delta as it is. The
+	// server knows a VR client by its usercmd; the server's delta is the one
+	// every client takes (ReadFromSnapshot), so it must decide the same way.
+	const bool vrTrackedAim = ( usercmd.buttons & BUTTON_VRAIM ) != 0
+		|| ( vrSystem != NULL && vrSystem->IsActive() && gameLocal.GetLocalPlayer() == this );
 	if ( ( weaponWheelActive || ( usercmd.buttons & ( BUTTON_WEAPONWHEEL | BUTTON_QUICKCHAT ) ) != 0 ) && !spectating && health > 0 &&
-		 !( vrSystem != NULL && vrSystem->IsActive() && gameLocal.GetLocalPlayer() == this ) ) {
+		 !vrTrackedAim ) {
 		UpdateDeltaViewAngles( viewAngles );
 		return;
 	}
@@ -9573,14 +9690,18 @@ void idPlayer::UpdateViewAngles( void ) {
 	if ( gameLocal.isMultiplayer && gameLocal.mpGame.ArenaCampaignLocksPlayers() && !arenaFreeLook ) {
 		// The Arena entrance and spawn-in freeze facing as well as movement.
 		// Keep input deltas current so returning to gameplay cannot snap the view.
-		UpdateDeltaViewAngles( viewAngles );
+		if ( !vrTrackedAim ) {
+			UpdateDeltaViewAngles( viewAngles );
+		}
 		return;
 	}
 
 	if ( !noclip && ( gameLocal.inCinematic || privateCameraView || gameLocal.GetCamera() || influenceActive == INFLUENCE_LEVEL2 ) ) {
 		// no view changes at all, but we still want to update the deltas or else when
 		// we get out of this mode, our view will snap to a kind of random angle
-		UpdateDeltaViewAngles( viewAngles );
+		if ( !vrTrackedAim ) {
+			UpdateDeltaViewAngles( viewAngles );
+		}
 		return;
 	}
 
@@ -9644,9 +9765,18 @@ void idPlayer::UpdateViewAngles( void ) {
 	// input still integrates above -- but the bodies stay exactly where the match
 	// ended. Turning the model here would spin the victor on the spot while the
 	// camera circled it.
+	// openQ4 VR: under a tracked aim the model holds its heading while the gun
+	// points near straight up or down, where the hand's yaw is only its roll
+	// (VR_ModelYawFollow); the server and every client turn it alike
+	float modelYaw = viewAngles.yaw;
+	if ( vrAim && vrModelYawValid ) {
+		modelYaw = VR_ModelYawFollow( vrModelYaw, viewAngles.yaw, viewAngles.pitch );
+	}
 	if ( !arenaFreeLook ) {
 		// orient the model towards the direction we're looking
-		SetAngles( idAngles( 0, viewAngles.yaw, 0 ) );
+		SetAngles( idAngles( 0, modelYaw, 0 ) );
+		vrModelYaw = modelYaw;
+		vrModelYawValid = vrAim;
 	}
 
 	// save in the log for analyzing weapon angle offsets
@@ -10582,6 +10712,20 @@ void idPlayer::GenerateImpulseForBuyAttempt( const char* itemName ) {
 	int itemBuyImpulse = GetItemBuyImpulse( itemName );
 	if ( itemBuyImpulse == 0 ) {
 		// not an item the buy menu sells; impulse 0 would select weapon 0
+		return;
+	}
+	if ( gameLocal.isClient ) {
+		// openQ4: a buy comes from a bind or a menu button, between frames, and is
+		// made once. PerformImpulse sends through ClientSendEvent, which drops an
+		// event whenever the last prediction pass was a re-run, so the purchase
+		// was lost at random with nothing said. Nothing else in PerformImpulse
+		// acts on a buy impulse on a client: the server does the buying.
+		idBitMsg	msg;
+		byte		msgBuf[MAX_EVENT_PARAM_SIZE];
+		msg.Init( msgBuf, sizeof( msgBuf ) );
+		msg.BeginWriting();
+		msg.WriteBits( itemBuyImpulse, IMPULSE_NUMBER_OF_BITS );
+		ClientSendRequestEvent( EVENT_IMPULSE, &msg );
 		return;
 	}
 	PerformImpulse( itemBuyImpulse );
@@ -11737,7 +11881,9 @@ void idPlayer::Think( void ) {
 #ifdef _XENON
 			usercmdGen->SetSlowJoystick( zoom ? pm_zoomedSlow.GetInteger() : 100 );
 #else
-			cvarSystem->SetCVarInteger( "pm_isZoomed", zoom ? pm_zoomedSlow.GetInteger() : 0 );
+			if ( IsLocalClient() ) {
+				cvarSystem->SetCVarInteger( "pm_isZoomed", zoom ? pm_zoomedSlow.GetInteger() : 0 );
+			}
 #endif
 		}
 
@@ -12037,7 +12183,8 @@ void idPlayer::CheckInactivity( const usercmd_t &oldCmd ) {
 			wantSpectate = true;
 			cmdSystem->BufferCommandText( CMD_EXEC_APPEND, va( "updateUI %d\n", entityNumber ) );
 		} else {
-			networkSystem->ServerDropClient( entityNumber, "#str_42779" );
+			// queued: the drop deletes this player, and this is its own Think
+			gameLocal.mpGame.QueueClientDrop( entityNumber, "#str_42779" );
 		}
 		return;
 	}
@@ -13621,7 +13768,8 @@ bool idPlayer::GetVRView( vrFrameState_t &frame, float &trackingYaw ) const {
 	// screen, and so do the Arena's authored shots: the eyes would show the
 	// locked player's own view instead, turning with the weapon hand
 	if ( gameLocal.GetCamera() != NULL || privateCameraView != NULL || spectating
-			|| pm_thirdPerson.GetBool() || IsInVehicle() || vrPresentationCamera ) {
+			|| pm_thirdPerson.GetBool() || IsInVehicle() || vrPresentationCamera
+			|| ( health <= 0 && ( pm_thirdPersonDeath.GetBool() || g_deathCamera.GetBool() ) ) ) {
 		return false;
 	}
 	vrSystem->GetFrameState( frame );
@@ -13845,7 +13993,9 @@ made lowers the view as on a flat screen, until the body stands again.
 ===============
 */
 float idPlayer::VRCrouchLift( const vrFrameState_t &frame ) const {
-	if ( usercmd.upmove < 0 ) {
+	// a button pressed while the head itself is down changes nothing the player
+	// sees; latching it dropped the view a second time until they stood up
+	if ( usercmd.upmove < 0 && ( usercmd.buttons & BUTTON_VRCROUCH ) == 0 ) {
 		vrButtonCrouch = true;
 	} else if ( EyeHeight() >= pm_normalviewheight.GetFloat() - 0.5f ) {
 		vrButtonCrouch = false;
@@ -13881,6 +14031,334 @@ void idPlayer::VRVibrate( bool weaponHand, bool otherHand, float amplitude, int 
 	}
 	if ( otherHand ) {
 		vrSystem->Vibrate( hand == VR_HAND_LEFT ? VR_HAND_RIGHT : VR_HAND_LEFT, amplitude, durationMsec );
+	}
+}
+
+/*
+===============
+idPlayer::GetVRHeadOrigin
+
+openQ4 VR: where the tracked head is in the world this tic, the point the
+eyes are drawn about. The body's own eye stays under the tracking origin; a
+head that leans, ducks or crouches is somewhere else, and whatever belongs
+to the eyes (a shot aimed by the head, the water line) belongs there.
+False, and origin untouched, outside a headset view.
+===============
+*/
+bool idPlayer::GetVRHeadOrigin( idVec3 &origin ) const {
+	vrFrameState_t frame;
+	float trackingYaw;
+	if ( !GetVRView( frame, trackingYaw ) || !frame.head.valid ) {
+		return false;
+	}
+	idVec3 eyeOrigin = firstPersonViewOrigin;
+	eyeOrigin.z += VRCrouchLift( frame );
+	vrPose_t head = frame.head;
+	head.origin += VR_HeadOffsetCorrection( frame );
+	idMat3 headAxis;
+	VR_PoseToWorld( head, eyeOrigin, trackingYaw, origin, headAxis );
+	return true;
+}
+
+/*
+===============
+idPlayer::GetVRHandPose
+
+openQ4 VR: a controller placed in the world the way this draw places the view
+weapon (GetVRWeaponTransform), so whatever is drawn in a hand meets the gun.
+===============
+*/
+bool idPlayer::GetVRHandPose( int hand, idVec3 &palm, idMat3 &aimAxis ) const {
+	vrFrameState_t frame;
+	float trackingYaw;
+	if ( hand < 0 || hand >= VR_NUM_HANDS || !GetVRView( frame, trackingYaw ) || !frame.aim[ hand ].valid ) {
+		return false;
+	}
+	idVec3 eyeOrigin;
+	idMat3 eyeAxis;
+	GetPresentationViewPos( eyeOrigin, eyeAxis );
+	eyeOrigin.z += VRCrouchLift( frame );
+	const idVec3 correction = VR_HeadOffsetCorrection( frame );
+	vrPose_t pose = frame.aim[ hand ];
+	pose.origin += correction;
+	VR_PoseToWorld( pose, eyeOrigin, trackingYaw, palm, aimAxis );
+	if ( frame.grip[ hand ].valid ) {
+		pose = frame.grip[ hand ];
+		pose.origin += correction;
+		idMat3 gripAxis;
+		VR_PoseToWorld( pose, eyeOrigin, trackingYaw, palm, gripAxis );
+	}
+	return true;
+}
+
+/*
+===============
+idPlayer::FreeVRBody
+===============
+*/
+void idPlayer::FreeVRBody( void ) {
+	vrBodyPosed = false;
+	if ( vrBodyDefHandle != -1 ) {
+		if ( gameRenderWorld != NULL ) {
+			gameRenderWorld->FreeEntityDef( vrBodyDefHandle );
+		}
+		vrBodyDefHandle = -1;
+	}
+}
+
+/*
+===============
+idPlayer::BeginVRBody
+
+openQ4 VR: the trunk and legs of the body the headset shows the player
+(vr_body, VRBody.h), posed for this draw. The body stands on the floor under
+the tracked head, its neck where the head's own neck would be, and faces
+where the torso does: after the head, as far as a neck turns freely, and
+round with the tracking space when the stick turns the player.
+===============
+*/
+void idPlayer::BeginVRBody( void ) {
+	vrBodyPosed = false;
+	vrBodySeated = false;
+	vrBodyViewArm[ VR_HAND_LEFT ] = vrBodyViewArm[ VR_HAND_RIGHT ] = false;
+
+	// a closed vehicle hides its driver (rvVehiclePosition::SetDriver); an
+	// exposed seat shows the driver at its controls, and the body with it
+	vrFrameState_t frame;
+	float trackingYaw;
+	if ( !GetVRView( frame, trackingYaw ) || !frame.stereo || frame.body == VR_BODY_OFF || !frame.head.valid
+			|| health <= 0 || spectating || IsHidden() || renderEntity.hModel == NULL ) {
+		FreeVRBody();
+		vrBodyYawTime = -1;
+		return;
+	}
+
+	// the joints the body is posed by, and the model's rest pose
+	const idRenderModel *model = animator.ModelHandle();
+	const idDeclModelDef *modelDef = animator.ModelDef();
+	const int numJoints = animator.NumJoints();
+	if ( model == NULL || modelDef == NULL || numJoints <= 0 ) {
+		FreeVRBody();
+		return;
+	}
+	if ( model != vrBodyRigModel ) {
+		vrBodyRigModel = model;
+		if ( vrBodyRest != NULL ) {
+			Mem_Free16( vrBodyRest );
+			vrBodyRest = NULL;
+		}
+		if ( vrBodyJoints != NULL ) {
+			Mem_Free16( vrBodyJoints );
+			vrBodyJoints = NULL;
+		}
+		memset( &vrBodyRig, 0, sizeof( vrBodyRig ) );
+		vrBodyRig.pelvis = animator.GetJointHandle( "body" );
+		vrBodyRig.neck = animator.GetJointHandle( "head_channel" );
+		static const char *sides[ VR_NUM_HANDS ] = { "l", "r" };
+		for ( int side = 0; side < VR_NUM_HANDS; side++ ) {
+			vrBodyRig.upperArm[ side ] = animator.GetJointHandle( va( "%s_up_arm", sides[ side ] ) );
+			vrBodyRig.elbow[ side ] = animator.GetJointHandle( va( "%s_elbo", sides[ side ] ) );
+			vrBodyRig.forearm[ side ] = animator.GetJointHandle( va( "%s_forarm", sides[ side ] ) );
+			vrBodyRig.wrist[ side ] = animator.GetJointHandle( va( "%s_wrist", sides[ side ] ) );
+			vrBodyRig.index[ side ] = animator.GetJointHandle( va( "%s_index_01", sides[ side ] ) );
+			vrBodyRig.ring[ side ] = animator.GetJointHandle( va( "%s_ring_01", sides[ side ] ) );
+			vrBodyRig.upperLeg[ side ] = animator.GetJointHandle( va( "%s_upleg", sides[ side ] ) );
+			vrBodyRig.lowerLeg[ side ] = animator.GetJointHandle( va( "%s_loleg", sides[ side ] ) );
+			vrBodyRig.ankle[ side ] = animator.GetJointHandle( va( "%s_ankle", sides[ side ] ) );
+		}
+		const int restAnim = animator.GetAnim( "af_pose" );
+		const idAnim *rest = restAnim ? animator.GetAnim( restAnim ) : NULL;
+		const idMD5Anim *md5 = rest != NULL ? rest->MD5Anim( 0 ) : NULL;
+		if ( md5 != NULL && numJoints == model->NumJoints() && numJoints == md5->NumJoints() ) {
+			vrBodyRig.numJoints = numJoints;
+			vrBodyRest = ( idJointMat * )Mem_Alloc16( numJoints * sizeof( vrBodyRest[0] ), MA_ANIM );
+			vrBodyJoints = ( idJointMat * )Mem_Alloc16( numJoints * sizeof( vrBodyJoints[0] ), MA_ANIM );
+			gameEdit->ANIM_CreateAnimFrame( model, md5, numJoints, vrBodyRest, 0, modelDef->GetVisualOffset(), animator.RemoveOrigin() );
+		}
+		if ( !VRBody_RigValid( vrBodyRig ) ) {
+			gameLocal.DPrintf( "VR body: '%s' lacks the joints or the rest pose it is posed by; none is drawn\n", modelDef->GetName() );
+		}
+	}
+	if ( !VRBody_RigValid( vrBodyRig ) || vrBodyRig.numJoints != numJoints || vrBodyRest == NULL || vrBodyJoints == NULL ) {
+		FreeVRBody();
+		return;
+	}
+
+	// this tic's animation carries the feet
+	animator.CreateFrame( gameLocal.time, false );
+	int animatedCount = 0;
+	idJointMat *animated = NULL;
+	animator.GetJoints( &animatedCount, &animated );
+	if ( animated == NULL || animatedCount != numJoints ) {
+		FreeVRBody();
+		return;
+	}
+
+	// the head as this draw's eyes show it
+	idVec3 eyeOrigin;
+	idMat3 eyeAxis;
+	GetPresentationViewPos( eyeOrigin, eyeAxis );
+	const float floorHeight = eyeOrigin.z - EyeHeight();
+	eyeOrigin.z += VRCrouchLift( frame );
+	vrPose_t head = frame.head;
+	head.origin += VR_HeadOffsetCorrection( frame );
+	idVec3 headOrigin;
+	idMat3 headAxis;
+	VR_PoseToWorld( head, eyeOrigin, trackingYaw, headOrigin, headAxis );
+	const vrVec3_t neckPoint = VR_NeckFromHead( VR_Vec3( headOrigin.x, headOrigin.y, headOrigin.z ),
+		VR_Vec3( headAxis[0].x, headAxis[0].y, headAxis[0].z ), VR_Vec3( headAxis[2].x, headAxis[2].y, headAxis[2].z ), frame.unitsPerMetre );
+
+	if ( IsInVehicle() ) {
+		// An exposed seat: the seat's own animation has the hands on its
+		// controls, so the body is that pose as the world sees it, moved so its
+		// neck sits under the tracked head, set back as a standing body is.
+		vrBodySeated = true;
+		vrBodyMode = VR_BODY_TORSO;
+		vrBodyScale = 1.0f;
+		vrBodyAxis = renderEntity.axis;
+		memcpy( vrBodyJoints, animated, numJoints * sizeof( vrBodyJoints[0] ) );
+		idVec3 back = headAxis[0];
+		back.z = 0.0f;
+		back.Normalize();
+		const float setback = VR_BodySetback( VR_Vec3( headAxis[0].x, headAxis[0].y, headAxis[0].z ) ) * frame.unitsPerMetre;
+		vrBodyOrigin = idVec3( neckPoint.x, neckPoint.y, neckPoint.z ) - animated[ vrBodyRig.neck ].ToVec3() * vrBodyAxis - back * setback;
+		vrBodyPosed = true;
+		return;
+	}
+
+	// The torso's heading is kept in the tracking space, which the stick's
+	// turns carry round with the player. The head's heading is taken from its
+	// forward and up together, so it holds while the player looks at their feet.
+	const float headYaw = VR_PoseHeading( frame.head );
+	const int now = Sys_Milliseconds();
+	if ( vrBodyYawTime < 0 || now - vrBodyYawTime > 500 ) {
+		vrBodyYaw = headYaw;
+	} else {
+		const idVec3 &velocity = physicsObj.GetLinearVelocity();
+		const bool walking = velocity.ToVec2().LengthSqr() > Square( 20.0f );
+		vrBodyYaw = VR_BodyYawFollow( vrBodyYaw, headYaw, 55.0f, walking ? 240.0f : 0.0f, ( now - vrBodyYawTime ) * 0.001f );
+	}
+	vrBodyYawTime = now;
+
+	// The arms reach for hands that hold something: aimed by the head, the gun
+	// rides with the view as on a flat screen, foreshortened and nowhere near
+	// a controller, and keeps the forearms it has there.
+	vrBodyMode = ( frame.body == VR_BODY_FULL && frame.aimMode != VR_AIM_HAND ) ? VR_BODY_TORSO : frame.body;
+	vrBodyScale = VR_BodyScale( pm_normalviewheight.GetFloat() - VR_NECK_BELOW_EYES_METRES * frame.unitsPerMetre,
+		vrBodyRest[ vrBodyRig.neck ].ToVec3().z );
+	vrBodyAxis = VR_TrackingAxis( trackingYaw + vrBodyYaw );
+	const idVec3 restNeck = vrBodyRest[ vrBodyRig.neck ].ToVec3() * vrBodyScale;
+	vrBodyOrigin.Set( neckPoint.x, neckPoint.y, floorHeight );
+	const float setback = VR_BodySetback( VR_Vec3( headAxis[0].x, headAxis[0].y, headAxis[0].z ) ) * frame.unitsPerMetre;
+	vrBodyOrigin -= idVec3( restNeck.x + setback, restNeck.y, 0.0f ) * vrBodyAxis;
+
+	VRBody_PoseTrunk( vrBodyRig, modelDef->JointParents(), vrBodyRest, animated, vrBodyScale, neckPoint.z - floorHeight, vrBodyJoints );
+	vrBodyPosed = true;
+}
+
+/*
+===============
+idPlayer::SolveVRViewArm
+
+openQ4 VR: the view weapon draws this arm's forearm and hand, with its wrist
+at the given place in the world and a forearm of the given length. Returns
+where the body's elbow meets it. hand is the body's arm (vrHand_t).
+===============
+*/
+bool idPlayer::SolveVRViewArm( int hand, const idVec3 &wrist, float forearmLength, idVec3 &elbow ) {
+	if ( !VRBodyHasArms() || hand < 0 || hand >= VR_NUM_HANDS ) {
+		return false;
+	}
+	const idMat3 toBody = vrBodyAxis.Transpose();
+	vrBodyWrist[ hand ] = ( wrist - vrBodyOrigin ) * toBody;
+	vrBodyElbow[ hand ] = VRBody_Elbow( vrBodyRig, vrBodyRest, vrBodyJoints, vrBodyScale, hand, vrBodyWrist[ hand ], forearmLength );
+	vrBodyViewArm[ hand ] = true;
+	elbow = vrBodyOrigin + vrBodyElbow[ hand ] * vrBodyAxis;
+	return true;
+}
+
+/*
+===============
+idPlayer::FinishVRBody
+
+openQ4 VR: the body's arms, and the body itself into the scene. An arm whose
+forearm the view weapon draws ends at its elbow; any other reaches for its
+controller with the model's own forearm and hand, or hangs at the side while
+the controller is not tracked.
+===============
+*/
+void idPlayer::FinishVRBody( void ) {
+	if ( !vrBodyPosed ) {
+		return;
+	}
+	const int *parents = animator.ModelDef()->JointParents();
+	const idMat3 toBody = vrBodyAxis.Transpose();
+	// a seated body keeps its hands on the seat's controls
+	for ( int hand = 0; hand < VR_NUM_HANDS && !vrBodySeated; hand++ ) {
+		if ( vrBodyMode != VR_BODY_FULL ) {
+			VRBody_FoldArm( vrBodyRig, parents, hand, vrBodyJoints );
+			continue;
+		}
+		if ( vrBodyViewArm[ hand ] ) {
+			VRBody_PoseUpperArm( vrBodyRig, parents, vrBodyRest, vrBodyScale, hand, vrBodyElbow[ hand ], vrBodyWrist[ hand ], true, vrBodyJoints );
+			continue;
+		}
+		const float forearmLength = VRBody_ForearmLength( vrBodyRig, vrBodyRest, vrBodyScale, hand );
+		idVec3 palm;
+		idMat3 aimAxis;
+		idVec3 fingers, thumbSide, wrist;
+		if ( GetVRHandPose( hand, palm, aimAxis ) ) {
+			fingers = aimAxis[0] * toBody;
+			thumbSide = aimAxis[2] * toBody;
+			wrist = ( palm - vrBodyOrigin ) * toBody - fingers * VRBody_PalmFromWrist( vrBodyRig, vrBodyRest, vrBodyScale, hand );
+		} else {
+			// at the side, palm in, a little short of straight
+			const idVec3 shoulder = vrBodyJoints[ vrBodyRig.upperArm[ hand ] ].ToVec3();
+			const float upperLength = ( vrBodyRest[ vrBodyRig.elbow[ hand ] ].ToVec3() - vrBodyRest[ vrBodyRig.upperArm[ hand ] ].ToVec3() ).Length() * vrBodyScale;
+			fingers.Set( 0.25f, 0.0f, -1.0f );
+			fingers.Normalize();
+			thumbSide.Set( 1.0f, 0.0f, 0.0f );
+			wrist = shoulder + fingers * ( ( upperLength + forearmLength ) * 0.96f ) + idVec3( 0.0f, hand == VR_HAND_LEFT ? 1.5f : -1.5f, 0.0f );
+		}
+		const idVec3 elbow = VRBody_Elbow( vrBodyRig, vrBodyRest, vrBodyJoints, vrBodyScale, hand, wrist, forearmLength );
+		// a hand out of reach stays on its arm
+		idVec3 along = wrist - elbow;
+		along.Normalize();
+		wrist = elbow + along * forearmLength;
+		VRBody_PoseUpperArm( vrBodyRig, parents, vrBodyRest, vrBodyScale, hand, elbow, wrist, false, vrBodyJoints );
+		VRBody_PoseHand( vrBodyRig, parents, vrBodyRest, vrBodyScale, hand, wrist, fingers, thumbSide, vrBodyJoints );
+	}
+
+	// the player's own view only; the model everyone else sees, mirrors
+	// included, still casts the shadow
+	renderEntity_t body = renderEntity;
+	body.callback = NULL;
+	body.joints = vrBodyJoints;
+	body.numJoints = vrBodyRig.numJoints;
+	body.origin = vrBodyOrigin;
+	body.axis = vrBodyAxis;
+	// vr_bodyAhead stands the body a few steps ahead, to look its pose over
+	body.origin += vrBodyAxis[0] * cvarSystem->GetCVarFloat( "vr_bodyAhead" );
+	body.suppressSurfaceInViewID = 0;
+	body.allowSurfaceInViewID = entityNumber + 1;
+	body.suppressShadowInViewID = 0;
+	body.noShadow = true;
+	body.noSelfShadow = true;
+	body.weaponDepthHackInViewID = 0;
+	body.overlayShader = NULL;
+	if ( !body.hModel->BoundsFromJoints( vrBodyJoints, body.bounds ) ) {
+		body.bounds = renderEntity.bounds;
+	}
+	if ( vrBodyDefHandle == -1 ) {
+		vrBodyDefHandle = gameRenderWorld->AddEntityDef( &body );
+	} else {
+		gameRenderWorld->UpdateEntityDef( vrBodyDefHandle, &body );
+	}
+
+	if ( cvarSystem->GetCVarInteger( "vr_debug" ) >= 2 ) {
+		const idVec3 neck = vrBodyOrigin + vrBodyJoints[ vrBodyRig.neck ].ToVec3() * vrBodyAxis;
+		common->Printf( "VR body neck (%s) yaw %.1f scale %.3f arms %d %d\n", neck.ToString( 2 ), vrBodyAxis[0].ToYaw(), vrBodyScale,
+			vrBodyViewArm[ VR_HAND_LEFT ] ? 1 : 0, vrBodyViewArm[ VR_HAND_RIGHT ] ? 1 : 0 );
 	}
 }
 
@@ -16232,6 +16710,24 @@ void idPlayer::ReadFromSnapshot( const idBitMsgDelta &msg ) {
 	physicsObj.ApplySnapshotState( decodedPhysics );
 	remotePredictedTics = 0;
 	ApplyBindSnapshotInfo( decodedBindInfo );
+	// openQ4 VR: the server set a new facing (a spawn, a teleporter) from this
+	// client's usercmd, which a tracked weapon hand turns: the gun faces where
+	// the player was meant to look. Turn the body by the angle between hand and
+	// head, and the next usercmds face the head there instead.
+	if ( entityNumber == gameLocal.localClientNum && vrSnapshotDeltaYawValid
+			&& idMath::Fabs( idMath::AngleNormalize180( decodedDeltaViewAngles.yaw - vrSnapshotDeltaYaw ) ) > 0.001f ) {
+		float handFromHead;
+		if ( ( usercmd.buttons & BUTTON_VRAIM ) != 0 && GetVRHandFromHead( handFromHead ) ) {
+			vrSystem->TurnBody( handFromHead );
+			if ( cvarSystem->GetCVarInteger( "vr_debug" ) > 0 ) {
+				gameLocal.Printf( "VR facing from the server: %.1f, head turned onto it by %.1f\n",
+					idMath::AngleNormalize180( SHORT2ANGLE( usercmd.angles[ YAW ] ) + decodedDeltaViewAngles.yaw ), handFromHead );
+			}
+		}
+		vrModelYawValid = false;
+	}
+	vrSnapshotDeltaYaw = decodedDeltaViewAngles.yaw;
+	vrSnapshotDeltaYawValid = true;
 	deltaViewAngles = decodedDeltaViewAngles;
 	health = decodedHealth;
 	inventory.armor = decodedArmor;
@@ -17837,13 +18333,42 @@ void idPlayer::PrecacheSpawnDecls( void ) {
 		"liquid_openq4",
 		"damage_suicide",
 		"damage_telefrag",
+		"damage_gib",
 		"dmg_shellshock",
 		"dmg_shellshock_nohl",
 	};
 
 	for ( int i = 0; i < (int)( sizeof( spawnDefs ) / sizeof( spawnDefs[ 0 ] ) ); i++ ) {
 		declManager->FindType( DECL_ENTITYDEF, spawnDefs[ i ], false, false );
+		// openQ4: in multiplayer gameLocal.FindEntityDef asks for the "_mp" definition
+		// first, and the falls have one. The plain names cached here were not the
+		// ones used, so the first fall of a match read its definition from disk.
+		if ( gameLocal.isMultiplayer ) {
+			declManager->FindType( DECL_ENTITYDEF, va( "%s_mp", spawnDefs[ i ] ), false, false );
+		}
 	}
+}
+
+/*
+=====================
+idPlayer::PrecachePlayerModel
+
+A playerModel names its model, head and skin in keys the def_ media rule does
+not follow, so they are cached directly; a model the player setup menu already
+parsed would not cache them again either.
+=====================
+*/
+void idPlayer::PrecachePlayerModel( const rvDeclPlayerModel *model ) {
+	if ( model == NULL ) {
+		return;
+	}
+	idDict media;
+	media.Set( "model", model->model.c_str() );
+	media.Set( "def_head", model->head.c_str() );
+	media.Set( "def_head_ui", model->uiHead.c_str() );
+	media.Set( "skin", model->skin.c_str() );
+	media.SetDefaults( &model->sounds );
+	gameLocal.CacheDictionaryMedia( &media );
 }
 
 /*
@@ -17886,17 +18411,19 @@ void idPlayer::PrecacheMultiplayerSpawn( void ) {
 		if ( modelNames[ i ] == NULL || modelNames[ i ][ 0 ] == '\0' ) {
 			continue;
 		}
-		const rvDeclPlayerModel *model = static_cast<const rvDeclPlayerModel *>( declManager->FindType( DECL_PLAYER_MODEL, modelNames[ i ], false ) );
-		if ( model == NULL ) {
-			continue;
+		PrecachePlayerModel( static_cast<const rvDeclPlayerModel *>( declManager->FindType( DECL_PLAYER_MODEL, modelNames[ i ], false ) ) );
+	}
+
+	// Everyone else's. A player or a bot arriving with a model nobody had used yet
+	// had it read from disk in the middle of the match, on the server and on every
+	// client that could see them: the model declaration, the head, the skin and
+	// their images, a visible hitch each time. The models share most of their
+	// meshes and animations, so loading them all costs little next to that.
+	if ( g_precachePlayerModels.GetBool() ) {
+		const int numModels = declManager->GetNumDecls( DECL_PLAYER_MODEL );
+		for ( int i = 0; i < numModels; i++ ) {
+			PrecachePlayerModel( static_cast<const rvDeclPlayerModel *>( declManager->DeclByIndex( DECL_PLAYER_MODEL, i, true ) ) );
 		}
-		idDict media;
-		media.Set( "model", model->model.c_str() );
-		media.Set( "def_head", model->head.c_str() );
-		media.Set( "def_head_ui", model->uiHead.c_str() );
-		media.Set( "skin", model->skin.c_str() );
-		media.SetDefaults( &model->sounds );
-		gameLocal.CacheDictionaryMedia( &media );
 	}
 
 	// The weapons SetupWeaponEntity caches on spawn, the warmup arsenal's included.
@@ -18038,7 +18565,8 @@ void idPlayer::SetEmote( playerEmote_t newEmote ) {
 		if( gameLocal.isServer ) {
 			ServerSendInstanceEvent( EVENT_EMOTE, &msg, false, -1 );
 		} else {
-			ClientSendEvent( EVENT_EMOTE, &msg );
+			// openQ4: asked for from the console, between frames (see ClientSendRequestEvent)
+			ClientSendRequestEvent( EVENT_EMOTE, &msg );
 		}
 	}
 }

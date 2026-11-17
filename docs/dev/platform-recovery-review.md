@@ -356,6 +356,136 @@ the boarding heading, 150.7; with it, along the new heading, 105.7, on both
 renderers. The m07 race itself was not re-run: its October harness and
 Awakening mirror no longer exist, and the smoke exercises the same path.
 
+### The player's own body in the headset (17 November 2026)
+
+`vr_body` (0 none, 1 legs and torso, 2 with arms; default 2) shows the player a
+body under the tracked head. The solver is `src/framework/VRBody.h`, on the
+model-free geometry in `VRMathCore.h` (`VR_SolveTwoBone`, `VR_BodyYawFollow`,
+`VR_NeckFromHead`, `VR_BodyScale`, `VR_BodySetback`, `VR_HeadingDegrees`,
+covered by `VRMathCoreTest.cpp`); both game modules call it from the draw pass
+(`BeginVRBody`, the view weapon's `PoseVRArms`, `FinishVRBody` inside
+`PreparePlayerSceneForRender`), never from a tic.
+
+- **A second render entity, not the third-person model shown.** The model
+  everyone else sees leans with the aim, turns with the weapon hand's yaw and
+  holds its arms where its animation puts them; it still serves mirrors,
+  shadows and other players unchanged. The body in the eyes is another entity
+  of the same model with `allowSurfaceInViewID` set to the player's view, no
+  shadow, and its own joints. The renderer treats such an entity like the view
+  weapon (no cel ink, no flat-diffuse tint), which suits it.
+- **Trunk.** The pelvis, spine, shoulders and collar are the model's ragdoll
+  rest pose (`af_pose`: upright, square), scaled so the model's neck joint
+  reaches the player's neck (0.867 for the marine, who stands taller than the
+  68-unit camera) and hung from a neck point 8 cm behind and 7.5 cm below the
+  tracked eyes. A scale folded into a joint's rotation scales what is skinned
+  to it; a rotation of zero folds a part away.
+- **Heading.** The torso's yaw lives in the tracking space, so snap and smooth
+  turns carry it; within 55 degrees of the head's heading it stays put, beyond
+  that it follows, and while the player walks it lines up at 240 degrees a
+  second. The head's heading comes from its forward and up axes together, so
+  it holds while the player looks at their feet.
+- **Setback.** A chest in the marine's armour reaches about 8 units ahead of
+  the spine, further than the eyes above it, so a body under the eyes showed
+  the inside of its own collar and never its feet. The body stands 10 cm
+  behind the neck point and eases to 26 cm as the head tips from about 25 to
+  65 degrees down.
+- **Legs.** The feet are the animation's (scaled); thigh and shin are a
+  two-bone reach from the trunk's hip to the animated ankle, bent towards the
+  animated knee, so standing, squatting to a real crouch and the crouch
+  animation are one continuous motion.
+- **Arms.** Every stock view model, and The Awakening's two new ones (core
+  cannon, goob gun), carries the same forearms and hands on one rig:
+  `lft_shldr`/`lft_elbo`/`lft_wrst` and, mirrored with the first joint axis
+  reversed, `rt_elbo`/`rt_wrst`; some guns hang the left wrist on the gun
+  itself. Each forearm swings about its wrist until its elbow end meets an
+  elbow solved from the body's shoulder; the model's own forearm folds away
+  inside it. The weapon hand stays as animated. The support hand follows the
+  off controller, held as the mirror image of how the weapon hand holds its
+  own, and blends back to the animation in the two-handed grip and while the
+  weapon is not ready (reload, raise, lower). With no view weapon drawn, or the
+  weapon in the left hand (the modelled hands would be the wrong ones), the
+  model's own forearms and hands reach the controllers and the view model's
+  arm surfaces are hidden. Aimed by the head, the gun rides with the view and
+  only legs and torso are drawn.
+- **The held gun's depth.** `weaponDepthHackInViewID` is cleared while the
+  weapon hand aims: the squashed depth range drew the gun over anything more
+  than about 15 cm from the eye, at a stereo depth that said otherwise, and
+  would have drawn it over the body.
+
+Evidence on the simulated runtime (OpenGL unless noted; no headset): left-eye
+captures at scripted head and hand poses (level, 45/70/85 degrees down, reach,
+two-handed, squat, crouch, left-handed, torso only, and the body stood ahead
+with `vr_bodyAhead`) show the chest, legs and feet under the head and both arms
+joined at the elbow. A numeric probe reads the `vr_debug 2` traces: with the
+head 0.3 m off centre a 45 degree snap turn turns the body 45.0 degrees and
+moves the drawn head 0.00 units (about 9 before), and `setviewpos` with the
+weapon hand 70 degrees aside leaves the head facing the asked 150.7 degrees
+(80.7 before). What a headset must still judge is in checklist rows 3.9 to
+3.14 and 4.9 to 4.14.
+
+### The audit's leads, second round (17 November 2026)
+
+- **Controllers.** Two actions join the set: `trackpad` (vector) and
+  `trackpad_click`, bound on Vive wands and Windows Mixed Reality controllers.
+  `ApplyTrackpadRegions` turns a pressed pad into the buttons those
+  controllers lack, by the region `VR_TrackpadRegion` reads when the press
+  begins and keeps until it ends: up the secondary button, down the primary.
+  A profile without a stick click of its own (the Vive wand, whose pad is its
+  stick) also takes the centre as the stick's click and, on the weapon hand,
+  left and right as turns, and its weapon-hand pad acts only while pressed.
+  Index binds `input/trackpad/force` on the left hand to the secondary button;
+  a float bound to a boolean action is thresholded by the runtime.
+- **Recovery.** A timed-out `xrWaitSwapchainImage` leaves its image acquired
+  and still to be waited for, so `AcquireImages` waits again, up to ten times
+  100 ms, before the session is retired. `CheckOptional` handles the calls VR
+  can do without: a lost session or instance still goes to `Check`, anything
+  else, `XR_ERROR_RUNTIME_FAILURE` included, is reported (the first eight
+  times) and the call's service goes without.
+- **Multiplayer facing.** The server owns `deltaViewAngles` and sets a facing
+  from the usercmd, which a tracked hand turns. When a client's snapshot
+  carries a new delta yaw, the client turns its body by the angle between hand
+  and head (`idVRSystem::TurnBody`, game API 60, about the head as a stick turn
+  is), so its next usercmds face the head there. A listen server's own player
+  still turns its delta directly. The server's frozen views (weapon wheel,
+  cinematic, Arena lock) now hold a VR client's delta as that client does,
+  recognising it by `BUTTON_VRAIM`: otherwise each would have changed the
+  delta and turned the body again.
+- **Smaller ones.** `VR_ModelYawFollow` holds the third-person model's heading
+  from 55 degrees of aim pitch and fully past 80; `SetViewAngles` and a new
+  server facing let it take the new yaw at once. A hand-held muzzle is traced
+  from the hand and stopped short of a wall, and a projectile's way is cleared
+  from the hand rather than from the body's box. `VR_RoomScaleCatchUp` caps a
+  single-player room-scale step at 5 m/s. The comfort vignette is centred on
+  the head's forward as each eye sees it. An exposed seat (`driverVisible`,
+  so the driver is not hidden) draws the player model's own animated pose with
+  its neck under the tracked head and no arm solving (`vrBodySeated`).
+
+Evidence on the simulated runtime (no headset): the native math test covers
+the three new functions; `openxr_lifecycle.py` covers one timeout, which now
+keeps the session, and a second of them, which retires it;
+`openxr_lifecycle_runtime.py` passes with `xrWaitSwapchainImage:2:timeout`
+(session kept) and `xrGetCurrentInteractionProfile:1:failure` (VR carries on),
+and still retires the session or instance for `session` and `runtime` faults;
+`openxr_vr_controller_profiles_smoke.py` presses every control on Touch,
+Index, Vive and WMR profiles and each reaches its key, a resting Vive thumb
+none, a pressed right pad side a 45 degree turn. A dedicated server with a VR
+client whose gun hand is 50 degrees off its head: after each of two respawns
+the client turned its body 50.0 degrees and the head faced the server's
+facing exactly (0.0 and 90.0). Left-eye captures show the character's hand on
+airdefense1's anti-aircraft gun handle with `vr_body 2` and none with
+`vr_body 0`.
+
+A left-handed hold with the view model's own hands was tried and taken out.
+The rigs are mirror images: in the machinegun's symmetric bind every right
+arm joint's partner sits at its reflection, and its axes are the reflected
+ones with the wrist's first axis reversed and every other joint's three
+reversed; every view model's weight offsets agree. A hold that mirrored each
+joint onto its partner across the barrel, carried the left hand's extra
+fingers on their parents and placed the gun by the mirrored grip still drew
+the hands off the grip with stretched mesh between them in airdefense1
+captures, where the gun hangs small and cluttered; it needs a capture that
+frames the view model closely before another attempt.
+
 ## Android selection and package matrix
 
 | Variant | Selected ABI/API/render scope | Distribution and prerequisite |

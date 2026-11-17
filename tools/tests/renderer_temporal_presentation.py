@@ -61,12 +61,12 @@ def main() -> int:
 
     require(
         read(RENDERER / "RenderModuleAPI.h"),
-        "#define RENDER_API_VERSION\t\t\t34",
-        "renderer ABI v34",
+        "#define RENDER_API_VERSION\t\t\t36",
+        "renderer ABI v36",
     )
     require(
         read(GAME_ROOT / "src" / "game" / "Game.h"),
-        "const int GAME_API_VERSION\t\t= 58;",
+        "const int GAME_API_VERSION\t\t= 60;",
         "game ABI v55",
     )
 
@@ -84,6 +84,10 @@ def main() -> int:
         "defined( OPENQ4_RENDERER_GLES_MODULE )",
         "glConfig.GLSL130Available",
         "r_screenFraction.GetInteger() < 100 && ( scaleMode == 1 || scaleMode == 2 )",
+        # ... but not under a 30 Hz cap (Minimum and Low Power)
+        "static const int TEMPORAL_AUTOMATIC_MIN_CAP_HZ = 31;",
+        "return maxFps > 0 && maxFps < TEMPORAL_AUTOMATIC_MIN_CAP_HZ;",
+        "if ( R_TemporalPresentation_LowRateCap() ) {",
         "R_TemporalPresentation_CapturePreviousPositions(",
         "tri->positionsFrame == frame - 1",
         "R_TemporalPresentation_PreviousPositionCache(",

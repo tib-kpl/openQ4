@@ -171,6 +171,8 @@ The Game Options pane is `p_settings_game` and is included from `content/baseoq4
 | Pickup Style | `choiceDef` | `set_game_simpleitems_value` | `g_simpleItems` | `0 Original`, `1 Simple Icons`, `2 Flat Color`, `3 Flat + Light Sweep` | Client-side pickup presentation selector. The light sweep applies only to world items. |
 | Opponent Weapon Style | `choiceDef` | `set_game_opponentweaponstyle_value` | `g_mpFlatOpponentWeapons` | `0 Original`, `1 Flat Color` | Client-side multiplayer option for weapons held by opponents. View weapons are never affected. |
 | Force Model | `choiceDef` | `set_game_forcemodel_value` | GUI state `ui_proskins` via `applyForceModelChoice` | `0 No`, `1 Yes` | The C++ menu adapter writes the pro-skin force-model cvars when enabled and clears `g_forceModel`, `g_forceMarineModel`, and `g_forceStroggModel` when disabled. |
+| View Kick | `choiceDef` | `set_game_viewkick_value` | `g_viewKick` | `Off;Low;Full` (`0;0.5;1`) | Archived SP/MP cvar. Scales the camera kick and shake when you fire; weapons still fire along the view, so shots go where the crosshair points. The retained page's slider takes `0..1` in steps of `0.1`. |
+| Screen Shake | `choiceDef` | `set_game_screenshake_value` | `g_screenShake` | `Off;Low;Full` (`0;0.5;1`) | Archived SP/MP cvar. Scales single-player screen shake from explosions, machinery, sounds and vehicles; multiplayer has none. The retained page's slider takes `0..1` in steps of `0.1`. |
 | Auto Skip Cinematics | `choiceDef` | `set_game_autoskipcinematics_value` | `g_autoSkipCinematics` | `No;Yes` | Archived SP/MP gameplay cvar. Affects future cinematics. |
 | Cinematic Shake | `choiceDef` | `set_game_cinematicshake_value` | `ui_cinematicShake` | `Off;Low;Full` (`0;0.5;1`) | Scales scripted cinematic camera shake. |
 | Enhanced Physics | `choiceDef` | `set_game_enhancedphysics_value` | `g_enhancedPhysics` | `0 No`, `1 Yes` | Yes uses the enhanced rigid-body and ragdoll solver from the next map load; No keeps the legacy simulation. Multiplayer peers follow the server. |
@@ -242,6 +244,7 @@ The Game Options pane is `p_settings_game` and is included from `content/baseoq4
 | Corpse Time | `choiceDef` | `set_game_corpsetime_value` | GUI state `corpse_time_choice` via `applyCorpseTimeChoice` | `Stock`, `Never`, `5 sec`, `10 sec`, `15 sec`, `30 sec`, `60 sec`, `Custom` | The C++ menu adapter writes `g_corpseRemoveDelaySP` or `g_corpseRemoveDelayMP` depending on current mode. Custom is selected when current cvar does not match a listed value and remains a no-op when chosen. |
 | Language | `choiceDef` | `set_game_language_value` | `sys_lang` | `english`, `spanish`, `french`, `italian` | Displayed as English, Spanish, French, Italian. |
 | Console Access | `choiceDef` | `set_game_consoleaccess_value` | `con_allowConsole` | `0 Ctrl+Alt+Tilde`, `1 Tilde` | Controls shortcut required to open the console. |
+| Screenshot Format | `choiceDef` | `set_game_screenshotformat_value` | `r_screenshotFormat` | `0 TGA`, `1 PNG` | Archived renderer cvar, default TGA. Applies to the next numbered screenshot (F12, `screenshot` with no name); `screenshot <name>.png` always writes PNG. PNGs use `image_pngCompressionLevel`. |
 
 ### View Weapon
 
@@ -268,6 +271,7 @@ The Game Options pane is `p_settings_game` and is included from `content/baseoq4
 | Comfort Vignette | `choiceDef` | `set_game_vr_vignette_value` | `vr_comfortVignette` | `0 Off`, `0.5 Low`, `1 Full` | Darkens the edges of each eye while the stick moves or smoothly turns the player. |
 | Physical Crouch | `choiceDef` | `set_game_vr_physicalcrouch_value` | `vr_physicalCrouch` | `Disabled;Enabled` | Crouching in the room crouches the character. |
 | Play Space | `choiceDef` | `set_game_vr_playspace_value` | `vr_playSpace` | `0 Automatic`, `1 Seated`, `2 Standing` | Seated play measures height from where the player recentred; standing play from the floor, against the standing eye height (`vr_standingHeight`, learned at the first recentre or measured by `vr_calibrateHeight`). Automatic stands when the headset knows the floor. |
+| Your Body | `choiceDef` | `set_game_vr_body_value` | `vr_body` | `0 Off`, `1 Legs and Torso`, `2 With Arms` | The player's own body in the headset: a second render entity of the player model, seen in the player's own view only and posed from the tracked head and hands (`src/framework/VRBody.h`). With Arms needs controller aiming; aimed by the head it shows legs and torso. |
 
 ## System
 

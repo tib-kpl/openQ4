@@ -53,6 +53,7 @@ idPlayerView::idPlayerView() {
 
 // openQ4 BEGIN
 	liquidViewAmount = 0.0f;
+	liquidWashAmount = 0.0f;
 	liquidViewContents = 0;
 	vrComfort = 0.0f;
 	vrComfortYaw = 0.0f;
@@ -483,6 +484,50 @@ void idPlayerView::AddBloodSpray( float duration ) {
 
 /*
 ==================
+FiringFeedbackScale
+
+openQ4 (#234): g_viewKick scales the kick and shake a shot gives the camera.
+Weapons fire along the camera, so shots still go where the crosshair points.
+A multiplayer server keeps the full kick for its remote players; each client
+chooses what its own view shows.
+==================
+*/
+static float FiringFeedbackScale( const idPlayer *player ) {
+	if ( gameLocal.isMultiplayer && player != gameLocal.GetLocalPlayer() ) {
+		return 1.0f;
+	}
+	return idMath::ClampFloat( 0.0f, 1.0f, g_viewKick.GetFloat() );
+}
+
+/*
+==================
+ScreenShakeScale
+
+openQ4 (#234): g_screenShake scales the shake from explosions, machinery,
+sounds and vehicles, which the firing kick setting leaves alone.
+==================
+*/
+static float ScreenShakeScale( void ) {
+	return idMath::ClampFloat( 0.0f, 1.0f, g_screenShake.GetFloat() );
+}
+
+/*
+==================
+idPlayerView::SetShakeParms
+==================
+*/
+void idPlayerView::SetShakeParms( float time, float scale, bool fromFiring ) {
+	const float playerScale = fromFiring ? FiringFeedbackScale( player ) : ScreenShakeScale();
+	// turned off, the request is dropped so it cannot cut short a shake already running
+	if ( playerScale <= 0.0f ) {
+		return;
+	}
+	shakeFinishTime = SEC2MS( time );
+	shakeScale = scale * playerScale;
+}
+
+/*
+==================
 idPlayerView::WeaponFireFeedback
 
 Called when a weapon fires, generates head twitches, etc
@@ -492,11 +537,12 @@ void idPlayerView::WeaponFireFeedback( const idDict *weaponDef ) {
 	int		recoilTime;
 
 	recoilTime = weaponDef->GetInt( "recoilTime" );
-	// don't shorten a damage kick in progress
-	if ( recoilTime && recoilTime > (kickFinishTime - gameLocal.time) ) {
+	const float kickScale = FiringFeedbackScale( player );
+	// don't shorten a damage kick in progress; with the kick off a shot leaves it alone
+	if ( recoilTime && kickScale > 0.0f && recoilTime > (kickFinishTime - gameLocal.time) ) {
 		idAngles angles;
 		weaponDef->GetAngles( "recoilAngles", "5 0 0", angles );
-		kickAngles = angles;
+		kickAngles = angles * kickScale;
 		int	finish = gameLocal.time + g_kickTime.GetFloat() * recoilTime;
 		kickFinishTime = finish;
 	}	
@@ -523,6 +569,8 @@ float idPlayerView::CalculateShake( idAngles &shakeAngleOffset ) const {
 	shakeAngleOffset[0] = gameLocal.random.CRandomFloat() * shakeVolume;
 	shakeAngleOffset[1] = gameLocal.random.CRandomFloat() * shakeVolume;
 	shakeAngleOffset[2] = gameLocal.random.CRandomFloat() * shakeVolume;
+	// scaled after the draws, so the setting never moves the game's random sequence
+	shakeAngleOffset *= ScreenShakeScale();
 
 	return shakeVolume;
 }
@@ -862,7 +910,7 @@ A full screen tint in the colour of whatever the player is swimming in, the way 
 games shade the view underwater. Drawn over the world but under the HUD.
 ===================
 */
-void idPlayerView::LiquidOverlay( int liquidContents ) {
+void idPlayerView::LiquidOverlay( int liquidContents, bool drawWash ) {
 	// Ease in and out rather than snapping. Breaking the surface is fast in life but a hard cut
 	// between two very different images reads as a glitch, so give it about a sixth of a second.
 	const float target = liquidContents ? 1.0f : 0.0f;
@@ -902,10 +950,26 @@ void idPlayerView::LiquidOverlay( int liquidContents ) {
 	// Hand the state to the renderer. It answers false when it cannot draw the effect - the Vulkan
 	// module has no arbitrary GLSL, and the pass can be switched off with r_underwater - in which
 	// case fall back to a flat wash so the player still knows they are under something.
+	liquidWashAmount = 0.0f;
 	if ( renderSystem->SetUnderwaterView( amount, filterTint, fogDistance ) ) {
 		return;
 	}
+	liquidWashAmount = amount;
+	if ( drawWash ) {
+		LiquidWash();
+	}
+}
 
+/*
+===================
+idPlayerView::LiquidWash
+
+The flat wash that stands in for the underwater pass, over whatever is being
+drawn: the window, or each of a headset's eyes in turn.
+===================
+*/
+void idPlayerView::LiquidWash( void ) {
+	const float amount = liquidWashAmount;
 	if ( amount <= 0.0f ) {
 		return;
 	}
@@ -1015,12 +1079,15 @@ void idPlayerView::VRView( idUserInterface *hud, const renderView_t *view, const
 
 	// the listener follows the tracked head
 	idVec3 headOrigin = eyeOrigin;
+	// the comfort vignette centres on where the head looks, in both eyes
+	idVec3 headForward = eyeAxis[0];
 	if ( vrFrame.head.valid ) {
 		idMat3 headAxis;
 		vrPose_t head = vrFrame.head;
 		head.origin += VR_HeadOffsetCorrection( vrFrame );
 		VR_PoseToWorld( head, eyeOrigin, trackingYaw, headOrigin, headAxis );
 		soundSystem->PlaceListener( headOrigin, headAxis, player->entityNumber + 1, gameLocal.time, "Undefined" );
+		headForward = headAxis[0];
 	}
 
 	// where the weapon hand's shot lands, marked in each eye over its 3D pass
@@ -1053,6 +1120,8 @@ void idPlayerView::VRView( idUserInterface *hud, const renderView_t *view, const
 		}
 		renderView_t eyeView = *view;
 		VR_BuildEyeView( vrFrame, eye, eyeOrigin, trackingYaw, eyeView );
+		// the eye as the lens shows it, whatever a weapon's zoom magnifies
+		const renderView_t lensView = eyeView;
 		if ( zoomScale < 1.0f ) {
 			eyeView.fovTanLeft *= zoomScale;
 			eyeView.fovTanRight *= zoomScale;
@@ -1065,7 +1134,9 @@ void idPlayerView::VRView( idUserInterface *hud, const renderView_t *view, const
 		gameLocal.SelectTemporalHistorySlot( eye );
 		SingleView( hud, &eyeView, RF_NO_GUI | RF_PRIMARY_VIEW );
 		gameLocal.SelectTemporalHistorySlot( 0 );
-		VR_DrawComfortVignette( eyeView, vignette, vignetteMaterial );
+		// the flat wash that stands in for the underwater pass belongs in the eyes
+		LiquidWash();
+		VR_DrawComfortVignette( lensView, headForward, vignette, vignetteMaterial );
 		if ( drawAimMarker ) {
 			VR_DrawAimMarker( eyeView, aimMarker, aimLaser, aimMaterial );
 		}
@@ -1104,7 +1175,8 @@ float idPlayerView::VRComfortVignette( const vrFrameState_t &vrFrame, float trac
 	vrComfortTime = now;
 	const rvVehicle *vehicle = player->IsInVehicle() ? player->GetVehicleController().GetVehicle() : NULL;
 	const idPhysics *motion = vehicle != NULL ? vehicle->GetPhysics() : player->GetPhysics();
-	const float target = setting > 0.0f ? VR_ComfortMotion( motion->GetLinearVelocity().Length(), turnRate ) : 0.0f;
+	// a paused game moves nobody: the speed it stopped at would hold the edges dark
+	const float target = ( setting > 0.0f && !gameLocal.IsPresentationMenuPaused() ) ? VR_ComfortMotion( motion->GetLinearVelocity().Length(), turnRate ) : 0.0f;
 	vrComfort = VR_ComfortEase( vrComfort, target, seconds );
 	return vrComfort * setting;
 }
@@ -1209,14 +1281,20 @@ void idPlayerView::RenderPlayerView( idUserInterface *hud, bool menuPaused ) {
 	soundSystem->PlaceListener( view->vieworg, view->viewaxis, player->entityNumber + 1, gameLocal.time, "Undefined" );
 
 // openQ4 BEGIN
-	const int eyeLiquidContents = LiquidAtEye( view );
-
 	// a headset presents first-person gameplay in stereo
 	vrFrameState_t vrFrame;
 	float vrTrackingYaw = 0.0f;
-	if ( player->GetVRView( vrFrame, vrTrackingYaw ) && vrFrame.stereo ) {
+	const bool vrStereo = player->GetVRView( vrFrame, vrTrackingYaw ) && vrFrame.stereo;
+	// the eye that is under water is the tracked head, wherever the body's own eye is
+	renderView_t liquidView = *view;
+	if ( vrStereo ) {
+		player->GetVRHeadOrigin( liquidView.vieworg );
+	}
+	const int eyeLiquidContents = LiquidAtEye( &liquidView );
+
+	if ( vrStereo ) {
 		pauseSceneValid = false;
-		LiquidOverlay( eyeLiquidContents );
+		LiquidOverlay( eyeLiquidContents, false );
 		VRView( hud, view, vrFrame, vrTrackingYaw );
 		return;
 	}

@@ -28,6 +28,700 @@ does not restore the withdrawn release. See
   hidden while you play (swipe from the edge to bring them back).
 - **Reinstall note:** none. Your settings and game data are kept.
 
+## VR: controllers with fewer buttons, steadier sessions, and the audit's other leads, 17 November 2026
+
+- **Every action on every controller.** Valve Index gets the flashlight:
+  squeeze the left trackpad firmly. HTC Vive wands and Windows Mixed Reality
+  controllers press their touchpads as buttons by where your thumb is, so
+  jumping, crouching, reloading and the flashlight all have a place. On a Vive
+  wand a thumb resting on the right pad no longer turns you or changes weapon;
+  press left or right to turn. The [VR guide](../user/vr.md#controls) has the
+  layouts.
+- **A hitch is not the end of VR.** When the headset's software stalls for a
+  moment, openQ4 waits up to a second for it instead of dropping back to the
+  desktop. A failure in something VR can do without, such as vibration or a
+  headset's refresh-rate setting, is reported in the console and VR carries on;
+  it used to stop VR until `vr_restart`.
+- **Facing the right way in multiplayer.** After a respawn or a teleporter your
+  head faces where the game sends you, as in single player; before, your gun
+  did, wherever your hand hung.
+- **Smaller fixes.** Your character in mirrors, in your shadow and to other
+  players no longer spins on the spot while you point the gun straight up or
+  down. A gun held against a wall no longer shoots through it. The comfort
+  vignette is centred where your head looks in both eyes, so headsets with
+  angled displays see one clear centre. Walking about your room while the game
+  is paused no longer moves your character the whole way in one jump when you
+  resume. At an open gun or turret you see your body at the controls.
+- **What to do.** Replace the client, both game modules (game module API 60)
+  and pak0 together. Everything here was checked on openQ4's simulated headset
+  only; the [headset checklist](vr-headset-qualification.md) rows 1.9, 3.15 to
+  3.18, 5.6 and 5.7 are for real headsets.
+- **Still open.** Holding the weapon in your left hand still uses your
+  character's simpler hands: a version with the gun's own hands mirrored was
+  built and taken out again because its hands did not sit on the grip.
+- Details and evidence:
+  [design and evidence](platform-recovery-review.md#the-audits-leads-second-round-17-november-2026)
+  and the roadmap's VR-02 entry.
+
+## The Awakening's freeze gun recharges, 17 November 2026
+
+- **A battery that refills.** The freeze gun's charge now tops itself back up
+  to 35 a second after you stop spraying, whether you are holding it or not.
+  A long spray still drains it, and ammo pickups can still carry you past 35.
+  Before, a drained freeze gun stayed empty until you found a pickup.
+- **See the charge on the gun.** The glowing coolant tubes dim as the battery
+  drains and brighten as it refills, so you can read the charge without the
+  HUD.
+- **What to do.** Replace the single-player game module and openQ4's pak0.
+  Saves need nothing.
+- Details: [status targeting](awakening-status-targeting.md#remaining-content-questions).
+
+## Bodies lying in levels no longer blow apart on Linux, 17 November 2026
+
+- **Corpses and wounded marines that a level places for you to find now lie
+  still when it starts on Linux.** Before, they could jerk violently, with
+  limbs pulled apart, and end up somewhere else: in Air Defense Bunker the
+  marine lying across a ledge often fell off it. Windows was never affected.
+- **Linux now does its arithmetic the way Windows does.** The Linux and macOS
+  builds used faster, slightly less exact square roots and trigonometry than
+  the Windows build, which the game was made on. The answers differed only in
+  the last digit, but that was enough to turn a ragdoll's knee the wrong way
+  for the pose its level stored. Animation, collision and bot navigation on
+  Linux now get the same results as on Windows too, and stacks of crates
+  simulate identically, step for step, on both.
+- **macOS and Android** take the same change. It has not been run there yet.
+- **Nothing to do.** Saves load as before. A body that had already been thrown
+  out of place in a save stays where that save has it.
+- How it works: `src/idlib/math/Math.h` no longer defines `_FAST_MATH` on any
+  platform, so `idMath::Sqrt`, `InvSqrt` and the 16-bit trigonometry are the
+  exact library calls everywhere. A ragdoll's thigh bone gets its frame from
+  whether the hip and knee joints share a coordinate exactly; with the table
+  square root the knee was off by 5e-7 on Linux and the frame turned a quarter
+  turn. `tools/tests/physics_enhanced_solver.py` fails if the define returns.
+  Details and the trace that found it:
+  [physics reference](physics-reference.md#the-linux-build-was-running-on-approximate-math-fourth-round).
+- Evidence: on the Linux build the placed ragdolls of Air Defense Bunker and
+  Air Defense Trenches read 16 and 13 units/s with joints under one unit apart
+  on their first frames after the change (up to 835 units/s and 21 units
+  before; 14 and 13 units/s on Windows), and the rigid-body stack workloads produce the same
+  state hashes as Windows in both physics modes. The three physics checks that failed on Linux the day before pass (the ledge marine stays put, a rocket blast throws resting corpses 0.83x as far as the original's at the median, the hanging lights in Putra match Windows to the digit).
+  Not run: macOS, Android, ARM64 Linux, and a full Linux play session.
+
+## Multiplayer: servers that keep your settings, fairer rounds and fewer hitches, 17 November 2026
+
+- **A server keeps the limits you set.** A frag, time or capture limit changed
+  by a passed vote, at the console or by hosting again with other settings now
+  stays for the maps that follow. A casual server used to put its first
+  values back at every map start, and a `buying` vote did nothing. Joining
+  someone else's server no longer overwrites your own hosting settings.
+- **No more hung server on a ruleset change.** Voting in the Classic ruleset,
+  or typing `preset classic`, on a running map loads the map again once. It
+  used to lock the server in a restart loop. A preset for a game type the
+  current map cannot play moves to a map that can.
+- **Out for the round is not the same as spectating.** An eliminated player
+  sees what their team sees and no more: the server no longer sends them
+  every opponent's position and health. They can follow their own team mates
+  (they could follow nobody), hear and use team chat, and vote. Players on the
+  end-of-match scoreboard can vote too.
+- **No hitch when someone joins.** Every player model is loaded with the map,
+  so a player or bot arriving with a model nobody had used yet no longer
+  stalls the match while it loads. `g_precachePlayerModels 0` turns that off
+  on a machine short of memory.
+- **Steadier matches.** An idle player dropped by `g_inactivity` can no longer
+  crash the server. `g_pauseOnDisconnect` gives each side one pause a match,
+  ends as soon as the player is back and lets them back in past
+  `si_spectatorLock`; a kick does not pause the match. The lock also holds
+  someone who connects mid-match. A listen-server host's mouse no longer slows
+  down when another player uses a scope.
+- **Smaller fixes.** Buying from a bind or the buy card is not lost on a busy
+  connection. The Chain Lightning Mod chains in multiplayer. The Ammo Regen
+  rune no longer empties a weapon arena's unlimited ammunition, and FC Armor
+  Regen no longer ends with a burst of lost armour. Item timers reset when the
+  match starts. A very long chat line is cut instead of closing the game. A
+  spectator alone on a server no longer jumps to a spawn point on every
+  attack press. The map rotation honours a game type set for the next map,
+  and no longer alternates between two maps of a short list. `mapdb.txt` and
+  preset files saved with a byte order mark load.
+- **Server security.** A forged packet can no longer disconnect a player who
+  is in a match, a modified client can no longer ask the server for unlimited
+  weapon drops, nobody can take the name `server`, and a wrong rcon password
+  late in a long map no longer locks an address out for the next map's whole
+  length.
+- **What to do.** Replace the engine and the multiplayer game module on the
+  server and on clients. The network protocol is unchanged (2.42).
+- Guides: [competitive matches](../user/competitive-matches.md#voting-on-casual-servers)
+  and [server setup](../user/server-setup.md#server-settings).
+- Evidence and what is still open: [multiplayer audit, 17 November](mp-audit-2026-11-17.md).
+  The 125 static multiplayer tests pass; the kept limit, the ruleset change,
+  the idle drop and a joining client's settings were run on a listen server.
+  The spectating, chat, voting, disconnect-pause, rotation and weapon fixes
+  are checked by their contracts and by reading only: they were not played.
+## Your own body in VR, and a headset audit, 17 November 2026
+
+- **Look down and you are there.** In the headset you now have a chest, legs
+  and feet standing where you stand, and arms from your shoulders to your
+  hands. The body turns with your torso instead of your gun, and its knees
+  bend when you duck or crouch.
+- **Hands that do what yours do.** Your weapon hand stays on the gun's grip
+  with the arm bending to reach it. Your other hand follows its controller,
+  and returns to the gun for the two-handed grip and for reloads.
+- **A gun that sits in the world.** A gun in your hand is hidden by whatever
+  your hand is behind, instead of always being drawn on top.
+- **Easier to get comfortable.** Hold the weapon-hand stick in for a second to
+  recentre. openQ4 also recentres when your headset first hands it the
+  controllers and at the start of each level, and no longer learns your height
+  from a headset lying on the desk. Turns pivot about your head.
+- **Facing the right way.** Levels, loaded saves and teleporters leave you
+  facing where the game intends, wherever your gun hand hangs, and a cinematic
+  no longer leaves the world turned.
+- **Valve Index.** Holding the controllers no longer switches weapons or opens
+  the weapon wheel; the grip takes a squeeze.
+- **Also fixed.** Head-aimed shots leave from your head; the comfort vignette
+  holds while zoomed and clears when paused; the lightning gun and gauntlet
+  vibrate; the flashlight keeps up with the gun; controls let go when the
+  headset's software stops the session.
+- **What to do.** Replace the client and both game modules together (game
+  module API 59) and pak0. **Your Body** on the Virtual Reality settings tab
+  (`vr_body`) chooses With Arms, Legs and Torso, or Off. Everything here has
+  been checked on openQ4's simulated headset only: please report how it sits
+  on a real one.
+- Details: [VR guide](../user/vr.md#your-body),
+  [design and evidence](platform-recovery-review.md#the-players-own-body-in-the-headset-17-november-2026),
+  [headset checklist](vr-headset-qualification.md) rows 3.9-3.14 and 4.9-4.14,
+  and the roadmap's VR-02 entry for the audit leads left open.
+
+## The Awakening's Trianthinide facility squad scenes, 17 November 2026
+
+- **Gray dies where the Retch lands.** After the generator lift, Corporal Gray
+  goes straight to the generator console, works it there, and is killed by the
+  Retch that drops onto it. He no longer wanders back to the lift and works the
+  console from across the room.
+- **Tak really hands you the spike gun.** He picks it up from the crate,
+  turns to you, looks it over while he works out how to fire it, and holds it
+  out to you. Before, he gestured empty-handed while the gun vanished.
+- **The stuck door works as a door.** You can no longer walk through it before
+  Darnell and Mitchell lift it, which used to drop it into the floor. They hold
+  it up until you crouch underneath, then let it fall shut behind you.
+- **No second Dekard in the Tank fight.** The stand-in from the Tank's
+  introduction no longer stands in view at the far end of the arena; he
+  reappears only for the walk to the dropship.
+- **What to do.** Replace the single-player game module, then start the mission
+  again; saves keep the version of the mission they were made with.
+- Details: [M02 squad sequences](awakening-missions.md#m02-squad-sequences--17-november-2026).
+
+## The Awakening's prison alarm is easy to hear again, 17 November 2026
+
+- **The alarm sounds like an alarm.** In the prison mission, the security
+  alarm Tak keeps telling you to shut off now sounds a siren pulse every five
+  to six seconds, loud enough to follow through the security wing. The
+  earlier quiet pass left one faint pulse every 12 to 16 seconds, which was
+  easy to miss. It is still well below the alpha's constant full-volume loop,
+  with gaps between pulses so dialogue stays clear. The computer alarms nearby
+  sound more often and carry a little farther, staying below the siren.
+- **What to do.** Replace the single-player game module. Existing saves pick
+  up the new pacing when loaded; the security console still switches the
+  alarm off.
+- Details: [prison alarm pacing](awakening-missions.md#corrections).
+
+## Busy battles spend less time on collision checks, 17 November 2026
+
+- **Smoother big fights.** Each frame of a large battle does less collision
+  bookkeeping: the game no longer re-checks a whole area of the world every
+  time something moves out of it, and its liquid checks for every projectile
+  and piece of debris skip everything that cannot be water. In The Awakening's
+  first battle this cuts about a tenth of the game's own work per frame. What
+  happens in the game is unchanged.
+- **Lighting crowds costs less.** Working out which part of an animated
+  character each light reaches now takes one pass over it instead of up to
+  six, with exactly the same result.
+- **What to do.** Replace the game and renderer modules. `g_clipFastQueries 0`
+  and `r_cullBitsOnePass 0` restore the previous behaviour for comparison.
+- Details: [performance report, section 14](performance-report.md#14-the-awakenings-outdoor-battle-fps-08-evidence-17-november-2026).
+
+## The Awakening's prison heat exhausts burn again, 17 November 2026
+
+- **You can see what the cold cannon is for.** In the prison mission, the
+  high-temperature exhausts in the heat-exchanger tunnel Darnell warns you
+  about now shoot visible jets of flame. Before, the vents still burned you,
+  but nothing showed. Freezing a jet shrinks it, then leaves smoke.
+- **What to do.** Replace the single-player game module. Existing saves show
+  the jets once loaded.
+- Details: [heat-exchanger jets](awakening-missions.md#corrections).
+
+## Markswell's briefing in The Awakening's opening, 17 November 2026
+
+- **The lieutenant's briefing plays as one performance.** In the first
+  mission's dropship, Markswell walks in, briefs the squad and, when the ship
+  is hit, stumbles into his own seat. He no longer stops in a rifle stance
+  before speaking or sits down in the middle of the aisle.
+- **What to do.** Replace the single-player game module and pak0, then start
+  the mission afresh; saves keep the scene they were made with.
+- Details: [M01 audit, revision 6](m01-interior-feedback-audit.md#revision-6-17-november-2026).
+
+## The Awakening's landing zone and Retch ambush, 17 November 2026
+
+- **The squad is there when you land.** As you rappel out of the dropship,
+  Darnell, Tak and the Atlas fire team are already on the ground below instead
+  of popping into view when you touch down.
+- **A Retch ambush worth watching.** In the second part of the first mission
+  the Atlas survivor finishes telling the squad what happened before the Retch
+  bursts through the door behind him. The door opens as it lunges, his scream
+  lands as it grabs him, and the scene ends as soon as Tak and Navajas react,
+  instead of holding on the creature for six seconds. Short fades lead in and
+  out, and the Retch comes for you afterwards.
+- **What to do.** Replace the single-player game module and pak0, then start
+  the mission afresh; saves keep the scene they were made with.
+  `g_awakeningM01Retch 0` plays the alpha's version of the ambush.
+- Details: [M01 audit, revision 5](m01-interior-feedback-audit.md#revision-5-17-november-2026)
+  and [the Retch ambush](awakening-missions.md#retch-ambush-m01-part-2--17-november-2026).
+
+## A loading screen for every level of The Awakening, 17 November 2026
+
+- **Thirteen new loading pictures.** Each campaign level of The Awakening now
+  has its own full-width picture: the walker over the Stranarus trench, the
+  crystal cavern of the Trian facility, dropships over the mesas, the
+  cellblock, the fortress, the MCC, the race tracks, the cryo tubes and the
+  Valkaryne's crater. The alpha's pictures were development captures, one with
+  a frame counter and one with the gunner's HUD, and three levels borrowed
+  another map's picture.
+- **Everywhere the level is shown.** The loading screen, the pause and save
+  pictures and the chapter list use them. A mod that names its own loading
+  picture keeps it.
+- **Cleaner levelshots.** A levelshot no longer draws scenery from areas the
+  camera cannot see, which put a black box over The Awakening's final skyline.
+- **What to do.** The pictures ship in a new loadscreen pack (pak2,
+  content generation 2), which the next release publishes alongside the
+  binaries: replace pak2 when you update. The installer and the in-game
+  updater fetch it; a manual update that keeps the old pak2 stops at startup
+  and names the pack to replace.
+- Cameras, method and traps:
+  [levelshot capture](levelshot-capture.md#the-awakening-campaign-sets).
+
+## The Awakening's opening dropship scene, tidied, 17 November 2026
+
+- **A natural walk to the dropship.** The squad runs onto the ramp in a smooth
+  curve instead of snapping round a right angle at its foot.
+- **A quiet flight until the first hit.** The seated marines no longer shake
+  while the briefing is still routine; the turbulence starts when the ship is
+  hit.
+- **The harnesses are there.** After the hull breach the surviving seats keep
+  their shoulder harnesses. Each lifts as its marine stands, and Tak's cutting
+  frees Mitchell's and Dekard's.
+- **The Falcon squad's names on the seats.** The plates above the seats name
+  Tak, Darnell, Navajas, Dekard, Townsend, Atkins, Mitchell and Markswell
+  instead of Quake 4's squad. Quake 4's own campaign is unchanged.
+- **Hands on the rope.** Each marine steps up to the line and takes hold of it
+  before rappelling down.
+- **What to do.** Replace the single-player game module and pak0, then start
+  the first mission afresh; a save from inside the opening keeps the scene it
+  was made with. `g_awakeningM01Cinematic 0` still plays the alpha's own
+  direction.
+- How it works and what was tested: scene revision 4
+  ([M01 audit](m01-interior-feedback-audit.md#revision-4-17-november-2026)).
+
+## The Awakening's pause menu in its own style, 17 November 2026
+
+- **A pause menu made for the expansion.** With the new interface, pausing
+  The Awakening's campaign opens its own pause menu: black frames with horns
+  after the Valkaryne, a glacial rim and frost, snow behind the menu, and an
+  orange lens around the control you are on. Save Game, Load Game, Restart
+  Level, the quit and exit questions and the settings pages (Controls, Game
+  Options, Display and Audio) share the look.
+- **Smoother frames.** The frames close in as the menu opens, glide to a page
+  and back on one smooth curve, the lower frame leading, and the menu
+  scrolls back into place as you return.
+- **What to do.** Nothing. Quake 4's campaign keeps the Marine menus, a
+  stroggified player keeps the Strogg pause, and the stock interface is
+  unchanged. Settings opened from the title keep the Marine look.
+
+## Texture packs reach characters, weapons and monsters, 17 November 2026
+
+- **BC7 packs now replace character, weapon and monster textures.** Quake 4
+  builds most of these through a `downsize()` step, and openQ4 used to pass
+  over a pack's file for them and show Quake 4's own half-size texture. A
+  file named after the texture, such as a hi-def marine helmet, is now used,
+  and it stays compressed (#217).
+- **BC7 files work wherever DXT files do.** A BC7 replacement that feeds a
+  texture openQ4 builds itself, such as a bump map's inputs, is now decoded
+  instead of skipped. On graphics without BC7 support, every Mac with OpenGL
+  among them, BC7 files now load uncompressed instead of being ignored.
+- **Packs' bump maps show too.** Quake 4 ships most bump maps precomputed, and
+  openQ4 kept using those even when a pack replaced the textures they are
+  built from. It now rebuilds a bump map from the pack's files and stores it
+  compressed, the way Quake 4 stores its own. The first load of a map after
+  installing a pack takes longer while they are built; later loads reuse them.
+  Without a pack, nothing changes: all 270 bump maps on `airdefense1` still
+  come from Quake 4's files.
+- **Quake 4's own textures.** A dozen stock textures that ship their own DDS
+  file next to a precomputed half-size copy now load the full-size file.
+- **What to do.** Nothing. Pack authors: see
+  [DDS texture replacements](../user/texture-replacements.md#bump-maps-and-other-image-programs),
+  which also explains why loose copies of original textures make a packed
+  replacement look out of date.
+
+## The chat bubble stays off dead players, 17 November 2026
+
+- **No more chat bubble blinking over a body.** Multiplayer hides the
+  "typing" bubble while a player is dead, but the check read the ragdoll as
+  if it were the player's movement and came out at random. A bot killed while
+  it was still typing its line flashed the bubble over its corpse until it
+  respawned. The bubble now stays off until the player is back on their feet.
+- **What to do.** Nothing.
+- Evidence (17 November, listen server, six bots at `bot_chat 2`, `mp/q4dm1`,
+  traced and since removed): before the fix, icons over dead bots were created
+  and freed dozens of times per death; after it, none in 19 icons. The same
+  traces found no delay in turning the bubble off: on the host, on a second
+  client, in the stock and retained HUDs, and in what OpenGL and Vulkan drew,
+  every bubble went off within one frame of its line being sent. The fix is
+  in `IconManager.cpp`, in both game trees.
+
+## Helmets and masked reflections keep their colour, 17 November 2026
+
+- **The bright marine's helmet matches its suit again.** In multiplayer the
+  bright helmeted marine's helmet looked washed out and paler than the body.
+  It now has the same strong colour, and the visor keeps its reflection.
+- **The same fix reaches every surface with a masked reflection.** Helmets,
+  glass, items, vehicles and some walls use the same reflection trick, and all
+  of them were washed out wherever the map's baked lighting reached them.
+  This applies to the OpenGL and Vulkan renderers.
+- **What to do.** Nothing.
+- How it works: the baked light-grid pass lights each surface by every opaque
+  ambient stage it takes for albedo. A `maskcolor` stage writes only
+  destination alpha for a later `GL_DST_ALPHA` reflection, and its
+  `makealpha(...)` texture is white RGB. It was being taken as a second,
+  white albedo, which added a white indirect layer. Stages that mask colour
+  writes are no longer albedo sources, in the GL backend, the scene-packet
+  planner and the Vulkan light-grid pass alike.
+- Evidence: third-person captures of `model_player_marine_helmeted_bright` on
+  stock `mp/q4dm1`. An all-black mask still washed the helmet out, which
+  ruled out the reflection, and `r_useLightGrid 0` restored the colour. With
+  the fix, GL and Vulkan both show a saturated helmet with the visor
+  reflection intact, and the logs gain no new warnings.
+
+## Loading screens scroll their frame into view, 17 November 2026
+
+- **The loading screen opens with a quick scroll.** In the new interface each
+  level's loading screen shows its picture first, then the top and bottom
+  bands sweep in from beyond the screen's edges and lock into place, the level
+  name, brackets and progress riding in just behind them. Their inner edges
+  flash orange as they seat, and the mission objectives or server card fade in
+  after. It takes about half a second and plays while the level loads, so
+  loading takes no longer.
+- **Reduced motion.** With reduced motion on, the frame is in place at once,
+  without the flash.
+- **What to do.** Nothing. The classic interface's loading screens are
+  unchanged.
+
+## Arena introductions and results framed by the menu's bands, 17 November 2026
+
+- **The Arena ceremony now wears the main menu's frame.** The fighter
+  introductions, the countdown card and the final tableau are framed by the
+  same notched top and bottom bands as the menus, with their rim light, in
+  place of plain black letterbox bars. This applies to both the Classic and
+  the Remastered HUD.
+- **The frame moves.** The bands sweep in diagonally from the leading side,
+  orange accents draw along their edges as each card appears (again for every
+  fighter introduced), and when the countdown ends the accents draw back and
+  the bands sweep out across the shot toward the other side, just as Fight
+  sounds.
+- **Every screen shape.** Widescreen and wider displays show the bands exactly
+  as the menus dock them; narrower and tall screens push them in toward a
+  16:9 picture without covering the match card's text.
+- **What to do.** Nothing.
+- Details: [Arena ceremony design, framing bands](arena-campaign-ceremony.md#framing-bands-17-november-2026).
+
+## Better first-launch settings on ARM boards, and a lighter Low Power (#233), 17 November 2026
+
+- **ARM boards other than the Raspberry Pi start on sensible settings.**
+  Rockchip, Orange Pi, Radxa, NVIDIA Jetson and other ARM64 Linux boards
+  without a separate graphics card used to get the Balanced preset at full
+  resolution when they had 16 GB of memory. Auto-Detect now starts them on
+  Performance with a 60 FPS cap, as it does a Steam Deck. A Raspberry Pi still
+  gets Low Power. Apple Silicon, on macOS or Asahi Linux, and Windows on ARM
+  are not affected.
+- **Low Power and Minimum do less work.** Both presets now turn off light
+  grids and use the original game's lighting. Their 30 FPS cap also leaves
+  automatic temporal upscaling off: the 75% (or 50%) scene is stretched to the
+  screen, which costs less on the small boards, phones and battery-limited
+  machines these presets are for. Any frame cap of 30 or lower does the same;
+  `r_temporalAA 1` turns temporal AA back on.
+- **What to do.** Nothing for a new install. Because the presets changed,
+  an existing configuration sees the System Check once at its next start and
+  can apply the new recommendation or keep its settings. To get the lighter
+  Low Power or Minimum on a configuration you keep, choose the preset again.
+- How it works: an ARM board is an arm64 Linux host (not Android) whose
+  active GPU is neither discrete nor named as Apple's. The rule depends on
+  the platform, not on a list of GPU names, so a board openQ4 has never seen
+  is still covered. The preset system version moves from `1.6c792296` to
+  `1.f3cd9be4`. The Linux log line `guess failed, using conservative modern
+  VRAM setting` was checked and does not feed preset detection, which reads
+  only the active graphics device's own memory. See
+  [performance presets](ui/performance-presets.md#arm-boards-and-the-low-power-floor-17-november-2026).
+- Evidence: `ui_performance_presets.py --mutations` passes, with 549,949 model
+  checks and all 32 mutations rejected, three of them new. New cases cover the
+  #233 Pi 5, RK3588 boards from 8 to 32 GB, Apple Silicon on macOS and Asahi,
+  Windows on ARM, an ARM workstation with a discrete card, and Android.
+  `performance_preset_check.py`, `renderer_temporal_presentation.py`,
+  `linux_gui_presentation_defaults.py` and `ui_system_presets.py` pass. The
+  Windows build is clean and the Meson preset and temporal suites pass. The
+  staged client's `performancePresetSelfTest`, which now includes a board, a
+  Pi and Apple Silicon, passes. In `game/airdefense1` on Vulkan, Low Power
+  drew its 75% scene with temporal AA off, and turned it on at a 60 FPS cap.
+  Not run: any ARM board, Pi or Asahi machine. What the light grid and
+  temporal AA cost on a Pi is not measured.
+
+## Speaker Names shows who is talking (#226), 17 November 2026
+
+- **Subtitles name the character speaking.** With **Settings > Audio >
+  Speaker Names** on, a line now starts with the character's name, for
+  example *Medic Anderson: There. He's stabilized for the moment.* Before,
+  the setting only ever showed **Radio** on radio lines, because characters
+  speak through their head and the name is kept on their body. Radio lines
+  whose speaker is unknown still read **Radio**.
+- Nothing to do: the setting is on by default.
+- How it works:
+  [speaker names on characters](audio-voice-evidence.md#speaker-names-on-characters-17-november-2026).
+- Evidence: `audio_subtitles_runtime.py` on stock `game/airdefense1` passes
+  all 27 checks, including the new `npc_speaker_name` (Anderson's own intro
+  line, labelled `Medic Anderson`). With the previous overlay built, that
+  check fails with an empty label. `audio_subtitles.py` passes.
+
+## Screenshots from the pause menu, and tidier emotion cues in subtitles (#224, #225), 17 November 2026
+
+- **F12 takes a screenshot from the pause menu and the title screen again.**
+  The original menus let F1 to F12 run their key bindings, and the new
+  interface's title and pause screens took every key themselves. A function
+  key either screen does not use now runs its binding, as over the classic
+  menus and the multiplayer card (#224).
+- **Subtitles show the actors' emotion cues as stage directions.** Quake 4's
+  dialogue text carries the facial-animation cues its lip-sync system reads,
+  about 690 lines of them, some mid-sentence, and subtitles printed them raw:
+  `{furrow}Shit. Okay, let's...`. They now read `(Furrow) Shit. Okay,
+  let's...`; the neutral `{idle}` cue is left out and the stock lines' double
+  spaces close up (#225). The cue words are the game's own English names, as
+  the stock dialogue text is English.
+- Evidence: `audio_subtitles.py` (cue formatting cases in
+  `SubtitlePagingTest`; all 688 tagged stock lines formatted with no brace
+  left) pass, and `native_input_driver.py --mutations` passes the new
+  title/pause function-key case on both platform projections and rejects
+  its mutation. Hidden OpenGL client in
+  `game/airdefense1`, private save path, no OS input: radio line
+  `vo_1_1_2_12_1` captioned `(Furrow) Let's not lose focus here...`, a
+  fixture line showed mid-sentence cues with `{idle}` dropped, and
+  `screenshot` over the retained pause screen captured it.
+
+## Mouse and controller settings are under Controls (#220), 17 November 2026
+
+- **Find your mouse and controller settings with your key bindings.**
+  **Settings > Controls** gains **Mouse** and **Controller** tabs after the
+  binding tabs. Mouse starts with **Free Look**, **Toggle Zoom** and **Scope
+  Sensitivity**, followed by every mouse setting; Controller holds the stick,
+  rumble, gyro, touchpad and prompt settings. **Game Options** keeps General,
+  HUD and Virtual Reality, and its **View Weapon** settings move to the HUD
+  tab beside the crosshair.
+- **Nothing to do.** Your settings carry over; only their place in the menu
+  changes. The classic menus (`ui_retained 0`) keep the original layout.
+- Typing a value into a mouse or controller number field on Controls accepts
+  Delete and Backspace as text. On a key-binding row they still clear the
+  binding.
+- How it works:
+  [MOUSE and CONTROLLER on CONTROLS](ui/retained-screens.md#mouse-and-controller-on-controls-17-november-2026).
+  New string `#str_231777` (MOUSE) in all twelve languages.
+- Evidence: `openq4-ui-retained-controls` and `openq4-ui-retained-game` pass.
+  The CONTROLS test was failing before this change: it named OTHER's rows 36
+  to 48 after the Classic ruleset's hook moved them to 37 to 49.
+  `ui_retained_gate.py` passes its settings-page assertions, then stops on a
+  later failure this change does not touch: its Create Server doubles do not
+  compile against MP-14's weapon-arena presets. In the staged client over a
+  paused `game/airdefense1` (capture scenario `controls-pause`, no OS input),
+  CONTROLS opened from the pause menu's SETTINGS, the Mouse tab's sensitivity
+  stepped from 5 to 5.01 through `settings.player.set`, and Back returned to
+  SETTINGS. From the title (`settings-subpages`), the Mouse tab's typed
+  number showed its range message for 7.255, and Game Options showed its
+  three tabs with View Weapon under Crosshair.
+
+## Radio chatter and helmet-radio squad lines have subtitles (#221, AUD-07), 17 November 2026
+
+- **Radio transmissions are captioned.** 249 of the 333 radio lines the stock
+  maps play, and about 390 other campaign lines, have no lip-sync transcript.
+  Each of them carries its line as written in the game's script, in its sound
+  shader's description, and subtitles now show that instead of
+  **[untranscribed speech]**. Stage directions, speaker tags and notes are left
+  out; the text is converted from Windows-1252, so apostrophes and dashes draw
+  correctly in every menu language. A recorded take is sometimes shorter than
+  the script line.
+- **Helmet-radio squad lines share their transcript.** The 692 marine lines
+  heard over the helmet radio are processed copies of lines that do have a
+  transcript; each now shows its dry line's text.
+- Installed lip-sync text and caption packs still come first. Only screams,
+  laughter, pain sounds and multiplayer announcers keep the marker.
+- `listSubtitles` reports script-line captions as `script`, and the speech
+  audit's `transcript=` status adds `script` and `helmet`.
+
+## A copy of openQ4's own pack in a mod's folder no longer hides the new menus (#219), 17 November 2026
+
+- **Menus stay current when openQ4's pack was copied into a mod's folder.** A
+  copy of openQ4's `pak0.pk4` from an older build sitting in a mod's folder,
+  next to a texture pack for example, used to take priority over the installed
+  one. Its old menus, text and shaders then hid every newer one, and new pages
+  showed raw `#str_` codes (#219). openQ4 now skips such a copy at startup,
+  says so in the log, and uses its own pack from `baseoq4/`.
+- **Worth a tidy-up.** The copy can be deleted: openQ4's packs belong only in
+  `baseoq4/`. Copies of `pak1.pk4` or `pak2.pk4` (light grids and loading
+  screens) are not detected, since mods can carry those for their own maps, so
+  delete those too if you copied them.
+- How it works: in any folder other than `baseoq4`, a `pak0.pk4`-`pak9.pk4`
+  that carries both `openq4_defaults.cfg` at its root and
+  `strings/english_openq4.lang`, as every openQ4 core pack has, is not
+  mounted. A mod pack carrying only one of the two still mounts.
+- Evidence: `content_pack_status_smoke` gains a case that starts the client
+  with a mod whose folder holds an old core-pack copy as `pak0.pk4` and a
+  `pak1.pk4` carrying only `openq4_defaults.cfg`. Against this build the copy
+  is reported as ignored and not mounted, the mod's own pack mounts and startup
+  completes; the 0.14.1-based build staged before the change mounts the copy
+  and fails the case. The four existing cases still pass.
+
+## Choose PNG screenshots in the Settings menu (#223), 17 November 2026
+
+- **Save screenshots as PNG from the menu.** **Settings > Game Options >
+  General > Screenshot Format** now offers TGA or PNG, in the new interface
+  and on the classic page. PNG files open in any image viewer or browser and
+  can be uploaded to most sites, which TGA files often cannot. The choice
+  applies from the next screenshot and is remembered.
+- **Nothing to do.** TGA stays the default; the console setting behind the menu
+  is `r_screenshotFormat` (`0` TGA, `1` PNG), and `screenshot <name>.png`
+  still writes a PNG whatever the setting.
+- How it works: the classic page inserts the row after Console Access (scroll
+  range 82, content height 2282, the View Weapon and Virtual Reality section
+  jumps one step down); the retained page lists it in the GAMEPLAY column.
+  Strings `#str_231775`-`231776` in all twelve languages; the retained
+  adapter accepts `r_screenshotFormat` 0 or 1.
+- Evidence: `settings_menu_coverage`, `choice_gui_value_contract`,
+  `gui_clipping_contract`, `menu_controller_navigation` and
+  `lang_table_encoding` pass. In a hidden OpenGL client with a private save
+  path and no OS input, the classic page in `game/airdefense1` showed the row
+  on the grid reading TGA, then PNG once the setting changed; automatically
+  named screenshots were written as `shot00001.png` at PNG and `.tga` at TGA.
+  In the new interface, choosing PNG on the row through the semantic menu
+  input set `r_screenshotFormat 1`, and the next screenshot was a PNG.
+
+## Turn off the camera kick when you fire (#234), 17 November 2026
+
+- **A steady view while you shoot.** **Settings > Game Options > General >
+  View Kick** (`g_viewKick`, `0` to `1`, default `1`) scales the camera kick
+  every single-player weapon gives when it fires, the lightning gun's shake
+  while its beam runs, and the kick and shake of vehicle guns. Turned down, the
+  view stays still; shots still go where the crosshair points, and spread,
+  damage and rate of fire are unchanged. **Weapon Kick** still moves only the
+  gun on screen.
+- **Screen shake has its own setting.** **Screen Shake** (`g_screenShake`)
+  beside it scales the shake from explosions (your own rockets and grenades
+  included), machinery, loud sounds and The Awakening's speeder bike, so you
+  can keep big blasts shaking while firing stays steady, or calm both.
+- **What to do.** Nothing; both default to the original feel. Multiplayer is
+  unchanged: its weapons have no view kick and it never shakes the screen.
+- Development: the stock `weapon_*` defs set `recoilTime` and `recoilAngles`
+  (for example the machinegun -1 pitch over 145 ms, the shotgun -0.25 over
+  600 ms), which `idPlayerView::WeaponFireFeedback` turns into `kickAngles`;
+  every `weapon_*_mp` def sets `recoilTime 0`. `g_viewKick` scales those angles
+  and skips the kick at `0`, which leaves a damage kick in progress alone. The
+  kick feeds `GetViewPos` and so the firing axis, so shots follow the camera
+  either way; with the kick off the machinegun's next shot no longer starts
+  about 0.2 degrees high. Explosion shake reaches the view through a different
+  path (BSE `shake` segments -> `StartViewEffect(VIEWEFFECT_SHAKE)`, sound
+  shaders' shakes in `CalculateShake`, scripted and vehicle `SetShakeParms`),
+  is single-player only (`ShakeOffsets` returns in multiplayer) and is not
+  caused by the player's trigger, hence the second cvar. `SetShakeParms` takes
+  `fromFiring` for the lightning gun loop and vehicle `shakeTime`, which follow
+  `g_viewKick`; at `0` a request is dropped so it cannot cut short another
+  shake. `CalculateShake` scales after its `gameLocal.random` draws, so the
+  setting never moves the game's random sequence. A multiplayer server keeps
+  the full kick for remote players. Both cvars are archived and defined in
+  both game trees. The stock page's General section gains two rows after Force
+  Model (scroll range 81, content height 2258, every later section jump two
+  steps down), and Weapon Kick's hover now sits on its own row instead of
+  Weapon X Offset's. Strings `#str_231773` and `#str_231774` in all twelve
+  languages.
+
+## Characters can shadow themselves (#238), 17 November 2026
+
+- **Optional character self-shadows.** With `r_shadowMapCharacterSelfShadow 1`,
+  monsters, marines and other animated characters shadow themselves under
+  lights drawn with shadow maps: an arm shades the chest behind it, a shoulder
+  pad's underside falls into shade. They also shadow each other and the props
+  that used to stay clear of their shadows (#237). Quake 4 marked these
+  materials to keep out of each other's shadows, because its stencil shadows
+  drew faceted bands across low-polygon bodies; shadow maps' filtered edges
+  don't.
+- **What to do.** Nothing; it is off by default, so the game looks as it always
+  did. To try it, turn on **Character Self-Shadows** under Settings > Display >
+  Image Quality and apply. It needs shadow maps (Enhanced and up), leaves the
+  original stencil shadows and the players' own bodies and weapons alone, and
+  takes effect at once.
+- Menu row: `settings_character_self_shadow` sits under Enable Shadows on the
+  DISPLAY page's IMAGE QUALITY tab and is greyed out while shadows are off. The
+  switch joins the SYSTEM settings catalog as an immediate setting, which makes
+  that catalog 77 keys: `SettingsEffectCatalogV6` is V5 plus this key, plans
+  built on it name version 6, and a schema-1 recovery journal written against
+  V4/V5's 76 keys still decodes and takes the new key from the live value.
+  Presets and Auto-Detect leave it alone.
+- Development: `R_InteractionMaterialNoSelfShadow` in `Interaction.cpp`
+  decides both ownership sites of `idInteraction::AddActiveInteraction`, the
+  receiver list (local or global interactions) and the caster chain (shadow
+  receiver mask), so stencil, OpenGL and Vulkan read one decision. A skinned
+  entity (`parms.joints`) without the entity-level `noSelfShadow` is treated as
+  ordinary under a light with `shadowMapCasterPolicyActive`.
+- Evidence (17 November, Windows x64, hub2, a posed Strogg marine under a
+  `testLight` spotlight, viewed from the side, no OS input): on Quality the
+  light's noSelfShadow casters/receivers fall from 43/37 to 11/9 with the cvar
+  on and return with it off, in two cycles; OpenGL and Vulkan frames show the
+  marine's soft self-shadow with no acne; Balanced (stencil) frames are
+  unchanged. No errors in the logs.
+
+## Weapon fire and explosions cast shadows (#235, #236), 17 November 2026
+
+- **Gunfire throws shadows.** On Quality, Ultra and Maximum, muzzle flashes
+  (yours and enemies'), glowing projectiles and explosion flashes now cast
+  shadows, so a firefight in a dark corridor throws the shooters' silhouettes
+  across the walls. Quake 4 left these lights shadowless to save the cost of
+  its original stencil shadows; shadow maps make them affordable on the top
+  presets. The gun that fired, a projectile's own model and whatever blew up
+  never shadow their own flash.
+- **More explosions light the room.** Explosions that only play an effect
+  (dying turrets, flyers and tanks, vehicles, harvester parts and the scripted
+  explosions in the levels) now flash their surroundings like rockets and
+  barrels already did. Gore bursts, electrical deaths and smoke trails are left
+  alone, and effects that carry their own light keep it.
+- **What to do.** Nothing. `g_dynamicLightShadows` still decides: `-1` follows
+  the preset, `0` turns these shadows off, and `1` turns them on with any
+  preset that draws shadows, including the original stencil shadows on
+  Balanced and below. Multiplayer follows the same rule.
+- Development: `rvWeapon::MuzzleFlashCastsShadows` gates the view, world and
+  classic muzzle flashes; all three carry the muzzle-flash light id that the
+  firer's body, head and world weapon already suppress, and stay shadowless
+  while a shadow-casting flashlight holds that slot. Classic explosion flashes
+  get their own light id per pool slot and suppress the shadows of the
+  non-static entities their origin starts inside. Projectiles with a
+  shadow-casting light suppress their own model in it. BSE light segments in
+  `effects/weapons/`, `effects/monsters/` and `effects/vehicles/` follow the
+  cvar (`BSE_CombatLightCastsShadows`). `G_ClassicEffectFlash`, called from
+  `idGameLocal::PlayEffect` and both `idEntity::PlayEffect` overloads,
+  classifies an effect once per decl (explosion/detonate/death/destroy name or
+  `effects/explosions/`, a `gfx/effects/fire/` material, no light segment) and
+  merges with a projectile or barrel flash raised for the same blast. SP and
+  MP game trees carry the same change.
+- Evidence (17 November, Windows x64, Quality unless noted, storage2 with a
+  Strogg marine, no OS input): with `g_dynamicLightShadows 1` the shadow report
+  shows the weapon's `lights/muzzleflash` and the classic `lights/round` flashes
+  mapped on OpenGL and Vulkan, the marine's own muzzle light and its bolt's
+  classic light mapped, and a `func_fx` of `effects/explosions/surface/medium`
+  classified as an explosion with a mapped flash; with `0` the same lights
+  report `noShadows-flag`. Frames show the marine's shadow from the flash and
+  no self-occlusion on either backend, and Balanced draws the same flashes
+  with stencil shadows. No shadow-pass failures or errors in the logs.
+  Not covered: a multiplayer match (the MP module builds with the same
+  change but was not run) and combat-crowd cost on Quality.
+
 ## Updates are found, and install from the game (#227), 16 November 2026
 
 - **The Updates button finds openQ4 releases.** It used to ask Quake 4's old
@@ -622,7 +1316,8 @@ does not restore the withdrawn release. See
 
 ## An Enhanced Physics option for ragdolls, debris and moveables (PHYS), 14 November 2026
 
-Updated 16 November 2026 after a second round of fixes and wider testing.
+Updated 16 November 2026 after a second and a third round of fixes and wider
+testing.
 
 - **New option: Settings > Game Options > Gameplay > Enhanced Physics.** It
   switches corpses, crates, barrels, debris and other loose objects to a new
@@ -631,8 +1326,12 @@ Updated 16 November 2026 after a second round of fixes and wider testing.
   from its last motion instead of stopping dead. A blast no longer leaves a
   corpse with a limb stretched out for a second or more: where the original
   showed a stretched limb for 42 frames after a Dark Matter blast, the option
-  shows one for 18.
-- **It is off by default, and stays off for now.** With the option off, the
+  shows one for 22, stretched less than half as far.
+- **It is off by default, and stays off for now.** It passes its behaviour
+  tests on Windows, and the ones that failed on Linux pass there now that
+  Linux does its arithmetic as Windows does (17 November), but in a few
+  scenes it costs more than the original and nobody has yet watched it in
+  play. With the option off, the
   game runs the original physics code unchanged, and saves and demos are byte
   for byte what they were. A change applies from the next map or loaded save,
   never under bodies in mid-air. In multiplayer everyone follows the server's
@@ -641,16 +1340,23 @@ Updated 16 November 2026 after a second round of fixes and wider testing.
   with.
 - **What to expect with it on.** Every shot, blast and death push delivers
   the momentum it always did, and a light hit can no longer fling a limb
-  across the room. Known shortfalls: crates and barrels thrown by a blast
-  land about a third as far away as before, and corpses thrown off the ground
-  about two thirds as far; a body lying across the edge of a ledge can sink
-  onto it or slide off; and on Linux two of the five scenes measured cost
-  more physics time with the option on, where on Windows every scene costs a
-  third to seven eighths less. These are why it is not the default yet.
+  across the room. A blast throws corpses, crates and barrels about as far
+  as the original does; a crate or barrel shoved across a flat floor ends
+  within about a quarter of the original's distance. On a slope a loose
+  crate or barrel comes to rest about half as far away, because the original
+  cannot stop a body on a slope and the option can, and a few corpses slide
+  further down one than any did before. Cost: a fifth of the original's
+  where piles of objects used to keep waking each other, about the same
+  elsewhere, and in two of the five scenes measured on each system a few
+  milliseconds more over the whole scene.
 - **Fixed since the first version of the option (16 November):** corpses
   killed against a wall no longer come to rest with an elbow or knee inside
-  it, and ammunition placed on ledges in Network 1 and Core 2 no longer tips
-  off before you get there.
+  it, and ammunition placed on ledges in Network 1, Core 2 and Storage 2 no
+  longer tips off before you get there. Crates and barrels thrown by a blast
+  no longer stop at a third of the distance, and corpses thrown off the
+  ground no longer land short on Windows. A body lying across the edge of a
+  ledge no longer sinks into it. The hanging lights in Putra no longer swing
+  loose after a hard push.
 - **Nothing to do.** Existing settings and saves are untouched, and a save
   loads whichever way the option is set. The row is in both the new and the
   classic interface, in all twelve languages.
@@ -658,7 +1364,8 @@ Updated 16 November 2026 after a second round of fixes and wider testing.
   a map loads; servers publish it as `si_enhancedPhysics`. Rigid bodies get a
   semi-implicit step with persistent, warm-started contacts, friction,
   sleeping and swept motion only where needed; articulated figures get a
-  warm-started iterative constraint solve with bounded recovery, joints that
+  warm-started iterative constraint solve with bounded recovery, contact
+  distances taken from the collision model's own contact features, joints that
   close by position without adding energy, an energy guard that keeps the
   figure's momentum, and an impulse guard that spreads a hit on a light limb
   over the figure. See the [physics reference](physics-reference.md).
@@ -669,18 +1376,23 @@ Updated 16 November 2026 after a second round of fixes and wider testing.
   marine, falling barrels, knocked grates) end as they do in the original.
   The hit test drives machinegun, gauntlet, small and large splash, rockets,
   grenades, Dark Matter and a vehicle-sized bump into resting and falling
-  corpses: every class stays within the legacy envelope for Strogg marines
-  and for player corpses in multiplayer. Saves made in either mode load in
+  corpses: every class stays within the legacy envelope for Strogg marines,
+  player corpses in multiplayer, crates and barrels on a slope and on a flat
+  floor, and The Awakening's grunts. The hanging lights of Air Defense 1 and
+  Putra move as the original's do. Saves made in either mode load in
   the other; clients took the server's mode both ways round; a demo recorded
   on a server with the option on plays to its end; a client joined a
   dedicated server with the option on, on Windows and on Linux; ragdolls and
-  debris stay smooth at 240 Hz in both modes. On Linux x64 the same seven save, client, demo and dedicated-server checks pass and the hit test passes for Strogg marines, and an ARM64 dedicated server ran a bot match in both modes under emulation. Details:
+  debris stay smooth at 240 Hz in both modes. On Linux x64 the same seven save, client, demo and dedicated-server checks pass, the hit test passes for crates and barrels and for nine of its eleven classes on Strogg marines, and an ARM64 dedicated server ran a bot match in both modes under emulation. Details:
   [physics reference](physics-reference.md#evidence).
-- Open: crates and barrels after a blast, bodies on ledge edges, three hit
-  classes on The Awakening's terrain, the hanging lights in Putra after a
-  hard push, cost on Linux, a review in motion by eye (this round compared
-  stills), and with those the decision on turning it on by default. Tracked
-  as PHYS-02 to PHYS-04 and PHYS-06 in the [roadmap](roadmap.md#rigid-body-and-ragdoll-physics).
+- Open: on both systems two of five measured scenes cost more than the
+  original over the whole scene (a few milliseconds on Windows; on Linux a
+  ring of three ragdolls takes 65 % longer to come to rest); the full Linux
+  test pass has to be repeated on the corrected build; a review in motion by
+  eye (every round so far compared stills); and with those the decision on
+  turning the option on by default. Tracked as PHYS-02, PHYS-03 and PHYS-06
+  in the
+  [roadmap](roadmap.md#rigid-body-and-ragdoll-physics).
 
 ## Click the key prompts in the new menus, 14 November 2026
 
@@ -709,7 +1421,6 @@ Updated 16 November 2026 after a second round of fixes and wider testing.
   the title. The cursor and clicks came from console verbs (`openq4_retainedGui
   pointer`, and the new `click`), not a physical mouse. Not run: Vulkan,
   Linux, macOS, Android touch, or a real mouse.
-
 
 ## The Awakening: lost dialogue, enemies that see, two missing effects, 14 November 2026
 
@@ -767,6 +1478,33 @@ Updated 16 November 2026 after a second round of fixes and wider testing.
   scripted lines were never recorded. About 350 recorded lines are still
   played by nothing: most are earlier takes of lines that do play, and the
   races' radio chatter has no placement the content can prove.
+
+## The Awakening: the Pain Lord's captives scream, 16 November 2026
+
+- **The three marines in the Pain Lord's machine (m05) scream as it takes
+  them.** Their screams were declared and captioned but never recorded, so the
+  scene was silent. openQ4 plays screams the installed content already has:
+  the expansion's unused take of a screaming marine for the first, and two of
+  Quake 4's medical-lab Stroggification screams for the others.
+- **What to do.** Replace the single-player game module. The screams play on a
+  fresh start of the map; `g_awakeningContentRepairs 0` keeps the silence.
+- **No beep at the end of Darnell's radio intro (m08).** The script calls a
+  radio line that has a recording but no sound definition, and the engine
+  sounds a short tone for a missing sound. The radio now stays silent there
+  until the line is restored.
+- **The opening battle's draft radio traffic is placed (m01).** An early
+  draft of the trench mission wrote 29 radio calls from the squads around
+  Falcon and from Markswell, none recorded, in a script no map runs. openQ4
+  places each at the matching scene of the shipped battle: the landing zone,
+  the Harvester and Razor 16 going down, the push on the turret bunkers, the
+  cave collapse, the supply tunnels and the last trench. The lines wait for the
+  radio to fall quiet, so the story's own calls are never talked over.
+- **Nothing changes yet.** The placement switches on only once the lines have
+  audio (`g_awakeningM01Radio 1`); `g_awakeningM01Radio 2` runs it silently to
+  test the timing. The 100 other draft lines belong to scenes the shipped maps
+  do not have. The
+  [missing voice lines register](awakening-missing-voice-lines.md) lists every
+  line, the pieces it lacks and its resolution.
 
 ## PNG textures and PNG screenshots, 14 November 2026
 
@@ -1019,29 +1757,6 @@ Updated 16 November 2026 after a second round of fixes and wider testing.
   in CTF all behave; the stock ruleset still spawns with the machinegun. The
   Create Server Rules tab sets both settings. Bots do not use the hook.
 
-## The weapon strip moves, and the Strogg one has its own feel, 13 November 2026
-
-- **The new interface's weapon strip opens and closes smoothly.** It rises
-  into place as you change weapons and sinks away a second later, or fades
-  out quickly as soon as you fire, instead of popping in and out.
-- **The ring follows your choice.** One ring glides from the weapon you had
-  to the one you picked, the gun settles into it and its name slides in from
-  the same side, so scrolling through weapons reads at a glance.
-- **A refused choice now tells you so.** Pressing the key for a weapon you
-  don't carry or that is out of ammunition, or scrolling when there is
-  nothing else to switch to, shakes the ring and flashes it red; an empty
-  gun's crossed-out sign pulses to show why.
-- **A small tick marks your quick-switch weapon,** the one you return to
-  after a change.
-- **After Kane's transformation the Strogg strip has its own character.** It
-  tunes in like a neural link with a scan line, its ring stretches as it
-  travels and sends out a pulse when it lands, and a refusal glitches in hard
-  steps. The Awakening's strips and the multiplayer strip move too.
-- Reduced Motion keeps the strip still apart from short fades, while the red
-  refusal, the empty sign and the tick stay. The classic HUD (`ui_retained 0`)
-  is unchanged. Replace both game modules: they send the new refusal to the
-  HUD.
-
 ## Retail distance comparison (AUD-01), 13 November 2026
 
 - [ ] AUD-01: `sound_distance_retail_compare.py` compares the levels that retail
@@ -1082,6 +1797,29 @@ Updated 16 November 2026 after a second round of fixes and wider testing.
   or `none`), and the speech audit counts authored text as transcribed.
 - Ordered human play and physical stereo-HUD placement remain open under
   AUD-07.
+
+## The weapon strip moves, and the Strogg one has its own feel, 13 November 2026
+
+- **The new interface's weapon strip opens and closes smoothly.** It rises
+  into place as you change weapons and sinks away a second later, or fades
+  out quickly as soon as you fire, instead of popping in and out.
+- **The ring follows your choice.** One ring glides from the weapon you had
+  to the one you picked, the gun settles into it and its name slides in from
+  the same side, so scrolling through weapons reads at a glance.
+- **A refused choice now tells you so.** Pressing the key for a weapon you
+  don't carry or that is out of ammunition, or scrolling when there is
+  nothing else to switch to, shakes the ring and flashes it red; an empty
+  gun's crossed-out sign pulses to show why.
+- **A small tick marks your quick-switch weapon,** the one you return to
+  after a change.
+- **After Kane's transformation the Strogg strip has its own character.** It
+  tunes in like a neural link with a scan line, its ring stretches as it
+  travels and sends out a pulse when it lands, and a refusal glitches in hard
+  steps. The Awakening's strips and the multiplayer strip move too.
+- Reduced Motion keeps the strip still apart from short fades, while the red
+  refusal, the empty sign and the tick stay. The classic HUD (`ui_retained 0`)
+  is unchanged. Replace both game modules: they send the new refusal to the
+  HUD.
 
 ## Buying by Quake 4's or The Awakening's rules, with a new buy menu, 13 November 2026
 

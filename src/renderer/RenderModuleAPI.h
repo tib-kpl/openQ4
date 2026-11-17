@@ -105,7 +105,14 @@
 // 34 - renderExport_t appends TryDisplayTransition: a strict display request
 //      applied to the running device, without the teardown TryDeviceRestart
 //      performs.
-#define RENDER_API_VERSION			34
+// 35 - idRenderSystem appends UploadImageRegion: one rectangle of a
+//      single-level RGBA8 image that CreateImage allocated or UploadImage
+//      shaped (the retained interface's coverage atlas uploads only the tiles
+//      it placed).
+// 36 - idFileSystem appends GetFileOrigin: the image loader skips Quake 4's
+//      precomputed image-program results when an input comes from outside
+//      the shipped packs (a stale module would call past the vtable).
+#define RENDER_API_VERSION			36
 #define RENDER_API_ENTRY_POINT		"GetRenderAPI"
 
 class idSys;

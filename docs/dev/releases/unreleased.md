@@ -9,6 +9,16 @@ the [development roadmap](../roadmap.md) for current scope.
 
 ## Highlights
 
+- **The Awakening pauses in its own frozen style.** While you play the
+  expansion's campaign with the new interface, the pause menu, its Save,
+  Load and Restart Level pages and the settings pages it opens wear The
+  Awakening's look: black, horned frames
+  after the Valkaryne, rimed in glacial light, with frost creeping over them
+  and snow drifting behind the menu. The frames close in as the menu opens and
+  glide smoothly to each page and back, and the control you are on glows in a
+  reactor-orange lens. Quake 4's campaign keeps the Marine menus, and a
+  stroggified player keeps the Strogg pause.
+
 - **Buy your gear by Quake 4's or The Awakening's rules.** A server's
   **Buying** option (Create Server, the vote and the admin page) now chooses
   between the retail buy menu and the expansion's, completed on the stock
@@ -395,7 +405,7 @@ the [development roadmap](../roadmap.md) for current scope.
 - **Effects closer to the original.** Particle effects now spawn, move, fade and draw as they do in the original Quake 4. Electrical arcs regain their bright, forked look. Steam and smoke placed in maps are already flowing when you first see them. Long-running effects no longer slow down or fade early.
 - **Rooms sound the way Quake 4's level designers set them up.** Every map's rooms, corridors and outdoor areas get their own reverb again, as the original game did with EAX sound hardware: a tiled washroom rings, a hangar booms, and a firefight in the hall next door sounds like that hall, coming from its doorway. Closed doors muffle the sounds behind them, radio chatter stays dry, and voice-over sits back in the mix. Until now openQ4 played no reverb at all. It is on by default (`s_useEAXReverb`) wherever OpenAL Soft is in use; see [Room Reverb](../../user/gameplay-settings.md#room-reverb).
 - **Play your mods over The Awakening.** A mod now stays loaded when you choose The Awakening, and its files apply on top of the expansion's: load it from **Mods** and pick the campaign, or launch with `+set fs_game mymod +set fs_game_base q4xbase`. Mod authors can add `"campaign": "awakening"` (or `"quake4"`) to `mod.json` so their mod always plays over the right campaign. A mod used with both campaigns keeps one folder; Load Game lists only the campaign you are playing. Until now choosing either campaign unloaded your mod, and The Awakening ignored `fs_game_base q4xbase`. See [Mods and The Awakening](../../user/campaigns.md#mods-and-the-awakening).
-- **Subtitles say when someone speaks without a transcript.** With subtitles on, dialogue the installed game has no text for, about three lines in ten, now shows **[untranscribed speech]** after the speaker's name instead of nothing; turn it off with **Settings > Audio > Untranscribed Speech**. Captions also stay up long enough to read after a line ends, and mods can add or translate missing captions with caption packs. See [Dialogue subtitles](../../user/gameplay-settings.md#dialogue-subtitles).
+- **Radio chatter and squad banter have subtitles.** About three in ten campaign lines had no transcript in the installed game, among them most radio transmissions. They now show the line as written in the game's own script, and marines heard over the helmet radio show the same text as face to face. What is left, screams, laughter and pain sounds, shows **[untranscribed speech]** after the speaker's name instead of nothing; turn it off with **Settings > Audio > Untranscribed Speech**. **Speaker Names** now shows who is talking, not only the radio label. Captions also stay up long enough to read after a line ends, and mods can correct or translate captions with caption packs. See [Dialogue subtitles](../../user/gameplay-settings.md#dialogue-subtitles).
 
 ## Upgrade Notes
 
@@ -610,6 +620,46 @@ the [development roadmap](../roadmap.md) for current scope.
   scroll with the mouse wheel, your weapon-change buttons or the right stick,
   and a count shows how many players are further down. Weapon changes while
   you hold it work as before when everyone fits.
+
+- **Your own body in VR.** Look down in the headset and you see a chest, legs
+  and feet standing where you stand, and arms that run from your shoulders to
+  your hands. Your body turns with your torso rather than your gun, and your
+  knees bend when you duck or crouch. Your weapon hand stays on the gun's
+  grip; your other hand follows its controller and goes back to the gun for
+  the two-handed grip and for reloads. **Your Body** on the Virtual Reality
+  settings tab chooses With Arms, Legs and Torso, or Off (`vr_body`). See the
+  [VR guide](../../user/vr.md#your-body). It has only been checked on
+  openQ4's simulated headset so far.
+
+- VR: a gun in your hand is now hidden by whatever your hand is behind, such
+  as a door frame, instead of being drawn over everything.
+
+- VR: hold the weapon-hand stick in for a second to recentre, without a
+  keyboard. openQ4 also recentres the first time your headset hands it the
+  controllers and at the start of each level, and no longer learns your
+  standing height from a headset that is still lying on the desk.
+
+- VR: a level, a loaded save or a teleporter now leaves you facing the way
+  the game intends. They used to point your gun that way instead, so a gun
+  held at your side could start you facing a wall. A cinematic no longer
+  leaves the world turned by however far your hand moved while it played.
+
+- VR: snap and smooth turns pivot about your head, so a turn no longer slides
+  your view sideways when you stand off centre.
+
+- VR, Valve Index: weapons no longer switch, and the weapon wheel no longer
+  opens, from simply holding the controllers; the grip now takes a squeeze.
+
+- VR: when you aim with your head, shots leave from where your head is, so you
+  can shoot over cover you have ducked behind. The comfort vignette stays in
+  view while you zoom and no longer stays dark through a pause, the lightning
+  gun and the gauntlet vibrate in your hand, the flashlight follows the gun
+  smoothly at high refresh rates, and in single player the laser dot stays as
+  a pointer while your weapon is put away.
+
+- VR: the controllers no longer stay "held" if the headset's software stops
+  the session in the same moment it takes them away, which could leave you
+  running or firing.
 
 - VR now runs on the Vulkan renderer too. The OpenXR runtime creates the
   renderer's device on the GPU your headset uses, and the headset keeps

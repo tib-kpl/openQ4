@@ -1008,6 +1008,7 @@ public:
 	virtual void			UnCrop();
 	virtual void			GetCardCaps( bool &oldCard, bool &nv10or20 );
 	virtual bool			UploadImage( const char *imageName, const byte *data, int width, int height );
+	virtual bool			UploadImageRegion( const char *imageName, const byte *data, int x, int y, int width, int height, int rowPitch );
 
 
 	virtual idImage*		CreateImage(const char* name, idImageOpts* opts, textureFilter_t textureFilter);
@@ -1539,6 +1540,7 @@ extern idCVar r_ttfFontDebug;			// 1 = dump each TrueType glyph atlas to fs_save
 extern idCVar r_useShadowMap;			// 1 = use a simple shadow-map path for projected and point lights when supported
 extern idCVar r_shadowMapCSM;			// 1 = use projected-light cascaded shadow maps when shadow maps are enabled
 extern idCVar r_shadowMapHashedAlpha;		// 1 = use hashed alpha testing for perforated shadow-map casters when available
+extern idCVar r_shadowMapCharacterSelfShadow;	// 1 = animated characters ignore their materials' noSelfShadow under shadow-mapped lights
 extern idCVar r_shadowMapTranslucentMoments;	// 1 = accumulate experimental translucent shadow moments for blended casters
 extern idCVar r_shadowMapTranslucentDensity;	// density scale applied when resolving translucent shadow moments
 extern idCVar r_shadowMapTranslucentMinAlpha;	// minimum per-stage alpha considered by translucent shadow moments

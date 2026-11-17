@@ -391,6 +391,7 @@ idCVar g_showEnemies(				"g_showEnemies",			"0",			CVAR_GAME | CVAR_BOOL, "draws
 idCVar g_presentationInterpolation(	"g_presentationInterpolation",	"1",		CVAR_GAME | CVAR_BOOL | CVAR_ARCHIVE, "draw movers and everything riding them at the same interpolated presentation time as the first-person camera; 0 puts them back on the 60 Hz simulation clock" );
 
 idCVar g_frametime(					"g_frametime",				"0",			CVAR_GAME | CVAR_BOOL, "displays timing information for each game frame" );
+idCVar g_clipFastQueries(			"g_clipFastQueries",		"1",			CVAR_GAME | CVAR_BOOL, "openQ4: contents queries gather only clip models with the requested contents, and unlinking marks a clip sector's contents for refresh instead of rescanning it; 0 restores the original per-unlink rescan and full gather, for comparison (same results either way)" );
 idCVar g_timeentities(				"g_timeEntities",			"0",			CVAR_GAME | CVAR_FLOAT, "when non-zero, shows entities whose think functions exceeded the # of milliseconds specified" );
 
 // RAVEN BEGIN
@@ -520,21 +521,27 @@ idCVar af_testSolid(				"af_testSolid",				"1",			CVAR_GAME | CVAR_BOOL, "test f
 idCVar g_enhancedPhysics(			"g_enhancedPhysics",		"0",			CVAR_GAME | PC_CVAR_ARCHIVE | CVAR_BOOL, "enhanced rigid-body and ragdoll physics (0 = legacy simulation); applies at the next map load" );
 idCVar rb_enhancedIterations(		"rb_enhancedIterations",	"8",			CVAR_GAME | CVAR_INTEGER | CVAR_CHEAT, "enhanced physics: contact solver iterations per rigid-body step", 1, 64 );
 idCVar rb_enhancedMargin(			"rb_enhancedMargin",		"1",			CVAR_GAME | CVAR_FLOAT | CVAR_CHEAT, "enhanced physics: speculative contact distance beyond the step's motion" );
-idCVar rb_enhancedFrictionScale(	"rb_enhancedFrictionScale",	"12",			CVAR_GAME | CVAR_FLOAT | CVAR_CHEAT, "enhanced physics: Coulomb friction per unit of a body's contact friction (clamped to 0.05..1.2)" );
+idCVar rb_enhancedFrictionScale(	"rb_enhancedFrictionScale",	"3",			CVAR_GAME | CVAR_FLOAT | CVAR_CHEAT, "enhanced physics: Coulomb friction per unit of a body's contact friction (clamped to 0.05..1.2)" );
+idCVar rb_enhancedImpactFrictionScale(	"rb_enhancedImpactFrictionScale","0",		CVAR_GAME | CVAR_FLOAT | CVAR_CHEAT, "enhanced physics: share of Coulomb friction a rigid body keeps on an impact (a contact reached within the step above the bounce speed); 0 = frictionless impacts, as the original collision impulse" );
+idCVar rb_enhancedBounceResting(	"rb_enhancedBounceResting",	"1",			CVAR_GAME | CVAR_BOOL | CVAR_CHEAT, "enhanced physics: an impact bounces a rigid body by its bouncyness on a contact it already had, not only on a new touch" );
+idCVar rb_enhancedFeatureGaps(		"rb_enhancedFeatureGaps",	"1",			CVAR_GAME | CVAR_BOOL | CVAR_CHEAT, "enhanced physics: measure a rigid body's contact gaps on the vertex, edge or polygon the collision model reports (0 = estimate from the nearest vertex)" );
 idCVar rb_enhancedRollingFriction(	"rb_enhancedRollingFriction","0.01",		CVAR_GAME | CVAR_FLOAT | CVAR_CHEAT, "enhanced physics: rolling resistance per unit of normal impulse and lever arm" );
 idCVar rb_enhancedSpinningFriction(	"rb_enhancedSpinningFriction","0.02",		CVAR_GAME | CVAR_FLOAT | CVAR_CHEAT, "enhanced physics: resistance to spinning about a contact normal" );
 idCVar rb_enhancedRotationSweep(	"rb_enhancedRotationSweep",	"0.25",			CVAR_GAME | CVAR_FLOAT | CVAR_CHEAT, "enhanced physics: a step that turns a body's extent by more than this is swept for collisions" );
 idCVar rb_enhancedPersistFrames(	"rb_enhancedPersistFrames",	"8",			CVAR_GAME | CVAR_INTEGER | CVAR_CHEAT, "enhanced physics: steps a static contact stays in the manifold without being swept again", 0, 64 );
-idCVar rb_enhancedSleepSpeed(		"rb_enhancedSleepSpeed",	"3",			CVAR_GAME | CVAR_FLOAT | CVAR_CHEAT, "enhanced physics: linear speed below which a supported body counts as quiet" );
+idCVar rb_enhancedSleepSpeed(		"rb_enhancedSleepSpeed",	"1.5",			CVAR_GAME | CVAR_FLOAT | CVAR_CHEAT, "enhanced physics: linear speed below which a supported body counts as quiet" );
 idCVar rb_enhancedSleepAngularSpeed("rb_enhancedSleepAngularSpeed","0.15",		CVAR_GAME | CVAR_FLOAT | CVAR_CHEAT, "enhanced physics: angular speed below which a supported body counts as quiet" );
-idCVar rb_enhancedSleepFrames(		"rb_enhancedSleepFrames",	"20",			CVAR_GAME | CVAR_INTEGER | CVAR_CHEAT, "enhanced physics: quiet steps before a rigid body sleeps", 1, 600 );
+idCVar rb_enhancedSleepFrames(		"rb_enhancedSleepFrames",	"10",			CVAR_GAME | CVAR_INTEGER | CVAR_CHEAT, "enhanced physics: quiet steps before a rigid body sleeps", 1, 600 );
 idCVar rb_enhancedRestTest(		"rb_enhancedRestTest",		"1",			CVAR_GAME | CVAR_BOOL | CVAR_CHEAT, "enhanced physics: a rigid body that has not moved since it was created comes to rest by the original test (three contacts around its centre of mass, almost no motion), as a placed body does on its first step" );
 idCVar rb_enhancedDebug(			"rb_enhancedDebug",			"",				CVAR_GAME | CVAR_CHEAT, "enhanced physics: name of a rigid body whose steps are printed" );
 idCVar af_enhancedIterations(		"af_enhancedIterations",	"12",			CVAR_GAME | CVAR_INTEGER | CVAR_CHEAT, "enhanced physics: Gauss-Seidel iterations over an articulated figure's auxiliary rows", 1, 200 );
 idCVar af_enhancedTolerance(		"af_enhancedTolerance",		"0.0001",		CVAR_GAME | CVAR_FLOAT | CVAR_CHEAT, "enhanced physics: relative change that ends the articulated-figure iterations early" );
+idCVar af_enhancedEmbeddedSweep(	"af_enhancedEmbeddedSweep",	"1",			CVAR_GAME | CVAR_INTEGER | CVAR_CHEAT, "enhanced physics: a body of a figure that is inside static geometry when the figure wakes is 1 = not pushed out of it, 2 = also swept every step as the original simulation sweeps every body (0 = treated like any other)", 0, 2 );
+idCVar af_enhancedAuditFrames(		"af_enhancedAuditFrames",	"8",			CVAR_GAME | CVAR_INTEGER | CVAR_CHEAT, "enhanced physics: steps between audit sweeps of a body of a figure that is not swept otherwise, from the pose it was last swept to (0 = never)", 0, 120 );
 idCVar af_enhancedFallbackError(	"af_enhancedFallbackError",	"0.05",			CVAR_GAME | CVAR_FLOAT | CVAR_CHEAT, "enhanced physics: relative error above which the exact legacy LCP solves the step instead" );
 idCVar af_enhancedWarmStart(		"af_enhancedWarmStart",		"0.85",			CVAR_GAME | CVAR_FLOAT | CVAR_CHEAT, "enhanced physics: fraction of last step's multipliers that starts the solve" );
 idCVar af_enhancedMargin(			"af_enhancedMargin",		"1",			CVAR_GAME | CVAR_FLOAT | CVAR_CHEAT, "enhanced physics: speculative contact reach beyond a body's motion" );
+idCVar af_enhancedFeatureGaps(		"af_enhancedFeatureGaps",	"1",			CVAR_GAME | CVAR_BOOL | CVAR_CHEAT, "enhanced physics: measure a figure's contact gaps on the vertex, edge or polygon the collision model reports (0 = estimate from the nearest vertex)" );
 idCVar af_enhancedSlop(				"af_enhancedSlop",			"0.25",			CVAR_GAME | CVAR_FLOAT | CVAR_CHEAT, "enhanced physics: overlap or gap treated as touching (units)" );
 idCVar af_enhancedRecoveryRate(		"af_enhancedRecoveryRate",	"0.4",			CVAR_GAME | CVAR_FLOAT | CVAR_CHEAT, "enhanced physics: fraction of an overlap removed per step" );
 idCVar af_enhancedMaxRecovery(		"af_enhancedMaxRecovery",	"60",			CVAR_GAME | CVAR_FLOAT | CVAR_CHEAT, "enhanced physics: cap on position-only recovery speed for overlap and violated limits" );
@@ -701,7 +708,7 @@ idCVar pm_vehicleSoundLerpScale(	"pm_vehicleSoundLerpScale",		"10",		CVAR_GAME |
 idCVar g_showPlayerShadow(			"g_showPlayerShadow",		"1",			CVAR_GAME | PC_CVAR_ARCHIVE | CVAR_BOOL, "enables shadow of player model" );
 idCVar g_showPresentationPose(		"g_showPresentationPose",	"0",			CVAR_GAME | CVAR_BOOL, "report whether the local player's body reaches the presentation clock" );
 idCVar g_presentationClockCapture(	"g_presentationClockCapture",	"0",		CVAR_GAME | CVAR_INTEGER, "capture this many presentation-clock samples, then dump them once" );
-idCVar g_dynamicLightShadows(		"g_dynamicLightShadows",	"-1",			CVAR_GAME | PC_CVAR_ARCHIVE | CVAR_INTEGER, "gun flashlight and projectile lights request shadows: -1 = auto (the flashlight wherever shadows are drawn, projectile lights at the highest machine spec as in retail), 0 = never, 1 = always", -1, 1 );
+idCVar g_dynamicLightShadows(		"g_dynamicLightShadows",	"-1",			CVAR_GAME | PC_CVAR_ARCHIVE | CVAR_INTEGER, "weapon lights request shadows (gun flashlight, muzzle flashes, projectile and explosion lights, and the lights in weapon and monster effects): -1 = auto (the flashlight wherever shadows are drawn, the rest at the highest machine spec: Quality, Ultra and Maximum), 0 = never, 1 = always", -1, 1 );
 
 // Mirrors the single-player gate in src/game/gamesys/SysCvar.cpp.
 bool G_DynamicLightShadowsEnabled( void ) {
@@ -740,6 +747,8 @@ idCVar cl_gun_y(					"cl_gun_y",					"0",			PC_CVAR_ARCHIVE | CVAR_FLOAT | CVAR_
 idCVar cl_gun_z(					"cl_gun_z",					"0",			PC_CVAR_ARCHIVE | CVAR_FLOAT | CVAR_NOCHEAT, "client first-person weapon up offset" );
 idCVar g_weaponFovEffect(			"g_weaponFovEffect",		"0",			CVAR_GAME | PC_CVAR_ARCHIVE | CVAR_BOOL, "Adjusts the position of the weapon model with increased fov" );
 idCVar g_weaponMuzzleKick(			"g_weaponMuzzleKick",	"1",			CVAR_GAME | PC_CVAR_ARCHIVE | CVAR_BOOL, "view weapon kicks back when it fires; 0 holds the view model still" );
+idCVar g_viewKick(					"g_viewKick",				"1",			CVAR_GAME | PC_CVAR_ARCHIVE | CVAR_FLOAT, "scales the camera kick and shake when you fire; 0 keeps the view still, aim still follows the crosshair", 0.0f, 1.0f );
+idCVar g_screenShake(				"g_screenShake",			"1",			CVAR_GAME | PC_CVAR_ARCHIVE | CVAR_FLOAT, "scales single-player screen shake from explosions, machinery and vehicles; 0 turns it off", 0.0f, 1.0f );
 
 idCVar g_viewNodalX(				"g_viewNodalX",				"0",			CVAR_GAME | CVAR_FLOAT, "" );
 idCVar g_viewNodalZ(				"g_viewNodalZ",				"0",			CVAR_GAME | CVAR_FLOAT, "" );
@@ -896,6 +905,7 @@ idCVar g_perfTest_aiNoObstacleAvoid(		"g_perfTest_aiNoObstacleAvoid",		"0",			CV
 idCVar g_perfTest_aiUndying(				"g_perfTest_aiUndying",				"0",			CVAR_GAME | CVAR_BOOL, "makes all AI undying" );
 idCVar g_perfTest_aiNoVisTrace(				"g_perfTest_aiNoVisTrace",			"0",			CVAR_GAME | CVAR_BOOL, "ai does no vis traces" );
 idCVar g_perfTest_noJointTransform(			"g_perfTest_noJointTransform",		"0",			CVAR_GAME | CVAR_BOOL, "all joint transforms return origin" );
+idCVar g_precachePlayerModels(			"g_precachePlayerModels",			"1",			CVAR_GAME | CVAR_ARCHIVE | CVAR_BOOL, "load every player model with a multiplayer map, so a player or bot arriving with a model nobody has used yet does not hitch the match; 0 loads only this player's and the defaults" );
 idCVar g_perfTest_noPlayerFocus(			"g_perfTest_noPlayerFocus",			"0",			CVAR_GAME | CVAR_BOOL, "doesn't do player focus traces/logic" );
 idCVar g_perfTest_noProjectiles(			"g_perfTest_noProjectiles",			"0",			CVAR_GAME | CVAR_BOOL, "all projectiles are removed instantly" );
 

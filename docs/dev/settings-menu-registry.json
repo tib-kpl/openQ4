@@ -3412,6 +3412,33 @@
       "accessibility": "Standard focusable choiceDef row."
     },
     {
+      "id": "game.screenshot_format",
+      "pane": "Game Options",
+      "section": "Corpse, Language, Console",
+      "path": "Settings > Game Options > Corpse, Language, Console > Screenshot Format",
+      "source": "game",
+      "container": "set_game_screenshotformat",
+      "widgets": [
+        "set_game_screenshotformat_value"
+      ],
+      "widget_type": "choice",
+      "label_key": "#str_231775",
+      "choices_key": "#str_231776",
+      "values": [
+        "0",
+        "1"
+      ],
+      "target_type": "cvar",
+      "target": "r_screenshotFormat",
+      "default": "0",
+      "cvar_range": {
+        "low": "0",
+        "high": "1"
+      },
+      "restart_required": false,
+      "accessibility": "Standard focusable choiceDef row. TGA or PNG for the numbered screenshots F12 saves from the next one on; screenshot <name>.png always writes a PNG."
+    },
+    {
       "id": "game.crosshair_color",
       "pane": "Game Options",
       "section": "Crosshair",
@@ -3897,6 +3924,62 @@
       },
       "restart_required": false,
       "accessibility": "Standard focusable choiceDef row backed by a typed force-model adapter. No clears the force-model cvars."
+    },
+    {
+      "id": "game.view_kick",
+      "pane": "Game Options",
+      "section": "Gameplay And View",
+      "source": "game",
+      "target_type": "cvar",
+      "restart_required": false,
+      "path": "Settings > Game Options > Gameplay And View > View Kick",
+      "container": "set_game_viewkick",
+      "widgets": [
+        "set_game_viewkick_value"
+      ],
+      "widget_type": "choice",
+      "label_key": "#str_231773",
+      "choices_key": "#str_230136",
+      "values": [
+        "0",
+        "0.5",
+        "1"
+      ],
+      "target": "g_viewKick",
+      "default": "1",
+      "cvar_range": {
+        "low": "0",
+        "high": "1"
+      },
+      "accessibility": "Focusable choiceDef row. Off, Low or Full scales the camera kick and shake when you fire; shots still go where the crosshair points. The retained page offers the full 0 to 1 range."
+    },
+    {
+      "id": "game.screen_shake",
+      "pane": "Game Options",
+      "section": "Gameplay And View",
+      "source": "game",
+      "target_type": "cvar",
+      "restart_required": false,
+      "path": "Settings > Game Options > Gameplay And View > Screen Shake",
+      "container": "set_game_screenshake",
+      "widgets": [
+        "set_game_screenshake_value"
+      ],
+      "widget_type": "choice",
+      "label_key": "#str_231774",
+      "choices_key": "#str_230136",
+      "values": [
+        "0",
+        "0.5",
+        "1"
+      ],
+      "target": "g_screenShake",
+      "default": "1",
+      "cvar_range": {
+        "low": "0",
+        "high": "1"
+      },
+      "accessibility": "Focusable choiceDef row. Off, Low or Full scales single-player screen shake from explosions, machinery, sounds and vehicles. The retained page offers the full 0 to 1 range."
     },
     {
       "id": "game.corpse_time",
@@ -4402,6 +4485,30 @@
       "default": "0",
       "restart_required": false,
       "accessibility": "Focusable choiceDef row. Seated play measures height from where the player recentred; standing play measures it from the floor."
+    },
+    {
+      "id": "game.vr_body",
+      "pane": "Game Options",
+      "section": "Virtual Reality",
+      "path": "Settings > Game Options > Virtual Reality > Your Body",
+      "source": "game",
+      "container": "set_game_vr_body",
+      "widgets": [
+        "set_game_vr_body_value"
+      ],
+      "widget_type": "choice",
+      "label_key": "#str_232514",
+      "choices_key": "#str_232515",
+      "values": [
+        "0",
+        "1",
+        "2"
+      ],
+      "target_type": "cvar",
+      "target": "vr_body",
+      "default": "2",
+      "restart_required": false,
+      "accessibility": "Focusable choiceDef row. Chooses whether the headset shows the player's own body: none, legs and torso, or with arms that reach the hands."
     },
     {
       "id": "audio.subtitles",

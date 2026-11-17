@@ -90,6 +90,8 @@ The light grids and loading screens rarely change, and each release's notes say 
 
 If a release did change `pak1.pk4` or `pak2.pk4`, download that file from the release page too and save it in `baseoq4/` under the same name, or install the full package instead. If a pack is missing or out of date, openQ4 tells you which one and where to get it when it starts.
 
+Keep openQ4's packs in `baseoq4/` only. Don't copy them into a mod's folder: a mod's files take priority over openQ4's, so the copy would hide the next update's menus and text.
+
 The Windows installer and the Linux AppImage always update as whole downloads. Windows debugging files (`.pdb`) are not in the player package; they are published separately as `openq4-<version>-windows-<arch>-symbols.zip` for anyone analysing a crash.
 
 ## Platform notes
@@ -113,7 +115,7 @@ The Windows installer and the Linux AppImage always update as whole downloads. W
 
 - Launch `openQ4-steamdeck` from the Linux archive. It turns on the Deck's controls and settings (it sets `OPENQ4_STEAMDECK=1`).
 - Direct launches of `openQ4-client_x64` on a Steam Deck or SteamOS also auto-select the Deck profile, unless you've already chosen another one.
-- Tune the controls under **Settings → Game Options → Controller**: gyro, touchpad, touchscreen and the low-battery rumble limit.
+- Tune the controls under **Settings → Controls → Controller** (in 0.14.1, **Settings → Game Options → Controller**): gyro, touchpad, touchscreen and the low-battery rumble limit.
 - If the game window has trouble starting, set `OPENQ4_FORCE_X11=1` to run it through the older X11 display system instead of Wayland.
 - When reporting a controller problem, run `listControllers` in the console and include what it prints.
 - The [Steam Deck guide](steam-deck.md) has the details.

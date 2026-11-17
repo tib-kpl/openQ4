@@ -31,6 +31,11 @@ Pins what keeps VR safe to ship without a headset in CI:
   eye-dependent work per eye (VR-04): the second eye emits the first eye's
   world-GUI quads, a remote camera renders once per frame, and mirror,
   reflection, refraction and x-ray render maps render once per eye;
+- the player's own body in the headset (vr_body) is a second render entity
+  seen in the player's own view only, posed on every draw from the tracked
+  head and hands by the shared solver (VRBody.h) in both game modules, with
+  the view weapon's forearms swung to meet it; a gun held in the hand is not
+  depth-hacked in front of the world;
 - the user guide, developer plan, licence notice and runtime smoke exist.
 """
 from __future__ import annotations
@@ -44,7 +49,7 @@ LANGUAGES = (
     "english", "spanish", "french", "italian", "polish", "russian", "german",
     "brazilian", "czech", "hungarian", "turkish", "ukrainian",
 )
-ACTION_STRINGS = [f"#str_{n}" for n in range(230100, 230111)]
+ACTION_STRINGS = [f"#str_{n}" for n in range(230100, 230113)]
 
 
 def read(relative: str) -> str:
@@ -89,7 +94,7 @@ def check_build() -> None:
 
 def check_abi() -> None:
     api = read("src/renderer/RenderModuleAPI.h")
-    require(api, "#define RENDER_API_VERSION			34", "renderer module ABI v34")
+    require(api, "#define RENDER_API_VERSION			36", "renderer module ABI v36")
     require(api, "void			( *RendererDeviceEvent )( int event );	// renderDeviceEvent_t",
             "the device lifetime service retains its signature")
     services = api[api.index("typedef struct renderModuleServices_s {"):api.index("} renderModuleServices_t;")]
@@ -109,20 +114,21 @@ def check_abi() -> None:
     # later ABI versions only append after them
     if slots[:4] != ["GetVRGraphicsBinding", "SetVRFrame", "SetVRRenderTarget", "GetVRFrameResult"] \
             or slots[4:] != ["PresentScaledScene", "BeginGuiRoot", "BeginSavePreview", "PollSavePreview", "CancelSavePreview",
-                             "ReloadGeneratedCacheImages"]:
-        raise AssertionError(f"the VR slots must retain their order before scaled presentation, GUI roots, checkpoint previews and the pure image-cache reload, found {slots}")
+                             "ReloadGeneratedCacheImages", "UploadImageRegion"]:
+        raise AssertionError(f"the VR slots must retain their order before scaled presentation, GUI roots, checkpoint previews, the pure image-cache reload and region uploads, found {slots}")
 
     # game modules call through idVRSystem too: its slots only ever grow at the end
     vr_system = read("src/framework/VRSystem.h")
     interface = vr_system[vr_system.index("class idVRSystem {"):vr_system.index("extern idVRSystem *")]
     vr_slots = re.findall(r"virtual \w+\s+(\w+)\(", interface)
     if vr_slots != ["Init", "Shutdown", "RendererStarted", "RendererStopping", "BeginFrame", "EndFrame",
-                    "IsPacing", "IsActive", "GetFrameState", "GetUsercmdInput", "DrawMenuPointer", "Vibrate", "ShiftTrackingOrigin"]:
+                    "IsPacing", "IsActive", "GetFrameState", "GetUsercmdInput", "DrawMenuPointer", "Vibrate", "ShiftTrackingOrigin", "TurnBody"]:
         raise AssertionError(f"idVRSystem's slots changed order: {vr_slots}")
     # game modules read the frame state by layout: new members go at the end
     frame = vr_system[vr_system.index("typedef struct vrFrameState_s {"):vr_system.index("} vrFrameState_t;")]
-    if not frame.rstrip().endswith("bool\t\t\t\t\troomScale;\t\t// the body walks after the head (vr_roomScale)"):
-        raise AssertionError("vrFrameState_t grows at the end; roomScale is its newest member")
+    members = re.findall(r"^\t(?:bool|int|float|idVec3|vrPose_t|vrEyeView_t)\s+(\w+)(?:\[\w+\])?;", frame, re.M)
+    if members[:1] != ["frameNumber"] or members[-3:] != ["roomScale", "twoHanded", "body"]:
+        raise AssertionError(f"vrFrameState_t grows at the end; twoHanded and body follow roomScale, found {members[-4:]}")
 
     render_world = read("src/renderer/RenderWorld.h")
     for field in ("bool					asymmetricFov = false;", "float					fovTanLeft = 0.0f;",
@@ -131,7 +137,7 @@ def check_abi() -> None:
         require(render_world, field, "renderView_t keeps existing views symmetric")
 
     game = read("src/game/Game.h")
-    require(game, "const int GAME_API_VERSION\t\t= 58;", "game module ABI v58")
+    require(game, "const int GAME_API_VERSION\t\t= 60;", "game module ABI v60")
     import_block = game[game.index("struct gameImport_t {"):game.index("struct gameExport_t {")]
     # Append-only ABI: vrSystem (v50) keeps its slot; later members follow it.
     if not import_block.rstrip().rstrip("};").rstrip().endswith(
@@ -438,11 +444,12 @@ def check_engine() -> None:
     # world GUIs, characters and usable things answer the weapon hand where it points
     require(player, "start = GetEyePosition();\n\t// openQ4 VR: the weapon hand points at world GUIs",
             "the focus trace starts where the weapon hand aims")
-    require(player, "\tGetVRAimOrigin( start );\n\tend = start + viewAngles.ToForward() * 768.0f;",
-            "the focus trace runs from the weapon hand along its aim")
+    require(player, "\tif ( !GetVRAimOrigin( start ) ) {\n\t\tGetVRHeadOrigin( start );\n\t}\n\tend = start + viewAngles.ToForward() * 768.0f;",
+            "the focus trace runs from the weapon hand along its aim, or from the tracked head that aims")
     require(read("src/game/vehicle/VehicleParts.cpp"), "vrDriver->GetVRVehicleAim( vrSeatAim, vrWorldAim )",
             "a turret driven in VR follows the head without dropping rotation")
-    require(read("src/mpgame/Player.cpp"), "|| pm_thirdPerson.GetBool() || IsInVehicle() || vrPresentationCamera ) {",
+    require(read("src/mpgame/Player.cpp"), "|| pm_thirdPerson.GetBool() || IsInVehicle() || vrPresentationCamera\n"
+            "\t\t\t|| ( health <= 0 && ( pm_thirdPersonDeath.GetBool() || g_deathCamera.GetBool() ) ) ) {",
             "multiplayer, which has no vehicles, keeps them and the Arena's authored shots on the floating screen")
     # the aim's pitch is the tracked hand's own on both ends of the wire
     require(read("src/framework/UsercmdGen.cpp"), "cmd.buttons |= BUTTON_VRAIM;", "a tracked aim marks its usercmds")
@@ -467,9 +474,16 @@ def check_engine() -> None:
         # (single player's scene chain keeps each eye's temporal history apart, VR-05)
         slot_restore = "\t\tgameLocal.SelectTemporalHistorySlot( 0 );\n" if module.startswith("src/game/") else ""
         require(read(module), "\t\tSingleView( hud, &eyeView, RF_NO_GUI | RF_PRIMARY_VIEW );\n" + slot_restore +
-                              "\t\tVR_DrawComfortVignette( eyeView, vignette, vignetteMaterial );\n\t\tif ( drawAimMarker ) {\n"
+                              "\t\t// the flat wash that stands in for the underwater pass belongs in the eyes\n"
+                              "\t\tLiquidWash();\n"
+                              "\t\tVR_DrawComfortVignette( lensView, headForward, vignette, vignetteMaterial );\n\t\tif ( drawAimMarker ) {\n"
                               "\t\t\tVR_DrawAimMarker( eyeView, aimMarker, aimLaser, aimMaterial );\n\t\t}\n\t\tScreenFade();",
-                f"{module} vignettes and marks the aim in each eye over its 3D pass, under its fade")
+                f"{module} washes, vignettes and marks the aim in each eye over its 3D pass, under its fade")
+        # the vignette is fixed to the lens: a weapon's zoom, which narrows the eye's frustum, must not push it out of view
+        # centred where the head looks, the same direction in both eyes, so canted displays fuse it
+        require(read(module), "\t\theadForward = headAxis[0];\n", f"{module} centres the vignette on the head's forward")
+        require(read(module), "\t\tconst renderView_t lensView = eyeView;\n\t\tif ( zoomScale < 1.0f ) {",
+                f"{module} keeps the eye as the lens shows it for the vignette")
         # the vignette follows artificial motion only, read from the engine's cvar
         require(read(module), 'cvarSystem->GetCVarFloat( "vr_comfortVignette" )',
                 f"{module} reads the vignette setting without touching the frame state")
@@ -509,6 +523,85 @@ def vrActionTokens() -> list[str]:
     return [f'"{key}"' for key in ACTION_STRINGS]
 
 
+def check_audit_leads() -> None:
+    """The leads the 17 November headset audit left open (VR-02)."""
+    openxr = read("src/sys/openxr/OpenXRSystem.cpp")
+    # controllers with too few buttons: Index's left pad force, a touchpad pressed by region on Vive and WMR
+    require(openxr, '{ VR_ACTION_SECONDARY, VR_HAND_LEFT, "input/trackpad/force" },', "Index: the left pad's force is the flashlight")
+    vive = openxr[openxr.index("static const vrBinding_t vrViveBindings[] = {"):openxr.index("static const vrBinding_t vrMotionControllerBindings[] = {")]
+    require(vive, 'VR_BOTH_HANDS( VR_ACTION_TRACKPAD_CLICK, "input/trackpad/click" ),', "Vive: the pad pressed by region")
+    if "VR_ACTION_THUMBSTICK_CLICK" in vive:
+        raise AssertionError("Vive: the pad's centre is the stick click through its regions, not as a whole")
+    wmr = openxr[openxr.index("static const vrBinding_t vrMotionControllerBindings[] = {"):openxr.index("static const vrBinding_t vrSimpleBindings[] = {")]
+    require(wmr, 'VR_BOTH_HANDS( VR_ACTION_TRACKPAD_CLICK, "input/trackpad/click" ),', "WMR: the pad pressed by region")
+    require(openxr, "trackpadRegion[hand] = VR_TrackpadRegion( input.padX, input.padY, padIsStick ? 0.5f : 0.0f );",
+            "a pad's region is taken as the press begins")
+    # a compositor hitch costs a frame, not the session
+    require(openxr, "for ( int attempt = 1; waited == XR_TIMEOUT_EXPIRED && attempt < VR_IMAGE_WAIT_ATTEMPTS; attempt++ ) {",
+            "a swapchain wait that times out is made again")
+    # optional calls never stop VR
+    for call in ("xrApplyHapticFeedback", "xrGetCurrentInteractionProfile", "requestRefreshRate", "setPerformanceLevel"):
+        require(openxr, f"CheckOptional( {call}(", f"{call} is optional")
+    require(openxr, "void idVRSystemOpenXR::TurnBody( float yawDegrees ) {", "the engine turns the body for a multiplayer facing")
+    for tree in ("game", "mpgame"):
+        weapon = read(f"src/{tree}/Weapon.cpp")
+        require(weapon, "gameLocal.TracePoint( owner, clearance, playerViewOrigin, muzzleOrigin, MASK_SHOT_RENDERMODEL, owner );",
+                f"{tree}: a hand-held muzzle stays short of a wall")
+        require(weapon, "\t\t\tif ( owner->IsVRHandAiming() ) {\n\t\t\t\tstart = playerViewOrigin;\n\t\t\t}\n",
+                f"{tree}: a projectile's way is cleared from the hand")
+    require(read("src/game/Player.cpp"), "VR_RoomScaleCatchUp( distance, freeRadius, 5.0f * frame.unitsPerMetre * MS2SEC( gameLocal.msec ) );",
+            "room scale catches up at a sprint")
+    mp = read("src/mpgame/Player.cpp")
+    require(mp, "vrSystem->TurnBody( handFromHead );", "a multiplayer client turns its head onto the server's facing")
+    require(mp, "if ( !gameLocal.isClient && ( usercmd.buttons & BUTTON_VRAIM ) != 0 && GetVRHandFromHead( handFromHead ) ) {",
+            "the listen server's own player turns its delta directly")
+    require(mp, "const bool vrTrackedAim = ( usercmd.buttons & BUTTON_VRAIM ) != 0",
+            "the server knows a VR client by its usercmd in frozen views")
+
+
+def check_body() -> None:
+    system = read("src/framework/VRSystem.cpp")
+    require(system, 'idCVar vr_body( "vr_body", "2",', "the body is drawn, arms included, by default")
+    openxr = read("src/sys/openxr/OpenXRSystem.cpp")
+    require(openxr, "frame.body = idMath::ClampInt( VR_BODY_OFF, VR_BODY_FULL, vr_body.GetInteger() );",
+            "the frame carries the body setting to the game modules")
+    require(openxr, "frame.twoHanded = twoHanded;", "the frame says when both hands hold the gun")
+    require(read("src/framework/VRSystem.h"), '#include "VRBody.h"', "both game modules see the body solver")
+    body = read("src/framework/VRBody.h")
+    for function in ("float VRBody_PoseTrunk", "idVec3 VRBody_Elbow", "void VRBody_PoseUpperArm", "void VRBody_PoseHand",
+                     "void VRBody_FoldArm", "void VRBody_AimViewArm"):
+        require(body, f"ID_INLINE {function}(", "the shared body solver")
+    math = read("src/framework/VRMathCore.h")
+    native = read("tools/tests/native/VRMathCoreTest.cpp")
+    for function in ("VR_SolveTwoBone", "VR_BodyYawFollow", "VR_NeckFromHead", "VR_BodyScale", "VR_HeadingDegrees",
+                     "VR_RoomScaleCatchUp", "VR_ModelYawFollow", "VR_TrackpadRegion"):
+        require(math, f" {function}( ", "the body's geometry is free of any model")
+        require(native, f"{function}( ", "the body's geometry is natively tested")
+    for tree in ("game", "mpgame"):
+        local = read(f"src/{tree}/Game_local.cpp")
+        begin = local.index("\tplayer->BeginVRBody();\n")
+        weapon = local.index("player->weaponViewModel->UpdatePresentationWeapon( player->CanShowWeaponViewmodel() );", begin)
+        finish = local.index("\tplayer->FinishVRBody();\n", weapon)
+        if not begin < weapon < finish:
+            raise AssertionError(f"{tree}: the draw pass poses the trunk, then the view weapon's arms, then the body's")
+        player = read(f"src/{tree}/Player.cpp")
+        require(player, "\tbody.allowSurfaceInViewID = entityNumber + 1;\n", f"{tree}: the body is seen in the player's own view only")
+        require(player, "\tbody.noShadow = true;\n", f"{tree}: the model everyone else sees casts the shadow")
+        require(player, "|| health <= 0 || spectating || IsHidden() || renderEntity.hModel == NULL ) {\n\t\tFreeVRBody();",
+                f"{tree}: no body for the dead, spectators or hidden drivers")
+        require(player, "\t\tvrBodySeated = true;\n\t\tvrBodyMode = VR_BODY_TORSO;", f"{tree}: an exposed seat shows the seat's own pose")
+        require(player, "for ( int hand = 0; hand < VR_NUM_HANDS && !vrBodySeated; hand++ ) {", f"{tree}: a seated body keeps its hands on the controls")
+        require(player, "modelYaw = VR_ModelYawFollow( vrModelYaw, viewAngles.yaw, viewAngles.pitch );",
+                f"{tree}: the model holds its heading while the gun points at the floor or the sky")
+        require(player, "vrBodyAxis = VR_TrackingAxis( trackingYaw + vrBodyYaw );", f"{tree}: the torso's heading rides the tracking space")
+        weapon_source = read(f"src/{tree}/Weapon.cpp")
+        require(weapon_source, "const idJointMat *rvWeapon::PoseVRArms(", f"{tree}: the view weapon's arms meet the body")
+        require(weapon_source, "renderEntity.weaponDepthHackInViewID = owner->IsVRHandAiming() ? 0 : owner->entityNumber + 1;",
+                f"{tree}: a gun in the hand keeps its true place in depth")
+        require(weapon_source, "\tif ( weaponHand != VR_HAND_RIGHT ) {\n\t\thideSurfaces |= vrArmSurfaces;\n\t\treturn NULL;",
+                f"{tree}: a left-handed hold takes the body's own arms")
+
+
 def check_strings() -> None:
     for language in LANGUAGES:
         table = read(f"content/baseoq4/pak0/strings/{language}_openq4.lang")
@@ -528,7 +621,7 @@ def check_documents() -> None:
     guide = read("docs/user/vr.md")
     for cvar in ("vr_enable", "vr_aimMode", "vr_aimLaser", "vr_hapticStrength", "vr_turnMode", "vr_recenter",
                  "vr_restart", "vr_twoHanded", "vr_comfortVignette", "vr_physicalCrouch", "vr_vehicleStereo",
-                 "vr_refreshRate", "vr_performanceLevel"):
+                 "vr_refreshRate", "vr_performanceLevel", "vr_body"):
         require(guide, cvar, "the VR guide documents the settings players use")
 
 
@@ -543,6 +636,8 @@ def main() -> int:
     check_temporal()
     check_stereo_sharing()
     check_engine()
+    check_body()
+    check_audit_leads()
     check_strings()
     check_documents()
     print("openxr_vr_contract: ok")

@@ -10,7 +10,36 @@ the single-player campaign and in multiplayer, and needs nothing beyond your
 Quake 4 game files.
 
 VR is **experimental**: it has not yet been fully tested on real headset
-hardware, so please report how it runs on yours.
+hardware, so please report how it runs on yours (see
+[Reporting a problem](#reporting-a-problem)).
+
+**In this guide:** [what you need](#what-you-need) ·
+[quick start](#quick-start) · [turning VR on](#turning-vr-on) ·
+[controls](#controls) · [aiming and weapons](#aiming-and-weapons) ·
+[your body](#your-body) · [comfort](#comfort) ·
+[seated or standing](#seated-or-standing) · [display](#display) ·
+[performance](#performance) · [weapon position](#weapon-position) ·
+[vehicles and turrets](#vehicles-and-turrets) · [multiplayer](#multiplayer) ·
+[The Awakening](#the-awakening) · [Meta Quest without a PC](#meta-quest-without-a-pc) ·
+[troubleshooting](#troubleshooting-and-diagnostics) ·
+[commands and settings](#commands-and-settings-reference)
+
+## Quick start
+
+1. Install Quake 4 and openQ4 as usual, and check the game runs on your
+   monitor.
+2. Start your headset's software (for example SteamVR or the Meta Quest Link
+   app) and make it your system's active OpenXR runtime.
+3. Start openQ4, open **Settings → Game Options → Virtual Reality** and set
+   **VR Mode** to Enabled. The headset shows the menu on a floating screen.
+4. Stand (or sit) where you want to play, face forwards, and hold the
+   weapon-hand thumbstick in for a second to recentre.
+5. Point at the menu with your right controller: a dot shows where it points,
+   and the trigger clicks there. Start or load a game as usual.
+
+If the view feels too fast or too smooth, the [Comfort](#comfort) settings are
+on the same tab. If nothing appears in the headset, see
+[Troubleshooting](#troubleshooting-and-diagnostics).
 
 ## What you need
 
@@ -46,8 +75,8 @@ weapon-hand grip to step to the next tab. The Virtual Reality tab holds the
 settings players change most: aiming with the controller or your head, weapon
 hand, snap or smooth turning and the snap angle, walk direction, room scale,
 the laser sight, vibration, the two-handed grip, the comfort vignette, physical
-crouching and the play space. The tables in this guide list every setting,
-including those you can only set in the console.
+crouching, the play space and (**not in 0.14.1**) your own body. The tables in
+this guide list every setting, including those you can only set in the console.
 
 When VR is on, the desktop window shows what your left eye sees. To turn VR off,
 set **VR Mode** back to Disabled (you can point at it in the headset).
@@ -70,6 +99,10 @@ launch with `+set vr_enable 1`.
 - If VR fails during play, openQ4 releases any controls you were holding and
   carries on in the desktop window. It tries again after three seconds, or
   waits for `vr_restart` if the runtime itself stopped.
+- **Not in 0.14.1:** a runtime that stalls for a moment costs a frame, not
+  your VR session: openQ4 waits up to a second before giving up. A failure in
+  something VR can do without, such as vibration or a headset's refresh-rate
+  setting, is reported in the console and VR carries on.
 - If the desktop window is minimized or hidden, the headset keeps rendering;
   only the desktop view waits for the window to come back.
 
@@ -92,10 +125,24 @@ you can rebind them in **Settings → Controls** like any gamepad button.
 | Off-hand grip | Weapon wheel, or hold the gun in both hands | Previous tab |
 | Weapon-hand grip | Last weapon | Next tab |
 | Off-hand stick click | Run / walk | - |
+| Weapon-hand stick click, held for a second | Recentre (**not in 0.14.1**) | - |
 | Menu button | Menu | Close menu |
 
-The weapon hand is the right hand. Set `vr_leftHanded 1` to hold the weapon in
-your left hand; the triggers, grips and sticks swap with it.
+The weapon hand is the right hand. Set `vr_leftHanded 1` (**Weapon Hand** on
+the Virtual Reality tab) to hold the weapon in your left hand. The triggers,
+grips and sticks swap with it: the left trigger fires, the right stick moves
+you, the left stick turns, and holding the left stick in recentres. The face
+buttons stay where they are, so A still jumps and Y still toggles the
+flashlight.
+
+The table shows Meta Quest Touch controllers. Controllers with fewer buttons
+use these instead (**not in 0.14.1**; before, some had no flashlight or jump):
+
+| Controller | Differences |
+| --- | --- |
+| Valve Index | Left B opens the menu. Squeeze the left trackpad firmly for the flashlight. |
+| HTC Vive wand | The trackpad is the stick. Press it to use it as buttons. Right pad: up crouches, down jumps, left and right turn, centre is the stick click. Left pad: up toggles the flashlight, down reloads, centre runs. The right menu button also crouches. A thumb resting on the right pad does nothing until you press. |
+| Windows Mixed Reality | Press the touchpad. Upper half: crouch (right) or flashlight (left). Lower half: jump (right) or reload (left). The thumbsticks work as on Touch. |
 
 Menus open on a floating screen in front of you, and the game world stays around
 you while the game is paused. Point your weapon-hand controller at the screen:
@@ -116,6 +163,18 @@ pointing at, so it stays sharp near or far. It dims when something between you
 and the target hides it. Set `vr_aimMode 0` to aim with your head instead; the
 HUD crosshair only shows when you aim with your head.
 
+**Not in 0.14.1:**
+
+- The gun is where your hand is: put your hand behind a door frame or a crate
+  and the gun is hidden behind it, instead of being drawn over everything.
+- In single player the dot stays while your weapon is put away, as a pointer
+  for the people you can talk to and the things you can use.
+- Aimed by your head, shots leave from where your head really is, so you can
+  duck behind cover and shoot over it the way it looks.
+- A level, a loaded save or a teleporter leaves you *facing* the way the game
+  intends, wherever your gun hand hangs; they used to point the gun that way
+  instead, which could start you facing a wall.
+
 To steady a gun, hold it in both hands: put your off hand in front of your
 weapon hand, where a rifle's foregrip would be, and squeeze its grip. The
 off-hand controller buzzes briefly, and the gun then points from your rear hand
@@ -128,7 +187,8 @@ railgun: your whole view magnifies as the scope would, and the laser dot is
 your crosshair. Keep zooming short if magnified head movement makes you uneasy.
 
 The controllers vibrate: your weapon hand with every shot, and both hands when
-you are hit, harder for bigger hits.
+you are hit, harder for bigger hits. **Not in 0.14.1:** the lightning gun's
+beam and the gauntlet's blade hum in your hand too.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
@@ -138,12 +198,58 @@ you are hit, harder for bigger hits.
 | `vr_hapticStrength` | 1 | vibration strength, from 0 (off) to 1 (full) |
 | `vr_leftHanded` | 0 | 1 holds the weapon in your left hand |
 
+### Your body
+
+> **Not in 0.14.1.** It arrives in the next release.
+
+Look down and you see yourself: a chest, legs and feet standing where you
+stand, and arms that run from your shoulders to your hands.
+
+- Your body turns with your torso, not with your gun. Glance over your
+  shoulder and it stays put; turn further, or walk, and it comes round with
+  you.
+- Duck, lean or crouch in your room and your knees bend to follow, with your
+  feet on the floor.
+- Your weapon hand stays on the gun's grip, and your arm bends at the elbow to
+  reach it wherever you hold it.
+- Your other hand follows its own controller. It goes back to the gun when you
+  take the two-handed grip, and while the gun needs it: to reload, and to draw
+  a weapon or put it away.
+- With no weapon in your hands, both hands follow their controllers.
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `vr_body` | 2 | 2 legs, torso and arms that reach your hands; 1 legs and torso only, with the gun's forearms floating as before; 0 no body |
+
+The same choice is **Your Body** on the Virtual Reality tab: With Arms, Legs
+and Torso, or Off.
+
+Good to know:
+
+- The arms need controller aiming (`vr_aimMode 1`). When you aim with your head
+  the gun rides with your view as on a flat screen, and you get the legs and
+  torso only.
+- The guns are modelled for a right hand on the grip. If you hold the weapon in
+  your left hand (`vr_leftHanded 1`), your character's own simpler hands hold
+  it and the gun's modelled hands are hidden.
+- At an open gun or turret, where your character stands at the controls, you
+  see your body there with its hands on the controls (**not in 0.14.1**).
+  Closed vehicles, such as the walker and the hovertank, hide you inside, so
+  you have no body there, nor while a cinematic plays.
+- Only you see this body. Mirrors, your shadow and other players show your
+  character as before.
+- The body has only been checked with openQ4's simulated headset. If it sits
+  wrongly on a real one, please report it; `vr_body 0` turns it off.
+
 ## Comfort
 
 openQ4 avoids moving your view in ways your body doesn't feel:
 
 - there is no view bob, weapon kick or screen shake in VR;
-- turning is done in steps (snap turn) by default;
+- turning is done in steps (snap turn) by default, and a turn pivots about
+  your head, so it never slides your view sideways (**not in 0.14.1**, where a
+  turn pivoted about your character and shifted the view if you stood off
+  centre);
 - while the stick moves you or turns you smoothly, the edges of your view
   darken around a clear centre (the comfort vignette); walking about your room
   never triggers it;
@@ -176,10 +282,15 @@ handy when seated.
 | `vr_physicalCrouch` | 1 | 1 crouching in your room crouches your character, 0 only the button does |
 | `vr_headOffsetLimit` | 16 | how far you can lean from your character before the view stops (game units) |
 
-Enter `vr_recenter` to make your current position and direction the front. It
-helps to bind it to a key, for example `bind F12 vr_recenter`. Your headset's
-own recenter (for example holding the Oculus button) does the same, at the
-moment the headset applies it, so the view doesn't jump.
+To make your current position and direction the front, recentre: **hold the
+weapon-hand stick in for a second** (the controllers buzz when it is done), or
+enter `vr_recenter`. Your headset's own recenter (for example holding the
+Oculus button) does the same, at the moment the headset applies it, so the
+view doesn't jump. openQ4 also recentres by itself the first time your headset
+hands it the controllers and at the start of every level, so a level begins
+facing the way you face. **Not in 0.14.1:** the stick hold and the automatic
+recentre; there, use `vr_recenter` (it helps to bind it to a key, for example
+`bind F12 vr_recenter`).
 
 ### Seated or standing
 
@@ -189,9 +300,12 @@ height is measured from:
 - **Standing** measures your height from the floor your headset knows. Your
   character's eyes match yours when you stand up straight, so recentring while
   you crouch, sit or lean only turns and moves the front; it never moves the
-  floor. openQ4 learns your standing eye height the first time it recentres. To
-  measure it again, stand up straight and enter `vr_calibrateHeight`, or set it
-  in metres with `vr_standingHeight`.
+  floor. openQ4 learns your standing eye height the first time it recentres
+  with your head at least a metre above the floor, so a headset still lying on
+  the desk teaches it nothing (**not in 0.14.1**, which could learn a height
+  from the desk; if your view sits too high there, use `vr_calibrateHeight`).
+  To measure it again, stand up straight and enter `vr_calibrateHeight`, or set
+  it in metres with `vr_standingHeight`.
 - **Seated** measures your height from where you recentred: wherever your head
   is then becomes standing height, which suits playing in a chair.
 - **Automatic**, the default, plays standing when your headset knows where the
@@ -210,7 +324,7 @@ and the size of your play area.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| `vr_renderScale` | 1.0 | multiplies the headset's recommended resolution (0.5-2.0; apply with `vr_restart`) |
+| `vr_renderScale` | 1.0 | multiplies the headset's recommended resolution (0.5-2.0); VR restarts by itself to apply it |
 | `vr_worldScale` | 39.37 | game units per metre; lower makes the world feel bigger |
 | `vr_hudDistance` | 1.4 | HUD distance in metres |
 | `vr_hudWidth` | 1.2 | HUD width in metres |
@@ -242,6 +356,26 @@ into each other, and a fast head turn starts afresh instead of smearing. The
 automatic setting (`r_temporalAA 2`) leaves it off in VR, because the headset
 already renders at its own resolution. Dynamic resolution stays off in VR. MSAA
 (`r_multiSamples`) and SMAA work as well.
+
+## Performance
+
+A headset needs a new frame for every refresh, 72 to 120 times a second, and
+openQ4 draws the world once for each eye. If motion looks uneven or the
+headset's performance overlay shows dropped frames:
+
+- Lower `vr_renderScale` (for example 0.8). It scales the resolution the
+  headset recommends, costs the most of any setting, and VR restarts by itself
+  to apply it.
+- Pick a lower refresh rate in your headset's own software (SteamVR's video
+  settings, the Meta Quest Link app), or with `vr_refreshRate` on headsets that
+  let a game choose.
+- Use a lighter graphics preset in **Settings → Display**; shadow maps and the
+  heavier lighting options cost twice in VR, once per eye.
+- Try the other renderer (`r_renderApi gl` or `r_renderApi vulkan`); which is
+  faster depends on your graphics card and driver.
+
+Screens in the world, such as door panels, are drawn once per frame for both
+eyes, and dynamic resolution stays off, so the image stays steady.
 
 ## Weapon position
 
@@ -290,6 +424,18 @@ your hand. Damage numbers rise on the HUD from the player you hit.
 Servers older than 0.14.1 can leave your shots a fixed angle above or below the
 laser after you respawn or teleport. 0.14.1 servers keep shots on the laser.
 
+**Not in 0.14.1:** after you respawn or go through a teleporter, your head
+faces the way the game sends you, as in single player; before, your gun did,
+wherever your hand hung. Your character in other players' view no longer spins
+on the spot while you point your gun straight up or down.
+
+## The Awakening
+
+[Quake 4: The Awakening](awakening.md) (`q4xbase`) plays in VR the same way as
+the original campaign: its new weapons sit in your hand with their own grips, and its
+turrets and vehicles seat you as described in
+[Vehicles and turrets](#vehicles-and-turrets).
+
 ## Meta Quest without a PC
 
 > **Not in 0.14.1.** It arrives in the next release.
@@ -325,6 +471,29 @@ resolution and refresh rate openQ4 is using. `vr_debug 1` logs session events.
   again.
 - **The image looks washed out**: the runtime didn't offer the colour format
   openQ4 needs (sRGB). Report your headset and runtime.
+- **Valve Index: weapons switch or the weapon wheel opens while you only hold
+  the controllers** (0.14.1): the grip there answered your fingers resting on
+  it. **Not in 0.14.1:** it now takes a real squeeze.
+- **Everything is too high, too low or off to one side**: recentre by holding
+  the weapon-hand stick in for a second, standing where and facing how you
+  want to play.
+- **You stand too tall or too short in standing play**: stand up straight and
+  enter `vr_calibrateHeight`.
+- **You feel queasy**: keep snap turning (`vr_turnMode 0`), raise
+  `vr_comfortVignette` towards 1, play seated, and take short breaks. Walking
+  about your room never causes it, so room scale is the gentlest way to move.
+- **The world feels too big or too small**: change `vr_worldScale` (lower makes
+  the world bigger).
+- **The HUD is hard to read or too close**: change `vr_hudDistance`,
+  `vr_hudWidth` and `vr_hudHeightOffset`.
+- **One arm hangs at your side**: its controller has lost tracking (asleep,
+  out of the sensors' view, or its battery is flat). It follows again as soon
+  as the runtime tracks it.
+- **HTC Vive: you turned when you meant to jump or crouch**: a pad press is read
+  where your thumb is as the press starts. Put your thumb on the top or bottom
+  of the pad first, then press.
+- **A gun sits oddly in your hand**: nudge it with the
+  [weapon position](#weapon-position) settings.
 
 Screenshots, saves and demos:
 
@@ -342,3 +511,37 @@ Screenshots, saves and demos:
 Screens in the world are drawn once per frame for both eyes, which saves
 processor time without changing what you see; `r_vrStereoGuiShare 0` draws them
 for each eye separately if you suspect a problem there.
+
+## Reporting a problem
+
+Please report how VR runs on your headset, good or bad, on the project's
+[issue tracker](https://github.com/themuffinator/openQ4/issues). Include:
+
+- your headset, controllers and OpenXR runtime (with its version), and whether
+  you used OpenGL or Vulkan;
+- the output of `vr_status`, entered while the problem shows;
+- `openq4.log`, the same log file the [display settings](display-settings.md)
+  guide asks for; enter `vr_debug 1` before reproducing the problem so the log
+  records VR's session events;
+- what you did, what you expected, and what happened instead.
+
+## Commands and settings reference
+
+| Command | What it does |
+| --- | --- |
+| `vr_status` | prints the runtime, headset, session state, play space, standing height, resolution and refresh rate |
+| `vr_restart` | restarts VR, for example after the runtime stopped or to apply `vr_renderScale` |
+| `vr_recenter` | makes where you stand and face now the front (holding the weapon-hand stick in does the same) |
+| `vr_calibrateHeight` | standing play: measures your standing eye height now |
+
+General settings (the others are in the sections above):
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `vr_enable` | 0 | 1 plays in VR (**VR Mode** on the Virtual Reality tab); takes effect at once |
+| `vr_pauseOnFocusLoss` | 1 | single player: 1 opens the pause menu when the headset comes off or its own menu takes the controllers |
+| `vr_mirror` | 1 | desktop window: 0 black, 1 left eye, 2 the floating screen |
+| `vr_debug` | 0 | 1 logs VR session events, 2 also logs every frame (for problem reports) |
+
+Every setting this guide lists is saved with your configuration except
+`vr_debug`.

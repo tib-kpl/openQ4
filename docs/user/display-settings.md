@@ -16,7 +16,7 @@ The Display page has three tabs:
 |---|---|
 | **Graphics** | Performance Preset, Auto-Detect, Rendering Backend, Rendering Device, Restart Renderer, UI Scale, Text Size, UI Aspect |
 | **Screen** | Display Device, Expand Across Displays, Fullscreen, Borderless Window, Fullscreen Policy, MSAA, V-Sync, window size, Display Resolution, custom fullscreen size, Refresh Rate |
-| **Image Quality** | Brightness, Resolution Scale, shadows, specular, bump maps, detailed sky, Bloom, SSAO, HDR Tonemap, Post AA Mode, ambient light, CRT Emulation, Irradiance Volumes, Preload Light Grids |
+| **Image Quality** | Brightness, Resolution Scale, shadows, character self-shadows, specular, bump maps, detailed sky, Bloom, SSAO, HDR Tonemap, Post AA Mode, ambient light, CRT Emulation, Irradiance Volumes, Preload Light Grids |
 
 ## Performance presets
 
@@ -37,6 +37,7 @@ A preset sets resolution scale, anti-aliasing, shadows, effects, texture sizes, 
 What the effects are:
 
 - **Shadow maps** give soft, detailed shadows; see [Shadow mapping](shadow-mapping.md). Low, Performance and Balanced keep the original game's sharp-edged shadows. Minimum and Low Power draw no shadows at all; on integrated graphics that saves about as much as lowering the render scale from 75% to 50%.
+- **Light grids** add openQ4's bounced light to maps that ship one. **Not in 0.14.1:** Minimum and Low Power turn them off and use the original game's lighting, and their 30 FPS cap stretches the reduced scene instead of rebuilding it with [temporal upscaling](temporal-presentation.md#automatic-upscaling-default).
 - **Bloom** adds a glow around bright lights. **SSAO** (ambient occlusion) adds soft shading in corners and creases. **Tone mapping** balances very bright and dark areas. Presets below Enhanced leave these off.
 - Ultra and Maximum draw SSAO at full resolution. Enhanced and Quality draw it at half resolution, which is cheaper and looks the same in play. On OpenGL, half resolution is not in 0.14.1: there, 0.14.1 draws it at full resolution on every preset.
 - The flashlight casts shadows on every preset that draws shadows. Lights carried by projectiles cast them only from Quality up, as on the original game's top setting.
@@ -89,6 +90,7 @@ Typical results:
 - **Low:** a PC at the minimum requirements, with 4 GB of RAM or less, or a graphics card with 1 GB of memory or less.
 - **Low Power:** a Raspberry Pi, or when you set the environment variable `OPENQ4_LOWPOWER=1` or `OPENQ4_RASPBERRYPI=1`.
 - **Performance:** a Steam Deck, or a graphics driver that doesn't report its memory. Fewer than four CPU threads also limit any recommendation to Performance.
+- **ARM boards (Not in 0.14.1):** at most Performance on any ARM64 Linux board without a separate graphics card, such as Rockchip, Orange Pi, Radxa or NVIDIA Jetson boards, because openQ4 cannot tell how fast their graphics are. A Raspberry Pi still gets Low Power. Apple Silicon, including Asahi Linux, and Windows on ARM are not limited this way.
 - **Phones and tablets:** at most Performance. Phones with about 12 GB of RAM or more render a 1080p-class scene, smaller ones a 720p-class scene, and those with 4 GB or less get Low Power.
 - **Integrated graphics, including Apple Silicon:** up to Balanced at 1080p-class resolutions with enough memory. On Apple's older OpenGL 2.1 mode, Auto-Detect leaves SMAA off because it cannot run there.
 - **Graphics cards with their own memory:** by memory and resolution, when the system has 16 GB of RAM and the renderer can run the modern effects:
@@ -104,7 +106,7 @@ Typical results:
 
 Auto-Detect also:
 
-- **Caps the frame rate at your display's refresh rate**, rounded to whole hertz (a 59.94 Hz display caps at 60), so a fresh installation doesn't draw frames the display can't show. If the rate is unknown or outside 30 to 1000 Hz, the preset's own cap applies. Phones, the Steam Deck, a Raspberry Pi and low-power requests never go above their preset's cap. Choosing a preset by name always uses the table cap.
+- **Caps the frame rate at your display's refresh rate**, rounded to whole hertz (a 59.94 Hz display caps at 60), so a fresh installation doesn't draw frames the display can't show. If the rate is unknown or outside 30 to 1000 Hz, the preset's own cap applies. Phones, the Steam Deck, a Raspberry Pi, other ARM boards (not in 0.14.1) and low-power requests never go above their preset's cap. Choosing a preset by name always uses the table cap.
 - **May lower the render scale on large displays.** For example, integrated graphics at 1440p get Performance at 75%, and at 4K Performance at 50% (a 1080p scene). The window and menus stay at full resolution, and the scale never goes above the preset's own. Choosing a preset by name restores its table value. VR has its own [headset scale](vr.md).
 
 On a fresh installation openQ4 starts with a small profile, detects your hardware once the renderer is running and applies the recommendation before you play. The console's `Quality profile:` line reports the result, including the video memory it found. A preset you name at launch takes precedence, and existing settings are kept.
@@ -121,7 +123,7 @@ The classic menus' four quality choices use the same recipes: Low is Low, Medium
   - **Custom FS Width** and **Custom FS Height** set a custom size; editing them selects Custom.
   - **Refresh Rate** offers Auto plus the rates your display reports for that resolution. Auto keeps your desktop's refresh rate, or the nearest rate that resolution offers, and openQ4 picks the same rate every time. Leave it on Auto unless you need a specific rate. On macOS, Auto uses the desktop rate rather than the display's highest; this has not yet been confirmed on a Mac.
 - On Windows, fullscreen minimizes when you switch away, so Alt+Tab and the Snipping Tool can come to the front cleanly. `PrintScreen` opens the Windows snipping tool; press `F12` for an openQ4 screenshot, or set `win_printScreenToSystemTool 0` to bind `PrintScreen` in game.
-- **Not in 0.14.1:** set `r_screenshotFormat 1` to save screenshots as PNG instead of TGA. PNG files open in any image viewer or browser and usually take under a third of the space. `image_pngCompressionLevel` (0 to 9, default 4) trades file size for the time a capture takes: the default takes about a twentieth of a second for a 1280x720 frame, while 9 saves another tenth of the space but can take seconds. `screenshot <name>.png` always writes a PNG, whatever the setting. Screenshots go to `screenshots/` in your openQ4 save folder.
+- **Not in 0.14.1:** choose **Settings → Game Options → General → Screenshot Format → PNG** (or set `r_screenshotFormat 1`) to save screenshots as PNG instead of TGA. It applies from the next screenshot and is remembered. PNG files open in any image viewer or browser and usually take under a third of the space. `image_pngCompressionLevel` (0 to 9, default 4) trades file size for the time a capture takes: the default takes about a twentieth of a second for a 1280x720 frame, while 9 saves another tenth of the space but can take seconds. `screenshot <name>.png` always writes a PNG, whatever the setting. Screenshots go to `screenshots/` in your openQ4 save folder.
 
 ### Windowed and borderless
 
@@ -361,7 +363,7 @@ seta gui_textBackgroundPadding 2
 
 ## View weapon position and field of view
 
-These settings move and frame the weapon you hold on screen. They only change what you see, never gameplay. They are on **Settings → Game Options → General**, under **View Weapon**.
+These settings move and frame the weapon you hold on screen. They only change what you see, never gameplay. They are on **Settings → Game Options → HUD**, under **View Weapon** (in 0.14.1, on the **General** tab).
 
 | Setting | Default | What it does |
 |---|---:|---|

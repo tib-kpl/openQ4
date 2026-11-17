@@ -85,16 +85,26 @@ encounter activation are part of that choreography, not decorative markers.
   upgrade is not granted in its place.
 - The security alarm's 1.5-second recording was both global and looping,
   repeating at full gain throughout the prison. It now plays locally at
-  -12 dB, immediately on activation and then every 12–16 seconds. Its 96/1400
-  unit distance range keeps the alert around the security encounter. The
-  flashing lights and original objective/console callbacks remain intact.
-  A pulse finishes naturally when disabled; no new pulse starts afterward,
-  including when the console is used during a quiet interval.
-- Three computer alarms also looped four-second recordings continuously.
-  They now play the same installed samples at -18 dB within 360 units,
-  every 19–29 seconds. They remain local machinery ambience rather than an
-  additional level-wide security warning. These timings and levels are an
-  editorial refinement inferred from the security sequence and dialogue.
+  -6 dB, immediately on activation and then every 5–6 seconds. Its 320/2000
+  unit distance range holds full level across the security room and its
+  approach and keeps the alert around the security encounter. The flashing
+  lights and original objective/console callbacks remain intact. A pulse
+  finishes naturally when disabled; no new pulse starts afterward, including
+  when the console is used during a quiet interval.
+- Three computer alarms also looped four-second recordings continuously at
+  -7/-9 dB within 140/612 units. They now play the same installed samples at
+  -12 dB within 96/560 units, every 9–15 seconds. They remain local machinery
+  ambience below the siren rather than an additional level-wide security
+  warning. These timings and levels are an editorial refinement inferred from
+  the security sequence and dialogue.
+- Pacing revision 1 (4 November) used a -12 dB siren every 12–16 seconds with
+  a 96/1400 range, and -18 dB computers within 40/360 units every 19–29
+  seconds. Playtesting found it too sparse and barely audible: with linear
+  falloff the siren was near -17 dB a corridor away, before occlusion, and
+  sounded for about a tenth of the time. Revision 2 (17 November) doubles the
+  siren's amplitude, widens its full-level radius and gives it a steady
+  alarm rhythm of about one pulse in four, while staying well below the
+  alpha's constant full-gain loop.
 - The security override console now completes once and then becomes
   noninteractive. Its reusable relay previously moved both shutters another
   120 units and toggled the disabled alarm back on with every additional press.
@@ -136,8 +146,11 @@ changes or expansion multiplayer module are introduced.
 Alarm pacing also applies when loading an existing M04 save. The migration
 matches the exact map, original console function, speaker names and shaders,
 and leaves custom pacing alone. It replaces the old emitter and preserves
-whether it was on or off. Revised saves keep the existing speaker timer,
-including its pending reminder during a quiet interval. No script statements
+whether it was on or off. The speaker's `oq4_prisonAlarm` spawn arg records
+the pacing revision, so a save made under revision 1 (whose computers already
+use the one-shot samples) is re-paced the same way; a revision-1 alarm that
+was on starts a pulse at load. Saves at the current revision keep the existing
+speaker timer, including its pending reminder during a quiet interval. No script statements
 or serialized fields are added for this change. Computer samples use implicit
 one-shot declarations: setting `s_looping 0` alone cannot clear a loop flag
 inside the original sound declaration.
@@ -230,6 +243,25 @@ from declaration-name filtering, inaudible distant one-shots, and placing the
 listener inside console dressing. Their reports are not acceptance results;
 the saved gap/off checkpoints used by restore probes remain regression fixtures.
 
+Pacing revision 2 (17 November) was qualified the same way, from the fixed
+`.tmp/runtime/awakening-alarm/` runtime because other tests held `.install`.
+The probe now follows the 5–6 second cadence, shuts the siren off both at an
+arbitrary point and inside a guaranteed gap, and adds a listener about 620
+units out in the approach corridor. Evidence is under `.tmp/awakening-alarm/`:
+
+| Evidence directory | Result |
+| --- | --- |
+| `rev1-baseline/` | Revision-1 binary writes active/off regression saves. |
+| `rev2-fresh/` | Siren mixer gain 0.325 at the speaker and 0.238 in the corridor, silent gaps, a reminder 5–6 s later, console shutoff, silence at the bridge; all three computers play at 0.16 and finish their one-shots. |
+| `rev2-rev1-active/`, `rev2-rev1-off/` | Revision-1 saves re-pace to revision 2 and keep their on/off state. |
+| `rev2-gap/`, `rev2-new-off/` | Revision-2 saves keep a pending reminder through a quiet gap, and keep an inactive alarm off. |
+
+At the same mixer scaling, revision 1 would have given about 0.16 at the
+speaker and 0.10 in the corridor (derived from its -12 dB gain and 96/1400
+falloff, not measured), so the corridor level is about 2.4 times higher and
+the siren sounds for about a quarter of the time instead of a tenth. As
+before, these checks establish gain, timing and state, not a listening test.
+
 `round3-lock-gl/` passes M03 acquisition, locked save/load, five/one-rocket
 volleys, empty-magazine rejection and lock clearing on the new build. A custom
 110-degree FOV remains 110 through entry, restore and exit; the existing script
@@ -309,6 +341,17 @@ be invented or re-enabled.
   Damage contribution is capped at remaining health and the radius is clamped
   without per-hit integer rounding. Shared lights retain their `fireCount`
   contribution. Each stage also reapplies its authored `fxtarget` direction.
+- **Heat-exchanger jets (17 November 2026):** M04's four `func_fire_volume`
+  vents are the only fires that set `fxtarget`, and none of their flames could
+  be seen. `riFireFX::Event_LookAtTarget` built the effect axis from the raw
+  vector to the target; `idVec3::ToMat3()` keeps that vector's length, so the
+  roughly 100-unit aim scaled each jet about a hundredfold and scattered its
+  particles outside the tunnel. The direction is now normalised, and a target
+  at the vent's own origin is skipped. Each pair of jets now meets under its
+  ceiling grate, and the small-flame and smoke stages follow the same aim.
+  Damage, collision and lights were unaffected. Loading a save re-aims the
+  running effect, so existing saves show the jets too.
+  `awakening_chapter_behavior.py` checks the axis is unit length.
 - **M02 repair bots:** all six threads attempted to bind the nonexistent
   `repbot_1`. Each now binds its own bot to its own repair station.
 - **M02 generator defence:** the six-bot death counter points at deleted
@@ -366,6 +409,102 @@ be invented or re-enabled.
   also guards older post-introduction saves; neither their scripts nor their
   save layout changes.
 
+## Retch ambush, m01 part 2 — 17 November 2026
+
+`m04_building_unit2_seq_5` is redirected to `oq4_m01_retch::ambush`
+(`scripts/openq4/awakening/m01_retch.script`, `src/game/awakening/M01Retch.inl`)
+on a fresh start, while the trigger and the scene's nine named entities match;
+`g_awakeningM01Retch 0` keeps the alpha's function.
+
+The writers' VO notes give the scene: Atlas Marine 6 meets Falcon ("You're Falcon
+squad, good. The entire walker unit was wiped out... some spider-legged Strogg
+piece of shit is tearing them apart", 9.3 s), dies screaming ("Arrrghh!"), Tak:
+"What the hell is that thing?!", Navajas: "Kill it!". The marine and the Retch
+share `st_retch_intro` (151 frames): the Retch waits 116 units back, behind the
+door, until frame 88 (3.67 s), lunges, lifts him and throws him down by frame
+144. The marine's loop (`st_retch_intro_loop`, scene frames 1-113) and held end
+pose (`st_retch_intro_end_idle`) were authored but the dead pose was never used.
+
+| Alpha | openQ4 |
+| --- | --- |
+| Hard cut to the camera and back. | Short fades in and out. |
+| The kill starts after the briefing ends; the door opens 4 s into it, 0.3 s after the Retch has passed through it. | The kill starts 3.67 s before the briefing ends; the door opens 0.45 s before the lunge. |
+| The death scream plays after the kill has finished. | The scream starts on the grab; Tak reacts as the marine is thrown. |
+| The camera holds an idle Retch for 6 s. | Control returns as Navajas finishes "Kill it!". |
+| The marine stands back up into his idle before he is killed. | He holds the authored dead pose, then dies where he fell. |
+| The door closes as the camera ends. | It closes once the Retch is clear of the doorway (or after 8 s); seq_6 still reopens it after the Retch and the light tank die. |
+| The Retch stays in its scripted entrance. | It is released to its AI with the player as its enemy, facing them. |
+
+The trigger can fire twice when a teleport lands on it; the scene runs once.
+Evidence: `.tmp/m01-polish/retch-base/` (alpha) and `retch-new/` (openQ4),
+hidden OpenGL probes with engine screenshots every 0.25 s. Not verified: the
+fight itself in normal play. In the probes the Retch stays in turret mode
+because the map's `m04_building_unit2_seq_5_retch_blocker` AAS obstacle
+surrounds it until the fight is won; it never saw the probe player, who had
+come to rest behind a wall.
+
+## M02 squad sequences — 17 November 2026
+
+Four reported problems in `m02_trianfac`, fixed as script version 3
+(`maps/game/m02_trianfac.openq4-v3.script`). Each was reproduced on the v2
+program and checked on v3 with hidden, input-free probes (see below).
+
+- **Gray at the generator.** Stepping off the generator lift runs
+  `TeamToGeneratorRoom` at once (`trigger_once_151` is just outside the gate).
+  The lift's own arrival code was still sending Tak, Markswell and then Gray back
+  to their lift marks one at a time, so Gray was ordered back to the lift after
+  the generator room had sent him to the console. He ended up working the
+  console from beside the lift and dying far from the Retch dropped onto the
+  console. On v2 the probe shows him turning back to `razor1_pos_27` beside the
+  lift. The lift now gives its orders only if the generator room has not started.
+  On v3 he walks straight to the console, works it there and dies beside the
+  Retch's landing point (Gray at (-427, 1955), Retch at (-447, 1958)).
+- **The extra marine in the Tank fight.** `BringOnTheTank` ends by moving its
+  stand-in Dekard to `dekard_ending_pos_4`, still visible. That mark is past the
+  arena's north gate, which the scene leaves open, so a second "Dekard" stood in
+  view for the whole fight. He is now hidden there and shown again when
+  `BossKilled` starts the ending walk. Ruled out on the way: the player is hidden
+  during the cinematic, the Strogg marine released by `trigger_once_154` is
+  removed when the camera starts, and Tak stays at the momentary-door console
+  even with a follow order.
+- **The spike gun handoff.** Tak only faced the gun on the crate, played the
+  empty-handed `player_gift2` set and the gun vanished. He now kneels
+  (`stand_to_crouch`) and picks it up. The world model is bound to his
+  `MG_stock_joint`, the joint his own machinegun is skinned to, and his
+  machinegun surface is hidden while he holds it. He stands, turns to the player
+  and examines it (`weapon_check_1`, then `weapon_check_2` while still talking).
+  He then offers it with the armed `player_gift` set, held for at least 1.5 s
+  and until his line ends. The weapon is given at the handoff, and his machinegun
+  comes back after `player_gift_end`.
+- **The stuck door.** `stuck_door` was spawned non-solid. A player could walk
+  through it before Darnell and Mitchell lifted it, and reaching
+  `trigger_once_2` dropped it 48 units into the floor while they were still
+  lifting. Their hold animations also played once and stopped. The door now
+  blocks players and projectiles only (`CONTENTS_PLAYERCLIP |
+  CONTENTS_PROJECTILECLIP`). The squad's marks stand inside its bounds, and Tak
+  still ducks through the first 32-unit opening. The full 48-unit lift leaves
+  about 45 units, enough for a crouching player. Darnell and Mitchell are placed
+  exactly on their marks on arrival. Their scripted moves stop anywhere within
+  8 units, which could leave less than a player's width between them. Each hold
+  repeats one cycle at a time from where its lift animation put them, because
+  the cycles' root motion walked Darnell into the gap. A hold ends with its
+  stage, so nothing takes the pose again after the drop. The drop waits until
+  the door is fully raised, and the urging lines stop once the player is through.
+  The closed door is then fully solid, and Darnell and Mitchell lose any follow
+  order, since they stay behind.
+
+Probe traps: `setviewpos` onto a live `trigger_once` touches it twice before its
+removal runs, starting the trigger's function twice. Fire such triggers with
+`trigger <name>` or walk into them with `openq4_testInput`. `s_noSound 1` makes
+spoken and radio lines end at once, which shortens every wait on them.
+`g_autoSkipCinematics 1` skips `BringOnTheTank` and the ending entirely.
+
+Evidence: `.tmp/m02fix/runs/` (`gray2-v3`, `door2-v2`/`door2-v3`,
+`cannon-v3`, `dekard2-v2`/`dekard3-v3`, `nexus3-v3`, `save-*`/`load-*`), runtime
+`.tmp/runtime/awakening-m02/`. `tools/tests/awakening_m02_squad_contract.py`
+pins the correction table and, with the expansion installed, the SHA-256 of
+every version's program.
+
 ## Script identity and asset ownership
 
 The original expansion remains external. `MissionScripts.inl` applies bounded
@@ -375,17 +514,25 @@ installed behaviour with a warning. The reviewed installed script has SHA-256
 `52f91083b62daf55c64cce1ced7b61a502b7748110a96b8a9ce3eccdd50746fa`.
 
 Fresh corrected maps compile as
-`maps/game/m02_trianfac.openq4-v2.script`. Saves record that virtual source name,
+`maps/game/m02_trianfac.openq4-v3.script`. Saves record that virtual source name,
 so restore reconstructs the same corrected program. Older saves still compile
 `maps/game/m02_trianfac.script` unchanged. Restart M02 to adopt its script
 corrections; do not reinterpret an old suspended script with new statements.
 The v1 transformations remain unchanged for existing corrected saves. Version 2
-adds only the extraction-actor correction. No save payload layout changed.
+adds only the extraction-actor correction; version 3 adds the
+[squad sequences](#m02-squad-sequences--17-november-2026). Each correction
+records the version that introduced it, and a version applies its own and every
+earlier one. No save payload layout changed.
 
 The authored M01 cinematic likewise keeps its original program as
 `scripts/openq4/awakening/m01_dropship.script`; the route-qualified lighting
-revision uses `m01_dropship-v2.script`. The separately qualified dramatic-feedback
-pass now selects v3 for fresh starts; see the [M01 audit](m01-interior-feedback-audit.md).
+revision uses `m01_dropship-v2.script`, and the dramatic-feedback pass
+`m01_dropship-v3.script`. v4 also directs the hangar walk-on and adds the
+squad's nameplates, the damaged cabin's harnesses and the rope approach; v5
+shows the landing zone during the descent. Fresh starts now select v6, which
+keeps Markswell's entrance, briefing and sit in one movement; see the
+[M01 audit](m01-interior-feedback-audit.md#revision-4-17-november-2026) and the
+revisions that follow it.
 The short-lived
 unversioned lighting snapshot (`42200dc6f`) did not distinguish its changed
 program in saves. M01 saves written with that snapshot can require restarting
@@ -1111,12 +1258,18 @@ Dialogue keys are added to the speaker's spawn arguments when the map spawns
 are translated when the radio entity plays (`Awakening_RecordedLine`). A key or
 sound the content does supply is never replaced.
 
-**Left alone: never recorded.** Twenty `vo_4_*` radio calls in m01's opening
-battle (the numbering dates from when the trench was mission 4) and two m08
-lines (`lipsync_nava_herightsrg`, `vo_darn_dntwrryct`) have no recording under
-any name. One m01 call has the same words as Markswell's later `vo_marks_getmov`
-talk line; a line recorded for a face-to-face reply was not moved onto the radio
-on that evidence. About 250 recorded lines are also named by no script or map
+**Never recorded (16 November).** Twenty `vo_4_*` radio calls with no
+recording sit in `m04_stranarus_trench_intro.script`, a draft whose namespace
+no map calls: neither m01 map has its radio entity or the marines it directs.
+Their words are known: openQ4 places them, with nine more of the draft's
+radio lines, at the matching scenes of the shipped battle, and they play once
+they are voiced (`scripts/openq4/awakening/m01_radio.script`). The two m08 names (`lipsync_nava_herightsrg`,
+`vo_darn_dntwrryct`) are absent from the writers' dialogue list, which holds the
+rest of that exchange, but both are recorded (`sound/vo_english/m08_cryo/`)
+without declarations. Darnell's played the missing-sample tone over the radio;
+it is now silent. The
+[missing voice lines register](awakening-missing-voice-lines.md) lists every
+line with the pieces it lacks and its resolution. About 250 recorded lines are also named by no script or map
 (race chatter, further squad conversation). The
 [second pass](#replies-the-scenes-stop-short-of--14-november-2026) counts them
 strictly, sorts them by kind and places the seven whose scene is provable.
@@ -1280,9 +1433,15 @@ carries its mouth shapes and plays the recording by its path, so the lip
 movement is kept. The recordings are preloaded with their map, and a
 declaration that does reach a sample is left alone.
 
-Ten declarations have no recording under any name: the Pain Lord's three tube
+Ten declarations have no recording under any name. The Pain Lord's three tube
 marines' screams (`vo_marine1_agony1` to `vo_marine3_agony1`, spoken by
-m05's script), two unused m01 lines and five empty generated entries in m06.
+m05's script) now play stand-in screams through the same table (16 November):
+the expansion's unused `scrmar4_pain` take for the first, and two of retail
+Quake 4's medical-lab Stroggification screams for the others, so the three men
+do not share one voice. The screams have no words, and each line keeps its own
+caption. The other seven are two m01 lines nothing calls and five empty
+generated entries in m06, duplicates of the recorded `vo_7_6_2` to `vo_7_6_5`.
+See the [register](awakening-missing-voice-lines.md).
 
 ### Three replies in Cryofac
 

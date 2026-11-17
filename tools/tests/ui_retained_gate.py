@@ -597,6 +597,7 @@ class idSessionLocal {
 public:
     idUserInterface *guiActive = nullptr, *guiMainMenu = nullptr, *guiTest = nullptr;
     idUserInterface *guiRetainedHome = nullptr, *guiRetainedTitle = nullptr, *guiRetainedPause = nullptr, *guiRetainedPauseStrogg = nullptr;
+    idUserInterface *guiRetainedPauseAwakening = nullptr;
     int retainedPauseStrogg = -1;
     ID_TIME_T retainedNewestSave = 0;
     idUserInterface* guiRetainedReleasing = nullptr; int retainedReleaseUntil = 0;
@@ -674,10 +675,18 @@ public:
     idUserInterface* guiRetainedRestart = nullptr; void HandleRetainedRestartRequest(idUserInterface*, const char*);
     // The Strogg pause's pages.
     idUserInterface *guiRetainedLoadStrogg = nullptr, *guiRetainedSaveStrogg = nullptr, *guiRetainedRestartStrogg = nullptr;
-    bool IsRetainedLoadPage(const idUserInterface* gui) const { return gui && (gui == guiRetainedLoad || gui == guiRetainedLoadStrogg); }
-    bool IsRetainedSavePage(const idUserInterface* gui) const { return gui && (gui == guiRetainedSave || gui == guiRetainedSaveStrogg); }
+    idUserInterface *guiRetainedLoadAwakening = nullptr, *guiRetainedSaveAwakening = nullptr, *guiRetainedRestartAwakening = nullptr;
+    bool IsRetainedPause(const idUserInterface* gui) const {
+        return gui && (gui == guiRetainedPause || gui == guiRetainedPauseStrogg || gui == guiRetainedPauseAwakening);
+    }
+    bool IsRetainedLoadPage(const idUserInterface* gui) const {
+        return gui && (gui == guiRetainedLoad || gui == guiRetainedLoadStrogg || gui == guiRetainedLoadAwakening);
+    }
+    bool IsRetainedSavePage(const idUserInterface* gui) const {
+        return gui && (gui == guiRetainedSave || gui == guiRetainedSaveStrogg || gui == guiRetainedSaveAwakening);
+    }
     bool IsRetainedRestartPage(const idUserInterface* gui) const {
-        return gui && (gui == guiRetainedRestart || gui == guiRetainedRestartStrogg);
+        return gui && (gui == guiRetainedRestart || gui == guiRetainedRestartStrogg || gui == guiRetainedRestartAwakening);
     }
     // The Demos page; the library its scan finds (demoFiles), what was played
     // and deleted, and refusals.
@@ -830,6 +839,8 @@ public:
     idUserInterface* SelectRetainedLoadingGui(idUserInterface*, bool);
     idUserInterface* FindRetainedGui(const char*, bool, bool);
     idUserInterface* RetainedHomeDocument(idUserInterface*&, const char*);
+    bool retainedSettingsAwakening = false;
+    const char* RetainedFamilyPath(const char*) const; void SyncRetainedSettingsFamily();
     bool RetainedPauseIsStrogg();
     bool RetainedSystemAvailable() const;
     void PreloadRetainedScreens(); void PrepareRetainedLevel(const char*, bool); void PrecacheRetainedLevelImages();
@@ -5544,6 +5555,11 @@ def main() -> int:
                        'guis/menu/mp_escape.rui', 'guis/menu/mp_welcome.rui', 'guis/menu/mp_summary.rui', 'guis/menu/loadgame.rui',
                        'guis/menu/savegame.rui', 'guis/menu/restartlevel.rui', 'guis/menu/loadgame_strogg.rui',
                        'guis/menu/savegame_strogg.rui', 'guis/menu/restartlevel_strogg.rui',
+                       'guis/menu/pause_awakening.rui', 'guis/menu/loadgame_awakening.rui',
+                       'guis/menu/savegame_awakening.rui', 'guis/menu/restartlevel_awakening.rui',
+                       'guis/menu/settings_awakening.rui', 'guis/menu/settings/controls_awakening.rui',
+                       'guis/menu/settings/game_awakening.rui', 'guis/menu/settings/audio_awakening.rui',
+                       'guis/menu/settings/system_awakening.rui',
                        'guis/menu/demos.rui', 'guis/menu/restartmenu.rui', 'guis/menu/credits.rui', 'guis/menu/arena.rui',
                        'guis/menu/multiplayer.rui', 'guis/menu/createserver.rui', 'guis/menu/joingame.rui',
                        'guis/menu/arena_pause.rui', 'guis/menu/settings/audio.rui', 'guis/menu/settings/game.rui',
@@ -5639,11 +5655,20 @@ def main() -> int:
         gated = (ROOT / source).read_text(encoding='utf-8', errors='replace')
         assert gate in gated and 'cvarSystem->Find( "ui_retained" )' in gated, f'{cvar} is not gated on ui_retained'
         assert not re.search(rf'(cvar\s+"?|consoleCMD\s+"){cvar}\b', stock_game), f'{cvar} has a stock row: drop its exemption'
-    for cvar, kind, extra in retained_game.setting_rows():
-        action = game_document['actions'][f'set.{cvar}']
-        assert action['operation'] == 'settings.player.set' and action['arguments'] == {'cvar': cvar, 'value': {'input': 'value'}}, cvar
-        assert cvar in rules and (kind != 'choice' or not isinstance(extra[1][0], str) or rules[cvar] == list(extra[1])), cvar
-        assert cvar in RETAINED_ONLY_GAME_SETTINGS or re.search(rf'(cvar\s+"?|consoleCMD\s+"){cvar}\b', stock_game), f'{cvar} is not a stock GAME OPTIONS setting'
+    import retained_controls
+    controls_document = json.loads(re.sub(r'^\s*//.*$', '', (ROOT / 'content/baseoq4/pak0/guis/menu/settings/controls.rui').read_text(encoding='utf-8'), flags=re.M))
+    # The stock page's mouse and controller rows, with Free Look, Toggle Zoom
+    # and Scope Sensitivity, stand on the CONTROLS page's device tabs (issue
+    # #220); each stock setting stands on one page only.
+    game_cvars = [cvar for cvar, _kind, _extra in retained_game.setting_rows()]
+    controls_cvars = [cvar for cvar, _kind, _extra in retained_controls.setting_rows()]
+    assert not set(game_cvars) & set(controls_cvars) and {'in_freeLook', 'pm_zoomedSlow', 'sensitivity', 'in_joystick'} <= set(controls_cvars)
+    for document, settings in ((game_document, retained_game.setting_rows()), (controls_document, retained_controls.setting_rows())):
+        for cvar, kind, extra in settings:
+            action = document['actions'][f'set.{cvar}']
+            assert action['operation'] == 'settings.player.set' and action['arguments'] == {'cvar': cvar, 'value': {'input': 'value'}}, cvar
+            assert cvar in rules and (kind != 'choice' or not isinstance(extra[1][0], str) or rules[cvar] == list(extra[1])), cvar
+            assert cvar in RETAINED_ONLY_GAME_SETTINGS or re.search(rf'(cvar\s+"?|consoleCMD\s+"){cvar}\b', stock_game), f'{cvar} is not a stock GAME OPTIONS setting'
     # The CONTROLS page: the button's and the multiplayer menu's routes as
     # GAME OPTIONS'; its rows are the stock page's bindings in its order, the
     # session's table follows them; a binding keeps at most two keys, as the
@@ -5667,16 +5692,15 @@ def main() -> int:
                      r'set "t_settings_title::text" "#str_200009" ;', arrival)
     assert re.search(r'if \( "gui::retainedControls" == 1 \) \{\s*set "set_b_controls::visible" "1" ;\s*'
                      r'namedevent "p_btns::hideSetControls" ;', arrival)
-    import retained_controls
     stock_controls = (ROOT / 'content/baseoq4/pak0/guis/menu/settings/controls.gui').read_text(encoding='utf-8', errors='replace')
     stock_bindings = [binding.strip('"') for binding in re.findall(r'bindDef\s+\w+\s*\{[^}]*?\bbind\s+("[^"]+"|\S+)', stock_controls)]
     session_bindings = re.findall(r'"([^"]+)"', re.search(r'RETAINED_CONTROLS_BINDINGS\[\] = \{([^}]*)\};', menu).group(1))
     assert list(retained_controls.BINDINGS) == stock_bindings == session_bindings and len(stock_bindings) == 50
-    controls_document = json.loads(re.sub(r'^\s*//.*$', '', (ROOT / 'content/baseoq4/pak0/guis/menu/settings/controls.rui').read_text(encoding='utf-8'), flags=re.M))
     assert [controls_document['state'][f'controls.{row}.keys']['keyBinding'] for row in range(50)] == session_bindings
     controls_publish = function_body(menu, 'void idSessionLocal::PublishRetainedControls(')
     assert controls_publish.index('gui->SetKeyBindingNames();') < controls_publish.index('retainedControlsCapture >= 0') < controls_publish.index('gui->StateChanged(')
-    assert {name: action['arguments']['command'] for name, action in controls_document['actions'].items()} == \
+    assert {name: action['arguments']['command'] for name, action in controls_document['actions'].items()
+            if action['operation'] != 'settings.player.set'} == \
         {'controlsBind': 'controlsBind', 'controlsClear': 'controlsClear', 'controlsTouchLayout': 'controlsTouchLayout',
          'back': 'controlsBack'}
     # A new key joins its action's keys through the menus' shared rule, two
@@ -5685,6 +5709,10 @@ def main() -> int:
     # same way.
     controls_key = function_body(menu, 'bool idSessionLocal::RetainedControlsKey(')
     assert 'idKeyInput::BindForMenu( key, binding );' in controls_key and 'NumBinds' not in controls_key
+    # Delete and Backspace clear a binding row only: the device tabs' typed
+    # numbers take them as text.
+    assert re.search(r'\( event->evValue == K_DEL \|\| event->evValue == K_BACKSPACE \) &&\s*'
+                     r'Session_RetainedControlsRow\( guiRetainedControls \) >= 0 \)', controls_key)
     assert 'key != K_ESCAPE && key != K_JOY7 && key != K_JOY8' in controls_key and 'idKeyInput::UnbindBinding( binding );' in controls_key
     key_input = (ROOT / 'src/framework/KeyInput.cpp').read_text(encoding='utf-8')
     bind_for_menu = function_body(key_input, 'void idKeyInput::BindForMenu(')
@@ -5764,9 +5792,17 @@ def main() -> int:
     # parses them on workers as a map change begins; their loads stay in
     # PrepareRetainedLevel. The title and the pauses are named once more by
     # PrefetchRetainedNextPages, which loads nothing: it starts the parses of
-    # the pages each leads to and that load when first opened.
-    assert menu.count('RETAINED_TITLE_GUI') == 5 and menu.count('RETAINED_PAUSE_GUI') == 5 and menu.count('RETAINED_LOADING_GUI') == 2
-    assert menu.count('RETAINED_PAUSE_STROGG_GUI') == 5
+    # the pages each leads to and that load when first opened. WarmRetainedPages
+    # names them once more: while one rests, it loads the pages it leads to
+    # whose parse has finished and prepares them out of sight.
+    assert menu.count('RETAINED_TITLE_GUI') == 6 and menu.count('RETAINED_PAUSE_GUI') == 6 and menu.count('RETAINED_LOADING_GUI') == 2
+    assert menu.count('RETAINED_PAUSE_STROGG_GUI') == 6
+    warm = function_body(menu, 'void idSessionLocal::WarmRetainedPages(')
+    # It loads only a page whose parse is ready, one a frame, never the unique
+    # SYSTEM page, and prepares a loaded page through the adapter.
+    assert 'if ( UI_RetainedPrefetchReady( page ) ) {' in warm and 'FindRetainedGui( page, true, false );' in warm
+    assert 'RETAINED_SYSTEM_GUI' not in warm and 'UI_RetainedWarm( gui, finished )' in warm
+    assert 'retainedSubpageFrom != NULL' in warm and '( mapSpawned && IsMultiplayer() )' in warm
     next_pages = function_body(menu, 'void idSessionLocal::PrefetchRetainedNextPages(')
     assert 'FindRetainedGui' not in next_pages and 'UI_RetainedPrefetchDocuments( pages, 4 );' in next_pages
     assert 'retainedStock.FindIndex( page ) >= 0 || uiManager->FindGui( page, false, false, false ) != NULL' in next_pages
@@ -5824,6 +5860,28 @@ def main() -> int:
     family = family[:family.index('}')]
     assert 'gui->SetStateBool( "pause_strogg", player != NULL && player->spawnArgs.GetBool( "strogg" ) );' in family
     assert 'retainedPauseStrogg = -1;' in function_body(menu, 'void idSessionLocal::PrepareRetainedLevel(')
+    # The Awakening's pause: while the expansion's campaign runs and the player
+    # is not Strogg; its pages follow the pause that handed off, and they load
+    # only with that campaign (visual specification 13.7).
+    home = function_body(menu, 'void idSessionLocal::UpdateRetainedHome(')
+    assert home.index('RetainedPauseIsStrogg()') < home.index('} else if ( mapSpawned && FS_AwakeningActive() ) {') <         home.index('RetainedHomeDocument( guiRetainedPauseAwakening, RETAINED_PAUSE_AWAKENING_GUI )') < home.index('if ( want == NULL ) {')
+    page = function_body(menu, 'bool idSessionLocal::BeginRetainedPage(')
+    assert 'const bool awakening = !settings && guiRetainedHome != NULL && guiRetainedHome == guiRetainedPauseAwakening;' in page
+    assert 'awakening ? ( saving ? RETAINED_SAVEGAME_AWAKENING_GUI : restarting ? RETAINED_RESTART_AWAKENING_GUI : RETAINED_LOADGAME_AWAKENING_GUI )' in page
+    level = function_body(menu, 'void idSessionLocal::PrepareRetainedLevel(')
+    assert level.index('if ( FS_AwakeningActive() ) {') < level.index('guiRetainedPauseAwakening = FindRetainedGui( RETAINED_PAUSE_AWAKENING_GUI, false, true );')
+    # Its SETTINGS page and categories load their Awakening copies while the
+    # Awakening pause is the home behind them; any other home keeps the
+    # Marine pages, and a change of family drops the cached settings views.
+    find = function_body(menu, 'idUserInterface *idSessionLocal::FindRetainedGui(')
+    assert find.index('const char *family = RetainedFamilyPath( path );') < find.index('uiManager->FindGui( path, true, !shared, shared )')
+    sync = function_body(menu, 'void idSessionLocal::SyncRetainedSettingsFamily(')
+    assert '( guiRetainedHome == guiRetainedPauseAwakening || retainedPageHome == guiRetainedPauseAwakening )' in sync
+    for pointer in ('guiRetainedSettingsPage', 'guiRetainedAudio', 'guiRetainedGame', 'guiRetainedControls'):
+        assert f'{pointer} = NULL;' in sync, pointer
+    assert 'SyncRetainedSettingsFamily();' in function_body(menu, 'idUserInterface *idSessionLocal::RetainedSettingsPage(')
+    for marine in ('settings', 'settings/controls', 'settings/game', 'settings/audio', 'settings/system'):
+        assert f'"guis/menu/{marine}_awakening.rui"' in menu, marine
     # The Objectives page's screenshots resolve inside the load, after the game
     # spawns the map and before the media are finished.
     change = function_body(session, 'void idSessionLocal::ExecuteMapChange(')
@@ -5847,7 +5905,7 @@ def main() -> int:
         draw.index('guiRetainedReleasing->Redraw( presentationTime );')
     assert session.count('guiRetainedReleasing->Redraw(') == 1
     release_ms = int(re.search(r'static const int RETAINED_RELEASE_MSEC = (\d+);', menu).group(1))
-    for name in ('pause', 'pause_strogg'):
+    for name in ('pause', 'pause_strogg', 'pause_awakening'):
         text = (ROOT / f'content/baseoq4/pak0/guis/menu/{name}.rui').read_text(encoding='utf-8')
         document = json.loads(re.sub(r'^\s*//.*$', '', text, flags=re.M))
         release = next(item for item in document['timelines'] if item['id'] == 'release')
@@ -6040,6 +6098,7 @@ def main() -> int:
         'static void Session_RetainedSaveDetails(', 'static void Session_PublishRetainedTitleState(',
         'static void Session_PublishSummaryShot(', 'static void Session_PublishSinglePlayerSummaries(',
         'static void Session_PublishMultiplayerSummaries(', 'static void Session_PublishCampaignSummaries(', 'idUserInterface *idSessionLocal::FindRetainedGui(',
+        'const char *idSessionLocal::RetainedFamilyPath(', 'void idSessionLocal::SyncRetainedSettingsFamily(',
         'bool idSessionLocal::RetainedSystemAvailable(', 'bool idSessionLocal::ReturnSystemSettings(', 'void idSessionLocal::OpenCampaignSelector(',
         'bool idSessionLocal::OpenRetainedCampaignSkill(', 'bool idSessionLocal::OpenRetainedCampaignChapters(', 'void idSessionLocal::BeginRetainedCampaignSkill(',
         'bool idSessionLocal::RetainedHomeInputBlocked(',

@@ -510,7 +510,9 @@ private/anti-private audience and distance still constrain cues; user master and
 dialogue mute and hardware voice allocation do not remove captions. The selected
 leadin/loop sample owns its text. Stops, replacement, completion and missing text
 clear the cue. Speaker labels require a matching live entity/emitter and its
-`npc_name`, with a localized radio label where applicable.
+`npc_name`, with a localized radio label where applicable. A character speaks
+through its head (an `idAFAttachment`), so the label is read from the body the
+head belongs to (#226).
 
 The Lowpixel overlay defaults to 17 dp, white text, green speaker labels and a
 0.60 black backing. Long text wraps using actual font advances and pages in
@@ -1769,7 +1771,140 @@ its last row.
 
 Not covered: a published third-party caption pack, ordered human play and
 physical stereo-HUD placement. Untranscribed lines in the campaigns still have
-no text unless a pack supplies it.
+no text unless a pack supplies it. (Superseded on 17 November: see
+[script lines and helmet-radio captions](#script-lines-and-helmet-radio-captions-17-november-2026).)
+
+## Script lines and helmet-radio captions, 17 November 2026
+
+Issue #221 reported radio transmissions without subtitles. The 13 November
+inventory concluded the installed game had no more text to map; it had looked
+only at lip-sync declarations. Two installed sources it did not consider cover
+almost every remaining campaign line.
+
+### What the installed game carries
+
+The stock install (`q4base`, read with `tools/tests/audio_asset_inventory.py`
+and scratch scripts; identifiers and counts only) has 1,404 speech shaders
+without lip-sync text: 64 multiplayer announcers and 1,340 campaign lines.
+
+- **Helmet-radio copies, 692.** Every marine line has a processed copy under a
+  `helmet/` directory, played by its own `<shader>_h` shader. In all 692 the
+  copy's file is the dry line's file with `helmet/` added, and the dry shader
+  has an installed transcript. Lip sync never declared the copies.
+- **Script lines, 637 of the other 648.** Raven's voice shaders carry the
+  writers' line as their `description`. Where a shader has both, the words
+  agree closely: over the 2,266 shaders with a description and a transcript,
+  normalised word-sequence similarity is at least 0.9 for 73% and at least 0.8
+  for 89%. The low scores are non-verbal sounds (the transcript spells the
+  sound, "ugh", where the description says "(pain grunt)"), numbers and
+  initials spelled out for lip sync ("H Q", "ninety five") and takes the actor
+  shortened ("Marine down!" against "Marine down! I repeat, Marine down!").
+- **Nothing to show, 11.** Screams, laughter, snoring, Makron pain and death:
+  the description is a stage direction or a sound label, or there is none.
+
+Radio specifically: the stock maps' `func_radiochatter` entities name 333
+radio lines. 83 have lip-sync text, 249 have none, and all 249 have a script
+line; one name, `vo_1_2_20_50_1`, matches no shader and plays nothing. 22 of
+those script lines contain Windows-1252 punctuation, such as the 0x92
+apostrophe.
+
+The Awakening declares 72 speech shaders without text of its own, but at
+runtime stock transcripts apply too: `vo_2_2_10_130_1` and `vo_2_2_10_210_24`
+take them. Its five `vo_7_6_*` lines now show script lines (their descriptions
+open with speaker tags such as `<dekard:>`, which are removed), and
+`vo_w_scream`, "(Wilhelm scream)", stays without text.
+
+### Policy
+
+`SoundTranscriptText` keeps its order and adds two installed fallbacks at the
+end. A caption pack's `subtitle/` declaration comes first, then the line's own
+lip-sync text. For a single-sample shader's leadin with neither:
+
+1. **Helmet copy** (`transcript=helmet`, cue source `installed`): a shader named
+   `*_h` whose sample path has a `/helmet/` directory takes the lip-sync text of
+   the shader without `_h`.
+2. **Script line** (`transcript=script`, cue source `script`): the shader's
+   description, cleaned once when the decl is parsed
+   (`idSoundShader::GetScriptCaption`, `SoundScriptCaption` in
+   `SoundDialogue.h`). The text is re-encoded from Windows-1252 whatever the
+   menu language, with the same ASCII folds as a legacy string table
+   (`LangDict_ConvertCodePageToUtf8` now takes the codepage). Text in `()`,
+   `[]` and `<>` is dropped; a description that runs into another line's id
+   (`1_2_1_105_2MARINE #1...`, a pasted script row) ends there; whitespace is
+   collapsed and a stray mark before the first word removed. A description
+   with no words left, a `#` note or a lone sound label (laugh, pain, death,
+   scream and the like) gives nothing, so it still shows the marker.
+
+Random-variant shaders never use a description: it cannot say which file
+plays. Lip sync is unchanged; neither fallback is read for mouth animation.
+No transcript text is added to the repository, and the installed text is
+English only, as before.
+
+### Results
+
+`SoundDialogueTest` (meson) checks the cleaner on script lines, speaker tags,
+directions, pasted rows, spaced ellipses, UTF-8 punctuation, labels and notes.
+`audio_subtitles.py` (native selection and pagination, clang++) adds the
+fallback order: script after installed, unresolved and empty lip-sync text,
+packs before both, leadin and single-sample only, the cue's `script` flag and
+its held tail, and the helmet share with its name, path and dry-text
+conditions. The cleaner, run over every stock and Awakening description that a
+gap shader carries, drops exactly the stage directions and sound labels listed
+above.
+
+`audio_subtitles_runtime.py` gained a phase that plays an untranscribed radio
+line (`vo_1_1_5_100_1` stock, `vo_7_6_4` Awakening) and expects
+`source=script`, and one that plays a helmet copy (`vo_9_10_150_11_h`) and
+expects its dry line's text; its untranscribed fixture now carries a
+direction-only description, `(radio static)`, and still shows only the marker.
+All 26 checks pass in each run, harness SHA-256
+`0481017e40632374b14f17833d4afb370f1e46353f3e9e692c4ed6495480c964`:
+
+- `.tmp/issue221/stock/result.json`: stock `game/airdefense1`, English,
+  1280x720. The radio line is captioned with its speaker label, and the
+  Windows-1252 apostrophe in "HQ's" draws as one.
+- `.tmp/issue221/awakening/result.json`: Awakening
+  `game/m01_stranarus_trench1`, English, 1280x720; the `<dekard:>` tag and the
+  description's double space are gone from the caption.
+
+The runs used the fixed separate stage `.tmp/runtime/subtitles`, because
+another session was testing from `.install`. Its client SHA-256 is
+`2e19411be146d76542f0327d1197c6ac4cd43010eee898421265c06fb0fb71a2` (Windows
+x64, debugoptimized from `builddir-perf`, built in the shared tree with other
+sessions' uncommitted work); `BUILD.txt` there records the modules.
+
+### Limits
+
+A script line is what was written, not always what was recorded; a caption
+pack can replace any of them with an exact transcript. Multiplayer announcers
+and the non-verbal sounds above stay uncaptioned. Ordered human play and
+physical stereo-HUD placement remain open under AUD-07.
+
+## Speaker names on characters, 17 November 2026
+
+[#226](https://github.com/themuffinator/openQ4/issues/226): **Speaker Names**
+(`ui_subtitleSpeakers`) showed only the radio label. A character speaks through
+its head: `idAI::Speak` starts the line with `head->StartLipSyncing`, so the cue's
+speaker is the head entity, which carries no `npc_name`. The overlay now reads
+the name from the body an `idAFAttachment` belongs to, as the crosshair's
+character info already does. A character without a head speaks on its body and
+was already labelled. The name is the body's spawn value after its persona
+(`def_persona`) is merged, so `game/airdefense1`'s Anderson reads *Medic
+Anderson* (`#str_107511`), not the map's `#str_400219`, which the persona replaces.
+
+`audio_subtitles_runtime.py` adds an `NPC_SPEAKER` phase on `game/airdefense1`:
+after the save and load, it moves the player beside `npc_anderson_outdoor`, runs
+the map's own `map_airdefense1::meetAndersonIntro()`, then reads the overlay's
+`speaker0`/`speaker1` state with `ui_hudTest` and captures the frame. Hidden
+OpenGL client, staged `.install`, private save path, no OS input:
+
+- With the fix, all 27 checks pass. `vo_1_1_1_20_1` is captioned
+  (`speaker=289`, the head) and `speaker0` reads `Medic Anderson: `.
+- With the previous overlay code built into the same stage, `speaker0` is
+  empty and `npc_speaker_name` fails; the other 26 checks pass.
+
+The phase runs only on stock `game/airdefense1`. The Awakening run has no
+matching scene, and the code path is shared.
 
 ## Other verification and limitations
 

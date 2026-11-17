@@ -12,7 +12,7 @@ This guide covers how the game plays, looks and sounds: difficulty and Turbo Mod
 | HUD layout, size and opacity | **Settings → Game Options → HUD** | Game Options, **HUD** section |
 | Crosshair, hit marker, animated crosshair | **Settings → Game Options → HUD** | Game Options, **Crosshair** section (no animated crosshair) |
 | Skip cinematics, corpses, enhanced physics, language, console access | **Settings → Game Options → General** | Game Options, **Gameplay** section |
-| Weapon field of view and position | **Settings → Game Options → General** | Game Options, **View Weapon** section |
+| Weapon field of view and position | **Settings → Game Options → HUD** (**General** in 0.14.1) | Game Options, **View Weapon** section |
 | Volume, room reverb, speakers, subtitles | **Settings → Audio** | **Settings → Audio** |
 
 The classic Game Options page has a **Section** chooser at the top that jumps between its groups. Settings you change are saved automatically.
@@ -169,17 +169,17 @@ seta hud_damageNumberScale 1.25
 
 There is no field-of-view slider in the menus; set it from the console with `g_fov` (default `90`), for example `g_fov 100`. The number is the horizontal angle on a 4:3 screen. On a wider screen openQ4 keeps the same vertical view and shows more at the sides, so you don't need to raise it for widescreen. Multiplayer accepts `90` to `175`. To make sure your value is applied every time, put `set g_fov 100` in your `autoexec.cfg` (see [Input settings](input-settings.md#config-files)).
 
-The weapon on screen has its own controls on **Settings → Game Options → General**: **Weapon FOV** (`0` follows your field of view), **Weapon FOV Aspect**, and **Weapon X/Y/Z Offset**, described in [Display settings](display-settings.md). **Weapon Kick** (`g_weaponMuzzleKick`) makes the weapon kick back when it fires; turn it off to hold the weapon still.
+The weapon on screen has its own controls on **Settings → Game Options → General**: **Weapon FOV** (`0` follows your field of view), **Weapon FOV Aspect**, and **Weapon X/Y/Z Offset**, described in [Display settings](display-settings.md). **Weapon Kick** (`g_weaponMuzzleKick`) makes the weapon kick back when it fires; turn it off to hold the weapon still. To stop the camera itself jerking when you fire, see [Camera kick and screen shake](#camera-kick-and-screen-shake).
 
 ## Dialogue subtitles
 
-Turn on **Settings → Audio → Dialogue Subtitles** (scroll down). Subtitles work in both interfaces, including The Awakening, and stay visible when dialogue or master volume is muted. Up to two speakers appear at once, and long lines advance in pages as the audio plays. When a line finishes, its last words stay up for half a second more, and a short line stays up for at least a second and a half, so you have time to read it; a line that is cut off clears at once. Pausing, saving and loading keep the caption at the current point in the line. **Subtitle Size**, **Subtitle Background**, **Speaker Names** and **Untranscribed Speech** sit beside it.
+Turn on **Settings → Audio → Dialogue Subtitles** (scroll down). Subtitles work in both interfaces, including The Awakening, and stay visible when dialogue or master volume is muted. Up to two speakers appear at once, and long lines advance in pages as the audio plays. When a line finishes, its last words stay up for half a second more, and a short line stays up for at least a second and a half, so you have time to read it; a line that is cut off clears at once. Pausing, saving and loading keep the caption at the current point in the line. **Subtitle Size**, **Subtitle Background**, **Speaker Names** and **Untranscribed Speech** sit beside it. **Speaker Names** puts the character's name before their line, for example *Medic Anderson: There. He's stabilized for the moment.*, and **Radio** before a radio line whose speaker is unknown. **Not in 0.14.1:** in 0.14.1 Speaker Names showed only the radio label, never a character's name. The emotion cues the game's dialogue text carries for its facial animation show as stage directions, for example *(Furrow) Let's not lose focus here.* **Not in 0.14.1:** 0.14.1 shows them raw, as `{furrow}`.
 
-The text comes from your installed game's lip-sync transcripts. The Steam release installs these in English only, and The Awakening's are written in English, so other menu languages show English captions. Coverage is incomplete: about three in ten lines heard in the campaigns have no transcript in the installed game. With **Untranscribed Speech** on (the default) such a line shows **[untranscribed speech]**, after the speaker's name when it is known, so you can tell someone is talking; where that does not fit on one line, as in a narrow window at large text sizes, it shortens to **[speech]**. Turn it off to leave those lines blank. Scene descriptions are never used as captions. Voice chat and sound effects are not transcribed. In portrait windows, cinematic captions sit below the picture, clear of title cards; at the largest text sizes they show one line at a time there, with a second speaker above the picture. A speaker name too wide for half the line is left out.
+The text comes from your installed game. Most lines use its lip-sync transcripts. Radio chatter and the other lines that have none show the line as written in the game's script, which its sound files carry; now and then the actor says a shorter or slightly different take. A marine heard over the helmet radio shows the same text as when you hear them face to face. The installed text is English only (the Steam release installs English, and The Awakening's is written in English), so other menu languages show English captions. Screams, laughter, pain sounds and multiplayer announcers have no words to show. With **Untranscribed Speech** on (the default) such a sound, or any other speech without text, shows **[untranscribed speech]**, after the speaker's name when it is known, so you can tell someone is making it; where that does not fit on one line, as in a narrow window at large text sizes, it shortens to **[speech]**. Turn it off to leave those blank. Stage directions in the script, such as *(pain grunt)*, are never shown as captions. Voice chat and sound effects are not transcribed. In portrait windows, cinematic captions sit below the picture, clear of title cards; at the largest text sizes they show one line at a time there, with a second speaker above the picture. A speaker name too wide for half the line is left out.
 
 ### Caption packs
 
-A caption pack is a mod that adds text for lines the installed game has no transcript for, or replaces a line's text, for example with a translation. openQ4 does not ship one: the missing text does not exist in the game's files, and openQ4 does not copy transcripts. Install a pack like any other mod, as a PK4 in your game folder or a mod folder. A pack's text takes priority over the installed transcript for the same line; an entry with no text, or a missing `#str_` key, leaves the installed text in place.
+A caption pack is a mod that replaces a line's text, for example with a translation or an exact transcript where the script line differs from what is said, or adds text for a line that has none. openQ4 does not ship one and copies no transcripts: its captions come from the game you installed. Install a pack like any other mod, as a PK4 in your game folder or a mod folder. A pack's text takes priority over the installed text for the same line; an entry with no text, or a missing `#str_` key, leaves the installed text in place.
 
 For pack authors: a pack is `lipsync/<name>.lipsync` with one entry per line, named `subtitle/` plus either the sound shader's name or the voice file's path without its extension:
 
@@ -190,7 +190,7 @@ lipSync subtitle/sound/vo/airdefense/1_1_1_150_2 { text "Your own words for this
 
 Use the shader name for a sound that has one voice file. A shader that picks one of several files at random needs one entry per file path, because each file is a different line. The text can be literal or a `#str_` key; keys come from the pack's own `strings/<language>_<name>.lang` files, so one pack can carry every language and falls back to English where a language has no entry. These entries are only captions: they do not change lip sync. Publish only text you have the right to publish.
 
-To list the lines without a transcript, run `python tools/tests/audio_asset_inventory.py --assets <game folder> --output report.json --pack-template mypack.lipsync` from an openQ4 source checkout. It writes an empty entry for every such line, about 1,400 for Quake 4 and 70 for The Awakening, with no transcript text. In the console, `listSubtitles` shows each caption's source as `installed`, `authored` (from a pack) or `none`.
+To list the lines without a lip-sync transcript of their own, run `python tools/tests/audio_asset_inventory.py --assets <game folder> --output report.json --pack-template mypack.lipsync` from an openQ4 source checkout. It writes an empty entry for every such line, about 1,400 for Quake 4 and 70 for The Awakening, with no transcript text. Most of them already show a script line or a helmet copy's transcript, which an entry replaces. In the console, `listSubtitles` shows each caption's source as `installed`, `script` (the line as written in the game's script), `authored` (from a pack) or `none`.
 
 ## Sound
 
@@ -241,6 +241,12 @@ These are on by default and rarely need changing. Each takes effect after `s_res
 
 **Settings → Game Options → General → Auto Skip Cinematics** (`g_autoSkipCinematics 1`) skips every cinematic as soon as it starts, which is handy for replays and speed runs. It is off by default and affects the next cinematic, not one already playing. **Cinematic Shake** on the same page scales the extra camera movement added to cinematics (`ui_cinematicShake`, `0` none to `1` full); VR always turns it off.
 
+### Camera kick and screen shake
+
+**Settings → Game Options → General → View Kick** (`g_viewKick`) sets how much the camera jerks when you fire: the kick every single-player weapon gives the view, the lightning gun's shake while it fires, and the kick of vehicle guns. `0` keeps the view still and `1` (the default) is the original kick; the new interface's slider goes in tenths, the classic page offers Off, Low and Full. Your weapons behave exactly as before: shots still go where the crosshair points, and spread, damage and rate of fire do not change. **Weapon Kick** moves only the gun on screen, so turn both off for a completely steady view. Being hit still jolts the view.
+
+**Screen Shake** (`g_screenShake`) on the same page sets the shake from explosions, including your own rockets and grenades, from collapsing machinery and loud sounds, and from riding The Awakening's speeder bike, `0` none to `1` full. Both apply at once. Multiplayer weapons and explosions never kick or shake the view, so these settings change nothing there.
+
 ### Corpses
 
 **Settings → Game Options → General** has **Corpse Time** (how long bodies stay) and **Corpse Sink** (how they leave). From the console:
@@ -258,7 +264,7 @@ seta g_corpseRemoveDelayMP -1
 
 ### Enhanced physics
 
-**Settings → Game Options → General → Enhanced Physics** (`g_enhancedPhysics 1`) switches corpses, crates, barrels, debris and other loose objects to a newer simulation. Stacks settle and stay put, ragdolls fall on from the motion they had instead of dropping dead on the spot, limbs no longer stay stretched after a blast, and on Windows it costs less processor time than the original (on Linux some scenes cost more). Hits push bodies with the same force as before, though a blast carries them less far than with the option off: corpses lying on the ground about two thirds as far, crates and barrels about a third. A body lying across the edge of a ledge can also sink onto it or slide off. These are known shortfalls and the reason the option is not on by default.
+**Settings → Game Options → General → Enhanced Physics** (`g_enhancedPhysics 1`) switches corpses, crates, barrels, debris and other loose objects to a newer simulation. Stacks settle and stay put, ragdolls fall on from the motion they had instead of dropping dead on the spot, and limbs no longer stay stretched after a blast. Hits push bodies with the same force as before, and a blast throws corpses, crates and barrels about as far as with the option off. On a slope a loose crate or barrel comes to rest sooner, where the original keeps it sliding. It costs about the same processor time as the original in most scenes and much less where piles of objects used to keep each other awake. In a few scenes it costs somewhat more than the original, most of all on Linux when several ragdolls come to rest at once. The option is off by default until that is settled and it has been reviewed in play.
 
 It is off by default; off runs the original physics exactly. A change takes effect from the next map or loaded save. In multiplayer the server's setting applies to everyone, and a demo plays back with the setting it was recorded with.
 
@@ -312,6 +318,8 @@ All of these are saved automatically. Type them in the console, or put them in a
 | `g_fov` | `90` | Field of view, measured on a 4:3 screen. |
 | `g_autoSkipCinematics` | `0` | `1` skips cinematics as they start. |
 | `ui_cinematicShake` | `1` | Extra cinematic camera movement, `0` to `1`. |
+| `g_viewKick` | `1` | Camera kick and shake when you fire, `0` to `1`; aim is unchanged. |
+| `g_screenShake` | `1` | Screen shake from explosions, machinery and vehicles (single-player), `0` to `1`. |
 | `g_corpseRemoveDelaySP` | `0` | Single-player corpse delay in seconds; `0` stock, `-1` never. |
 | `g_corpseRemoveDelayMP` | `0` | Multiplayer corpse delay in seconds; `0` stock, `-1` never. |
 | `g_corpseSink` | `0` | `0` dissolve, `1` sink as a ragdoll, `2` sink without ragdoll. |

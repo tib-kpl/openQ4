@@ -338,6 +338,9 @@ void rvWeaponLightningGun::Think ( void ) {
 	
 	MuzzleFlash();
 
+	// openQ4 VR: the beam hums in the weapon hand while it burns
+	owner->VRVibrate( true, false, 0.35f, 50 );
+
 	// Inflict damage on all targets being attacked
 	if ( !gameLocal.isClient && gameLocal.time >= nextAttackTime ) {
 		int    i;
@@ -918,7 +921,7 @@ stateResult_t rvWeaponLightningGun::State_Fire( const stateParms_t& parms ) {
 				PlayCycle( ANIMCHANNEL_ALL, "shoot_loop", 0 );
 				if ( !gameLocal.isMultiplayer
 					&& owner == gameLocal.GetLocalPlayer() ) {
-					owner->playerView.SetShakeParms( MS2SEC(gameLocal.GetTime() + 500), 2.0f );
+					owner->playerView.SetShakeParms( MS2SEC(gameLocal.GetTime() + 500), 2.0f, true );
 				}
 			}
 			return SRESULT_WAIT;

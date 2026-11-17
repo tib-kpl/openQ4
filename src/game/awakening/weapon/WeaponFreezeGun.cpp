@@ -9,10 +9,12 @@
 	A short-range freezing spray built on the hyperblaster's body: every shot
 	throws five short-fused projectile_freezegun bolts. Its damage defs carry
 	"filter_freeze", which puts out func_fire_volume fires, and its projectile
-	carries "freezeEnemies". The def's ammoRegenStep/ammoRegenTime apply only
-	while the player has the ammo-regeneration powerup; they do not provide
-	passive recharge. Shader parm 6 represents the clip fraction (full on the
-	shipped clipless definition).
+	carries "freezeEnemies". Its battery recharges by itself: idPlayer adds the
+	def's ammoRegenStep every ammoRegenTime ms up to the starting charge, and
+	each shot holds that recharge back for FREEZEGUN_RECHARGE_DELAY ms, so a
+	sustained spray still drains it. Shader parm 6 on the view model is the
+	drained fraction of that charge (0 full, 1 empty): openQ4's override of
+	the coolant-tube material dims the tubes' glow with it.
 
 ===============================================================================
 */
@@ -21,12 +23,17 @@ class rvWeaponFreezeGun : public rvWeapon {
 public:
 	CLASS_PROTOTYPE( rvWeaponFreezeGun );
 
+							rvWeaponFreezeGun( void );
+
 	virtual void			Spawn( void );
+	virtual void			Think( void );
 	void					PreSave( void );
 	void					PostSave( void );
 
 private:
 	void					UpdateBatteryGlow( void );
+
+	float					shownDrain;	// last parm 6 written; not saved, rewritten after a load
 
 	stateResult_t			State_Idle( const stateParms_t &parms );
 	stateResult_t			State_Fire( const stateParms_t &parms );
@@ -46,6 +53,16 @@ END_CLASS_STATES
 
 static const int FREEZEGUN_SPARM_BATTERY = 6;
 static const int FREEZEGUN_BOLTS_PER_SHOT = 5;
+static const int FREEZEGUN_RECHARGE_DELAY = 1000;
+
+/*
+================
+rvWeaponFreezeGun::rvWeaponFreezeGun
+================
+*/
+rvWeaponFreezeGun::rvWeaponFreezeGun( void ) {
+	shownDrain = -1.0f;
+}
 
 /*
 ================
@@ -83,7 +100,35 @@ rvWeaponFreezeGun::UpdateBatteryGlow
 ================
 */
 void rvWeaponFreezeGun::UpdateBatteryGlow( void ) {
-	viewModel->SetShaderParm( FREEZEGUN_SPARM_BATTERY, ClipSize() ? (float)AmmoInClip() / ClipSize() : 1.0f );
+	if ( viewModel == NULL ) {
+		return;
+	}
+	float charge = 1.0f;
+	if ( ClipSize() ) {
+		charge = (float)AmmoInClip() / ClipSize();
+	} else {
+		// the recharge limit: the def's starting charge
+		const idKeyValue *start = spawnArgs.MatchPrefix( "inv_start_ammo" );
+		const int full = start ? atoi( start->GetValue() ) : 0;
+		if ( full > 0 ) {
+			charge = (float)AmmoAvailable() / full;
+		}
+	}
+	const float drain = 1.0f - idMath::ClampFloat( 0.0f, 1.0f, charge );
+	if ( drain != shownDrain ) {
+		shownDrain = drain;
+		viewModel->SetShaderParm( FREEZEGUN_SPARM_BATTERY, drain );
+	}
+}
+
+/*
+================
+rvWeaponFreezeGun::Think
+================
+*/
+void rvWeaponFreezeGun::Think( void ) {
+	rvWeapon::Think();
+	UpdateBatteryGlow();
 }
 
 /*
@@ -109,6 +154,11 @@ stateResult_t rvWeaponFreezeGun::State_Idle( const stateParms_t &parms ) {
 				return SRESULT_DONE;
 			}
 			if ( !ClipSize() ) {
+				// the battery recharges while idle
+				const weaponStatus_t idleStatus = AmmoAvailable() ? WP_READY : WP_OUTOFAMMO;
+				if ( status != idleStatus ) {
+					SetStatus( idleStatus );
+				}
 				if ( gameLocal.time > nextAttackTime && wsfl.attack && AmmoAvailable() ) {
 					SetState( "Fire", 0 );
 					return SRESULT_DONE;
@@ -144,6 +194,9 @@ stateResult_t rvWeaponFreezeGun::State_Fire( const stateParms_t &parms ) {
 		case STAGE_INIT:
 			nextAttackTime = gameLocal.time + ( fireRate * owner->PowerUpModifier( PMOD_FIRERATE ) );
 			Attack( false, FREEZEGUN_BOLTS_PER_SHOT, spread, 0, 1.0f );
+			if ( ammoType >= 0 && ammoType < MAX_AMMO ) {
+				owner->nextAmmoRegenPulse[ ammoType ] = gameLocal.time + FREEZEGUN_RECHARGE_DELAY;
+			}
 			UpdateBatteryGlow();
 			PlayAnim( ANIMCHANNEL_ALL, "fire", 0 );
 			return SRESULT_STAGE( STAGE_WAIT );
@@ -183,7 +236,6 @@ stateResult_t rvWeaponFreezeGun::State_Reload( const stateParms_t &parms ) {
 			} else {
 				NetReload();
 			}
-			viewModel->SetShaderParm( FREEZEGUN_SPARM_BATTERY, 0.0f );
 			SetStatus( WP_RELOAD );
 			PlayAnim( ANIMCHANNEL_ALL, "reload", parms.blendFrames );
 			return SRESULT_STAGE( STAGE_WAIT );

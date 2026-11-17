@@ -310,10 +310,10 @@ static const std::set<std::string> PlayerSettings = {"ui_handicap","cl_player_ou
 	"in_touchscreen","in_joystickLowBatteryRumbleThreshold","in_joystickLowBatteryRumbleScale","in_promptStyle","in_swapConfirmBack",
 	"g_crosshairCustom","g_crosshairSize","g_crosshairColor","hud_hitMarker","hud_crosshairAnimated","ui_hudLayout","ui_hudScale","ui_hudWidth",
 	"ui_hudSafeInset","g_objectivesToggle","ui_hudOpacity","ui_hudDamageDirection","ui_hudPickups","ui_hudWeaponStrip",
-	"ui_reducedFlashing","ui_retainedOpaqueBacking","g_corpseSink","con_allowConsole","g_autoSkipCinematics","ui_cinematicShake","g_enhancedPhysics","cl_gunfov","cl_gunfov_adjust","cl_gun_x",
-	"cl_gun_y","cl_gun_z","g_weaponMuzzleKick","vr_enable","vr_aimMode","vr_leftHanded","vr_turnMode","vr_snapTurnAngle",
+	"ui_reducedFlashing","ui_retainedOpaqueBacking","g_corpseSink","con_allowConsole","r_screenshotFormat","g_autoSkipCinematics","ui_cinematicShake","g_screenShake","g_enhancedPhysics","cl_gunfov","cl_gunfov_adjust","cl_gun_x",
+	"cl_gun_y","cl_gun_z","g_weaponMuzzleKick","g_viewKick","vr_enable","vr_aimMode","vr_leftHanded","vr_turnMode","vr_snapTurnAngle",
 	"vr_moveDirection","vr_roomScale","vr_aimLaser","vr_hapticStrength","vr_twoHanded","vr_comfortVignette","vr_physicalCrouch",
-	"vr_playSpace"};
+	"vr_playSpace","vr_body"};
 
 static void CheckSessionActions(const Document& document) {
 	for (const auto& [id,action] : document.Model().actions) {
@@ -4669,10 +4669,39 @@ static void CheckSettingsTextScale(ScreenHost& host, Runtime& runtime, const Doc
 	Check(right.x > left.x+left.width && Near(left.width,landscape.width),"100% text sets the columns side by side again");
 }
 
+// The one action a control queued, resolved through its descriptor; a
+// proposal the control made is acknowledged.
+static ActionInvocation TakeOneAction(Runtime& runtime, const char* action) {
+	const auto actions = runtime.TakeActions();
+	if (actions.size() != 1 || actions[0].action != action) {
+		std::fprintf(stderr,"Expected action %s; received %zu",action,actions.size());
+		for (const auto& pending : actions) std::fprintf(stderr," %s",pending.action.c_str());
+		std::fprintf(stderr,"\n");
+	}
+	Check(actions.size() == 1 && actions[0].action == action,"a control requests its action");
+	ActionInvocation invocation; std::string error;
+	const StateValue* input = actions.size() == 1 && actions[0].proposal ? &*actions[0].proposal : nullptr;
+	Check(!actions.empty() && runtime.ResolveAction(actions[0].action,invocation,error,input),"the action resolves");
+	if (!actions.empty() && actions[0].proposalToken) runtime.AcknowledgeControlProposal(actions[0].node,actions[0].proposalToken,true);
+	return invocation;
+}
+
+// Each of a settings page's CVar rows sets its own CVar with settings.player.set.
+static void CheckCvarRows(const Document& document, std::initializer_list<std::pair<const char*,const char*>> rows) {
+	for (const auto& [control, cvar] : rows) {
+		const auto* node = document.Model().FindNode(control);
+		const auto found = document.Model().actions.find(std::string("set.")+cvar);
+		Check(node && node->control && node->control->action == std::string("set.")+cvar && found != document.Model().actions.end() &&
+			found->second.operation == "settings.player.set" && std::get<std::string>(found->second.arguments.at("cvar").literal) == cvar,
+			"a setting row sets its own CVar");
+	}
+}
+
 // The retained CONTROLS page (tools/ui/retained_controls.py): the stock tabs
 // as the page's tabs, each in two columns; each row shows the keys the
 // session publishes for its action; Accept asks the session to wait for a
-// key, the west face button to clear the focused row.
+// key, the west face button to clear the focused row. MOUSE and CONTROLLER
+// follow with the stock GAME OPTIONS page's device rows (issue #220).
 static void CheckControlsPage(ScreenHost& host, const char* path) {
 	const auto source = Read(path);
 	Document document; std::vector<Diagnostic> diagnostics;
@@ -4686,7 +4715,19 @@ static void CheckControlsPage(ScreenHost& host, const char* path) {
 			"each binding row asks the session to wait for a key");
 	}
 	Check(!document.Model().FindNode("controls_bind_50"),"the stock page's 49 bindings and the Classic ruleset's hook, no more");
-	for (const char* tab : {"tab-move","tab-weapons","tab-attack","tab-other"}) Check(document.Model().FindNode(tab) != nullptr,"the stock tabs");
+	for (const char* tab : {"tab-move","tab-weapons","tab-attack","tab-other","tab-mouse","tab-controller"})
+		Check(document.Model().FindNode(tab) != nullptr,"the stock tabs, then the devices'");
+	CheckCvarRows(document,{{"controls_freelook","in_freeLook"},{"controls_togglezoom","in_toggleZoom"},
+		{"controls_scopesensitivity","pm_zoomedSlow"},{"controls_msensitivity","sensitivity"},{"controls_invertmouse","m_pitch"},
+		{"controls_controller","in_joystick"},{"controls_promptstyle","in_promptStyle"},{"controls_swapconfirm","in_swapConfirmBack"}});
+	Check(document.Model().FindNode("controls-move-note") && document.Model().FindNode("controls-other-note") &&
+		!document.Model().FindNode("controls-mouse-note") && !document.Model().FindNode("controls-controller-note"),
+		"the key hint stands on the binding tabs alone");
+	// Every device row's CVar, at its type's initial value but for these.
+	const auto saved = host.cvars;
+	host.cvars.insert({{"in_freeLook",true},{"sensitivity",5.0},{"m_pitch",std::string("0.022")},{"in_promptStyle",0.0}});
+	for (const auto& [name, declaration] : document.Model().state)
+		if (!declaration.cvar.empty()) host.cvars.emplace(declaration.cvar,declaration.initial);
 	Runtime runtime(host);
 	Check(runtime.Initialize() && runtime.LoadDocument(source,"guis/menu/settings/controls.rui",diagnostics),"the page loads into a runtime");
 	auto viewport = SettingsViewport(document); std::string error; Runtime::EventEffects effects;
@@ -4695,13 +4736,14 @@ static void CheckControlsPage(ScreenHost& host, const char* path) {
 		const auto found = runtime.PresentedValue(node,property); return found ? found->text : std::string("?");
 	};
 	const auto bounds = [&](const std::string& id) { Bounds b; Check(runtime.GetBounds(id,b),"a CONTROLS page node is laid out"); return b; };
+	const auto tab = [&]() { return std::get<double>(runtime.GetState().at("page.tab")); };
 	// Move Forward's keys as the adapter publishes them, a slot each: W, the
 	// up arrow and a controller's A; the last row's V.
 	Check(runtime.SetState({{"controls.0.keys.key0",std::string("W")},{"controls.0.keys.key0.glyph",0.0},
 		{"controls.0.keys.key1",std::string("UPARROW")},{"controls.0.keys.key1.glyph",0.0},{"controls.0.keys.key1.arrow",1.0},
 		{"controls.0.keys.keyCount",2.0},{"controls.0.keys.pad0",std::string("A")},{"controls.0.keys.pad0.glyph",1.0},
 		{"controls.0.keys.padCount",1.0},{"controls.0.keys.more",std::string("+1")},
-		{"controls.48.keys.key0",std::string("V")},{"controls.48.keys.keyCount",1.0}},error,0.1),
+		{"controls.49.keys.key0",std::string("V")},{"controls.49.keys.keyCount",1.0}},error,0.1),
 		"the session publishes the keys");
 	Check(runtime.RunEvent("onActivate",0.2,effects,error),"the page arrives");
 	runtime.Frame(viewport,0.5);
@@ -4761,9 +4803,11 @@ static void CheckControlsPage(ScreenHost& host, const char* path) {
 	Check(!runtime.FocusControl("controls_bind_0",0.77),"another tab's rows take no focus");
 	Check(runtime.RunEvent("onTabPrevious",0.78,effects,error) && runtime.RunEvent("onTabPrevious",0.79,effects,error),"back past the first tab");
 	runtime.Frame(viewport,0.8);
-	Check(std::get<double>(runtime.GetState().at("page.tab")) == 3 && runtime.FocusedControl() == "controls_bind_36",
-		"the tabs wrap to the last");
-	Check(text("controls_bind_48-key0-cap-name","text") == "V" && text("controls_bind_48-key0","display") == "flex",
+	Check(tab() == 5 && runtime.FocusedControl() == "controls_controller","the tabs wrap to the last, CONTROLLER");
+	Check(runtime.RunEvent("tab_other",0.801,effects,error),"choose OTHER");
+	runtime.Frame(viewport,0.811);
+	Check(tab() == 3 && runtime.FocusedControl() == "controls_bind_37","OTHER opens on its first binding");
+	Check(text("controls_bind_49-key0-cap-name","text") == "V" && text("controls_bind_49-key0","display") == "flex",
 		"the last tab shows its keys");
 	// TOUCH LAYOUT closes the Other tab only where the session reports the
 	// built-in touch controls (Android); it asks for the layout editor.
@@ -4776,7 +4820,7 @@ static void CheckControlsPage(ScreenHost& host, const char* path) {
 		Check(runtime.SetState({{"controls.touchLayout",true}},error,0.82),"the session reports the touch controls");
 		runtime.Frame(viewport,0.83);
 		Check(text("controls_touch_layout","display") == "block","TOUCH LAYOUT shows with the touch controls");
-		const auto last = bounds("controls_bind_48"), touchRow = bounds("controls_touch_layout");
+		const auto last = bounds("controls_bind_49"), touchRow = bounds("controls_touch_layout");
 		Check(std::abs(touchRow.x-last.x) < .5f && touchRow.y > last.y,"TOUCH LAYOUT follows the last binding in its column");
 		Check(runtime.FocusControl("controls_touch_layout",0.84),"TOUCH LAYOUT takes focus");
 		runtime.TakeActions();
@@ -4785,21 +4829,81 @@ static void CheckControlsPage(ScreenHost& host, const char* path) {
 		Check(actions.size() == 1 && actions[0].action == "controlsTouchLayout","Accept on TOUCH LAYOUT asks for the editor");
 		Check(runtime.SetState({{"controls.touchLayout",false}},error,0.86),"the touch controls go");
 		runtime.Frame(viewport,0.87);
-		Check(runtime.FocusControl("controls_bind_36",0.88),"focus returns to the tab");
+		Check(runtime.FocusControl("controls_bind_37",0.88),"focus returns to the tab");
 	}
-	Check(runtime.RunEvent("onBack",0.9,effects,error) && effects.actions.size() == 1 &&
+	// MOUSE: the aim settings lead, then the mouse's own; a setting row sets
+	// its CVar, Free Look off.
+	Check(runtime.RunEvent("onTabNext",0.89,effects,error),"the next tab");
+	runtime.Frame(viewport,0.9);
+	Check(tab() == 4 && runtime.FocusedControl() == "controls_freelook","MOUSE opens on Free Look");
+	Check(!runtime.FocusControl("controls_bind_37",0.91),"the bindings rest while MOUSE is current");
+	runtime.TakeActions();
+	press(MenuInput::Accept,0.92);
+	auto invocation = TakeOneAction(runtime,"set.in_freeLook");
+	Check(std::get<std::string>(invocation.arguments.at("cvar")) == "in_freeLook" && !std::get<bool>(invocation.arguments.at("value")),
+		"Accept turns Free Look off");
+	Check(runtime.FocusControl("controls_msensitivity",0.95),"focus the mouse sensitivity");
+	press(MenuInput::Right,0.96);
+	Check(std::abs(std::get<double>(TakeOneAction(runtime,"set.sensitivity").arguments.at("value"))-5.01) < 1e-9,
+		"Right raises the sensitivity a step");
+	// Its typed number follows it: a third decimal place is refused, a value
+	// to the slider's places sets the CVar, and it settles once the CVar
+	// reads it back, as the adapter waits for it.
+	press(MenuInput::Down,0.97);
+	Check(runtime.FocusedControl() == "controls_msensitivity_number","the typed sensitivity follows its slider");
+	const auto entry = [&]() { return runtime.GetWidgetState("controls_msensitivity_number")->number->identity; };
+	const auto typed = [&](const char* value, double at) {
+		const auto size = runtime.GetWidgetState("controls_msensitivity_number")->number->state.text.size();
+		return runtime.SetNumberSelection("controls_msensitivity_number",entry(),0,size,error,at) &&
+			runtime.ReplaceNumberSelection("controls_msensitivity_number",entry(),value,error,at);
+	};
+	Check(runtime.BeginNumberEdit("controls_msensitivity_number",error,0.98) && typed("7.255",0.981) &&
+		!runtime.CommitNumberEdit("controls_msensitivity_number",entry(),error,0.981) && runtime.TakeActions().empty(),
+		"a third decimal place asks nothing");
+	Check(typed("7.25",0.982) && runtime.CommitNumberEdit("controls_msensitivity_number",entry(),error,0.982),"type 7.25 and commit it");
+	{
+		const auto actions = runtime.TakeActions();
+		ActionInvocation typedInvocation;
+		Check(actions.size() == 1 && actions[0].action == "set.sensitivity" && actions[0].proposal && actions[0].proposalToken &&
+			runtime.ResolveAction(actions[0].action,typedInvocation,error,&*actions[0].proposal) &&
+			std::get<double>(typedInvocation.arguments.at("value")) == 7.25,"the typed value sets the sensitivity");
+		host.cvars["sensitivity"] = 7.25;
+		runtime.Frame(viewport,0.983);
+		Check(runtime.AcknowledgeControlProposal(actions[0].node,actions[0].proposalToken,true),"the read-back value is acknowledged");
+		const auto settled = runtime.GetWidgetState("controls_msensitivity_number");
+		Check(settled && std::get<double>(settled->accepted) == 7.25 && (!settled->number || !settled->number->conflict),
+			"and the field settles on it without a conflict");
+	}
+	// The sensitivity ends the first column; Down goes on to the second.
+	press(MenuInput::Down,0.984);
+	Check(runtime.FocusedControl() == "controls_mcpi","Down goes on to the second column");
+	const auto aim = bounds("controls_freelook"), cpi = bounds("controls_mcpi");
+	Check(cpi.x > aim.x+aim.width && std::abs(cpi.y-aim.y) < .5f,"the mouse's rows stand in two columns");
+	// CONTROLLER: its first row, and its prompt style a list of the stock values.
+	Check(runtime.RunEvent("onTabNext",0.99,effects,error),"the next tab");
+	runtime.Frame(viewport,1.0);
+	Check(tab() == 5 && runtime.FocusedControl() == "controls_controller","CONTROLLER opens on Controller");
+	Check(!runtime.FocusControl("controls_freelook",1.01),"MOUSE's rows rest while CONTROLLER is current");
+	Check(runtime.FocusControl("controls_promptstyle",1.02),"focus the prompt style");
+	runtime.TakeActions();
+	press(MenuInput::Right,1.03);
+	Check(std::get<double>(TakeOneAction(runtime,"set.in_promptStyle").arguments.at("value")) == 1,"Right offers the next prompt style");
+	Check(runtime.RunEvent("tab_other",1.05,effects,error),"back to OTHER");
+	runtime.Frame(viewport,1.06);
+	Check(runtime.RunEvent("onBack",1.1,effects,error) && effects.actions.size() == 1 &&
 		std::get<std::string>(effects.actions[0].arguments.at("command")) == "controlsBack","Back asks the session to return");
 	const auto portrait = SettingsViewport(document,540,960);
-	runtime.Frame(portrait,1.0);
-	const auto panel = bounds("controls-panel"), row = bounds("controls_bind_48");
+	runtime.Frame(portrait,1.2);
+	const auto panel = bounds("controls-panel"), row = bounds("controls_bind_49");
 	Check(panel.x >= -.5f && panel.x+panel.width <= 540.5f && panel.y+panel.height <= 960.5f && row.x+row.width <= 540.5f,
 		"the panel fits a portrait view");
-	CheckSettingsPortrait(runtime,document,"controls_bind_42","controls_bind_43","controls_bind_48","controls-other-rows",1.1);
-	CheckSettingsTextScale(host,runtime,document,"controls-other","controls_bind_42","controls_bind_43","controls_bind_48",1.2);
+	CheckSettingsPortrait(runtime,document,"controls_bind_43","controls_bind_44","controls_bind_49","controls-other-rows",1.3);
+	CheckSettingsTextScale(host,runtime,document,"controls-other","controls_bind_43","controls_bind_44","controls_bind_49",1.4);
+	host.cvars = saved;
 }
 
-// The retained GAME OPTIONS page (tools/ui/retained_game.py): five tabs of
-// at most two columns; a row naming a CVar reads it back and sets it with
+// The retained GAME OPTIONS page (tools/ui/retained_game.py): three tabs of
+// at most two columns, the mouse and controller rows now on CONTROLS; a row naming a CVar reads it back and sets it with
 // settings.player.set; the rows the stock page computes ask the session; the
 // custom crosshair follows Crosshair's setting.
 static void CheckGamePage(ScreenHost& host, const char* path) {
@@ -4809,16 +4913,13 @@ static void CheckGamePage(ScreenHost& host, const char* path) {
 	Check(diagnostics.empty() && document.Model().id == "openq4.game" && document.Model().canvasHeight == 720,
 		"the GAME page validates on the 4:3 canvas");
 	CheckSessionActions(document);
-	const std::pair<const char*,const char*> settings[] = {{"game_freelook","in_freeLook"},{"game_msensitivity","sensitivity"},
-		{"game_invertmouse","m_pitch"},{"game_promptstyle","in_promptStyle"},{"game_crosshaircolor","g_crosshairColor"},
-		{"game_hudscale","ui_hudScale"},{"game_console","con_allowConsole"},{"game_vrsnap","vr_snapTurnAngle"}};
-	for (const auto& [control, cvar] : settings) {
-		const auto* node = document.Model().FindNode(control);
-		const auto found = document.Model().actions.find(std::string("set.")+cvar);
-		Check(node && node->control && node->control->action == std::string("set.")+cvar && found != document.Model().actions.end() &&
-			found->second.operation == "settings.player.set" && std::get<std::string>(found->second.arguments.at("cvar").literal) == cvar,
-			"a setting row sets its own CVar");
-	}
+	CheckCvarRows(document,{{"game_autoreload","ui_autoReload"},{"game_gunfov","cl_gunfov"},{"game_weaponkick","g_weaponMuzzleKick"},
+		{"game_crosshaircolor","g_crosshairColor"},{"game_hudscale","ui_hudScale"},{"game_console","con_allowConsole"},
+		{"game_vrsnap","vr_snapTurnAngle"}});
+	for (const char* moved : {"game_freelook","game_togglezoom","game_scopesensitivity","game_msensitivity","game_controller","game_promptstyle"})
+		Check(!document.Model().FindNode(moved),"the mouse, controller and aim rows are on CONTROLS");
+	for (const char* setting : {"set.in_freeLook","set.sensitivity","set.in_joystick"})
+		Check(!document.Model().actions.contains(setting),"and their settings with them");
 	for (const char* verb : {"gameGunPosition","gameForceModel","gameCrosshair","gameCorpseTime","gameLanguage"}) {
 		const auto found = document.Model().actions.find(verb);
 		Check(found != document.Model().actions.end() && found->second.operation == "session.menuValue" &&
@@ -4828,8 +4929,8 @@ static void CheckGamePage(ScreenHost& host, const char* path) {
 	Check(!document.Model().FindNode("game_section"),"tabs take the Section row's place");
 	// Every row's CVar, at its type's initial value but for these.
 	const auto saved = host.cvars;
-	host.cvars.insert({{"in_freeLook",true},{"sensitivity",5.0},{"m_pitch",std::string("0.022")},{"g_crosshairCustom",std::string("0")},
-		{"g_crosshairSize",32.0},{"g_crosshairColor",std::string("1 0 0 1")},{"in_promptStyle",0.0}});
+	host.cvars.insert({{"ui_autoReload",true},{"g_crosshairCustom",std::string("0")},{"g_crosshairSize",32.0},
+		{"g_crosshairColor",std::string("1 0 0 1")}});
 	for (const auto& [name, declaration] : document.Model().state)
 		if (!declaration.cvar.empty()) host.cvars.emplace(declaration.cvar,declaration.initial);
 	Runtime runtime(host);
@@ -4838,87 +4939,39 @@ static void CheckGamePage(ScreenHost& host, const char* path) {
 	const auto press = [&](MenuInput input, double at) { runtime.MenuAction(input,true,at); runtime.MenuAction(input,false,at+.01); };
 	const auto bounds = [&](const std::string& id) { Bounds b; Check(runtime.GetBounds(id,b),"a GAME page node is laid out"); return b; };
 	const auto tab = [&]() { return std::get<double>(runtime.GetState().at("page.tab")); };
-	// The one action a control queued, resolved through its descriptor.
-	const auto taken = [&](const char* action) {
-		const auto actions = runtime.TakeActions();
-		if (actions.size() != 1 || actions[0].action != action) {
-			std::fprintf(stderr,"Expected action %s; received %zu",action,actions.size());
-			for (const auto& pending : actions) std::fprintf(stderr," %s",pending.action.c_str());
-			std::fprintf(stderr,"\n");
-		}
-		Check(actions.size() == 1 && actions[0].action == action,"a control requests its action");
-		ActionInvocation invocation;
-		const StateValue* input = actions.size() == 1 && actions[0].proposal ? &*actions[0].proposal : nullptr;
-		Check(!actions.empty() && runtime.ResolveAction(actions[0].action,invocation,error,input),"the action resolves");
-		if (!actions.empty() && actions[0].proposalToken) runtime.AcknowledgeControlProposal(actions[0].node,actions[0].proposalToken,true);
-		return invocation;
-	};
+	const auto taken = [&](const char* action) { return TakeOneAction(runtime,action); };
 	Check(runtime.SetState({{"game.gunPosition",0.0},{"game.forceModel",false},{"game.crosshair",3.0},
 		{"game.crosshairImage",std::string("gfx/guis/crosshairs/crosshair_blaster.tga")},{"game.corpseTime",6.0},{"game.language",0.0}},error,0.1),
 		"the session publishes the computed rows");
 	Check(runtime.RunEvent("onActivate",0.2,effects,error),"the page arrives");
 	runtime.Frame(viewport,0.5);
-	Check(tab() == 0 && runtime.FocusedControl() == "game_freelook","the page opens on GENERAL's first row");
+	Check(tab() == 0 && runtime.FocusedControl() == "game_autoreload","the page opens on GENERAL's first row");
 	// GENERAL: its own rows in the first column, GAMEPLAY and VIEW WEAPON in
 	// the second; Down from the first column's last row goes on to the second,
 	// and Up from the first row reaches the tab.
-	const auto general = bounds("game_freelook"), gameplay = bounds("game_corpsesink");
+	const auto general = bounds("game_autoreload"), gameplay = bounds("game_corpsesink");
 	Check(gameplay.x > general.x+general.width,"the sections stand in two columns");
-	Check(runtime.FocusControl("game_forcemodel",0.51),"focus the first column's last row");
+	Check(runtime.FocusControl("game_screenshake",0.51),"focus the first column's last row");
 	press(MenuInput::Down,0.52);
 	Check(runtime.FocusedControl() == "game_corpsesink","Down goes on to the second column");
-	Check(runtime.FocusControl("game_freelook",0.53),"focus the first row");
+	Check(runtime.FocusControl("game_autoreload",0.53),"focus the first row");
 	press(MenuInput::Up,0.54);
 	Check(runtime.FocusedControl() == "tab-general","Up from the first row reaches the tab");
-	// A setting row sets its CVar: Free Look off.
-	Check(runtime.FocusControl("game_freelook",0.55),"focus Free Look");
+	// A setting row sets its CVar: Auto Reload off.
+	Check(runtime.FocusControl("game_autoreload",0.55),"focus Auto Reload");
 	press(MenuInput::Accept,0.56);
-	auto invocation = taken("set.in_freeLook");
-	Check(std::get<std::string>(invocation.arguments.at("cvar")) == "in_freeLook" && !std::get<bool>(invocation.arguments.at("value")),
-		"Accept turns Free Look off");
-	// MOUSE INPUT: a sensitivity step.
-	Check(runtime.RunEvent("onTabNext",0.6,effects,error),"the next tab");
-	runtime.Frame(viewport,0.61);
-	Check(tab() == 1 && runtime.FocusedControl() == "game_invertmouse","MOUSE INPUT opens on its first row");
-	Check(!runtime.FocusControl("game_freelook",0.62),"GENERAL's rows rest while another tab is current");
-	Check(runtime.FocusControl("game_msensitivity",1.2),"focus the mouse sensitivity");
-	press(MenuInput::Right,1.21);
-	Check(std::abs(std::get<double>(taken("set.sensitivity").arguments.at("value"))-5.01) < 1e-9,"Right raises the sensitivity a step");
-	// Its typed number follows it: a third decimal place is refused, a value
-	// to the slider's places sets the CVar, and it settles once the CVar
-	// reads it back, as the adapter waits for it.
-	press(MenuInput::Down,1.215);
-	Check(runtime.FocusedControl() == "game_msensitivity_number","the typed sensitivity follows its slider");
-	const auto entry = [&]() { return runtime.GetWidgetState("game_msensitivity_number")->number->identity; };
-	const auto typed = [&](const char* value, double at) {
-		const auto size = runtime.GetWidgetState("game_msensitivity_number")->number->state.text.size();
-		return runtime.SetNumberSelection("game_msensitivity_number",entry(),0,size,error,at) &&
-			runtime.ReplaceNumberSelection("game_msensitivity_number",entry(),value,error,at);
-	};
-	Check(runtime.BeginNumberEdit("game_msensitivity_number",error,1.216) && typed("7.255",1.217) &&
-		!runtime.CommitNumberEdit("game_msensitivity_number",entry(),error,1.217) && runtime.TakeActions().empty(),
-		"a third decimal place asks nothing");
-	Check(typed("7.25",1.218) && runtime.CommitNumberEdit("game_msensitivity_number",entry(),error,1.218),"type 7.25 and commit it");
-	{
-		const auto actions = runtime.TakeActions();
-		ActionInvocation invocation;
-		Check(actions.size() == 1 && actions[0].action == "set.sensitivity" && actions[0].proposal && actions[0].proposalToken &&
-			runtime.ResolveAction(actions[0].action,invocation,error,&*actions[0].proposal) &&
-			std::get<double>(invocation.arguments.at("value")) == 7.25,"the typed value sets the sensitivity");
-		host.cvars["sensitivity"] = 7.25;
-		runtime.Frame(viewport,1.219);
-		Check(runtime.AcknowledgeControlProposal(actions[0].node,actions[0].proposalToken,true),"the read-back value is acknowledged");
-		const auto settled = runtime.GetWidgetState("game_msensitivity_number");
-		Check(settled && std::get<double>(settled->accepted) == 7.25 && (!settled->number || !settled->number->conflict),
-			"and the field settles on it without a conflict");
-	}
-	press(MenuInput::Down,1.2195);
-	Check(runtime.FocusedControl() == "game_mcpi","Down goes on to the next row");
+	auto invocation = taken("set.ui_autoReload");
+	Check(std::get<std::string>(invocation.arguments.at("cvar")) == "ui_autoReload" && !std::get<bool>(invocation.arguments.at("value")),
+		"Accept turns Auto Reload off");
 	// HUD: the crosshair colour list reads g_crosshairColor and offers the
 	// next colour.
-	Check(runtime.RunEvent("tab_hud",1.25,effects,error),"choose the HUD tab");
+	Check(runtime.RunEvent("onTabNext",1.25,effects,error),"the next tab");
 	runtime.Frame(viewport,1.26);
-	Check(tab() == 3 && runtime.FocusedControl() == "game_hudlayout","HUD opens on its first row");
+	Check(tab() == 1 && runtime.FocusedControl() == "game_hudlayout","HUD follows GENERAL, on its first row");
+	Check(!runtime.FocusControl("game_autoreload",1.27),"GENERAL's rows rest while another tab is current");
+	// VIEW WEAPON stands under CROSSHAIR in HUD's second column.
+	const auto crosshair = bounds("game_crosshairanimated"), gunfov = bounds("game_gunfov_row");
+	Check(std::abs(gunfov.x-crosshair.x) < .5f && gunfov.y > crosshair.y,"VIEW WEAPON follows CROSSHAIR");
 	Check(runtime.FocusControl("game_crosshaircolor",1.3),"focus the crosshair colour");
 	press(MenuInput::Accept,1.31); runtime.Frame(viewport,1.35);
 	press(MenuInput::Down,1.4); press(MenuInput::Accept,1.45);
@@ -4951,11 +5004,11 @@ static void CheckGamePage(ScreenHost& host, const char* path) {
 		std::get<std::string>(effects.actions[0].arguments.at("command")) == "gameBack","Back asks the session to return");
 	const auto portrait = SettingsViewport(document,540,960);
 	runtime.Frame(portrait,2.1);
-	const auto panel = bounds("game-panel"), row = bounds("game_weaponkick");
+	const auto panel = bounds("game-panel"), row = bounds("game_enhancedphysics");
 	Check(panel.x >= -.5f && panel.x+panel.width <= 540.5f && panel.y+panel.height <= 960.5f && row.x+row.width <= 540.5f,
 		"the panel fits a portrait view");
-	CheckSettingsPortrait(runtime,document,"game_forcemodel","game_corpsesink","game_weaponkick","game-general-rows",2.2);
-	CheckSettingsTextScale(host,runtime,document,"game-general","game_forcemodel","game_corpsesink","game_weaponkick",2.3);
+	CheckSettingsPortrait(runtime,document,"game_screenshake","game_corpsesink","game_enhancedphysics","game-general-rows",2.2);
+	CheckSettingsTextScale(host,runtime,document,"game-general","game_screenshake","game_corpsesink","game_enhancedphysics",2.3);
 	host.cvars = saved;
 }
 
@@ -6438,7 +6491,7 @@ int main(int argc, char** argv) {
 			runtime.Frame(viewport,18.8); host.glitched.clear();
 			runtime.Frame(viewport,18.85);
 			bool absent = true;
-			for (const char* layer : {"field-signal","field-burst","field-dither"}) {
+			for (const char* layer : {"field-signal","field-burst"}) {
 				const auto display = runtime.PresentedValue(layer,"display");
 				absent = absent && display && display->text == "none";
 			}
@@ -6466,10 +6519,9 @@ int main(int argc, char** argv) {
 				const auto strength = runtime.PresentedValue("field-signal","backdrop-glitch");
 				const auto phase = runtime.PresentedValue("field-signal","backdrop-glitch-phase");
 				const auto found = passes();
-				if (!strength || !phase || !found.dither || !found.ordered || found.faults.size() > 1) { counted = false; break; }
-				dithered = dithered && Near(found.dither->dither,.6f,.001f);
-				for (const auto* drawn : {found.dither}) whole = whole && drawn->region.x <= 0 && drawn->region.y <= 0 &&
-					drawn->region.x+drawn->region.width >= 1920 && drawn->region.y+drawn->region.height >= 1080;
+				if (!strength || !phase || found.dither || !found.ordered || found.faults.size() > 1) { counted = false; break; }
+				dithered = dithered && !found.dither;
+				whole = whole && !runtime.PresentedValue("field-dither","display");
 				const float value = static_cast<float>(strength->data[0]);
 				live = live && (value > 0 ? found.faults.size() == 1 && Near(found.faults[0]->strength,value,.001f) &&
 					Near(found.faults[0]->phase,static_cast<float>(phase->data[0]),.001f) : found.faults.empty());
@@ -6478,7 +6530,7 @@ int main(int argc, char** argv) {
 				if (value > 0) { ++faulting; arrangements.insert(static_cast<int>(phase->data[0])); if (value < .31f) slip = std::max(slip,value); }
 				else ++resting;
 			}
-			Check(counted && dithered && whole,"the dither covers the whole view at 0.60, once a frame and last");
+			Check(counted && dithered && whole,"the title draws no dither pass");
 			Check(live,"a fault draws beneath it at its live strength and phase, and a resting one draws nothing");
 			Check(peak > .8f && peak <= .851f && arrangements.size() >= 40,"each picture change faults to 0.85 through its arrangements");
 			Check(faulting >= 100 && faulting <= 180 && resting >= 800 && slip > .1f,"between changes the signal rests, but for a slip");
@@ -6525,7 +6577,7 @@ int main(int argc, char** argv) {
 				const auto found = passes(); faults += found.faults.size(); dithers += found.dither != nullptr;
 			}
 			const auto gone = runtime.PresentedValue("field-signal","display");
-			Check(faults == 0 && dithers == 220 && gone && gone->text == "none","reduced flashing keeps the dither and draws no fault");
+			Check(faults == 0 && dithers == 0 && gone && gone->text == "none","reduced flashing draws no fault");
 			host.cvars["ui_reducedFlashing"] = false;
 			// Reduced motion holds no fault either.
 			host.reducedMotion = true; runtime.SetReducedMotion(true,52.6);
@@ -6536,7 +6588,7 @@ int main(int argc, char** argv) {
 				runtime.Frame(viewport,53.0+frame*.025);
 				const auto found = passes(); faults += found.faults.size(); dithers += found.dither != nullptr;
 			}
-			Check(faults == 0 && dithers == 220,"reduced motion keeps the dither and draws no fault");
+			Check(faults == 0 && dithers == 0,"reduced motion draws no fault");
 			host.reducedMotion = false; runtime.SetReducedMotion(false,58.6);
 			host.softFocus = false;
 		}
@@ -7264,18 +7316,54 @@ int main(int argc, char** argv) {
 		Check(runtime.RunEvent("present",11.5,effects,error),"present plays");
 		runtime.Frame(viewport,11.51);
 		Check(Near(opacity(),1,.001f),"whole again for the next load");
+		// The framing entrance (section 14.17): present parks the bands and
+		// their furniture past the view's edges, and frameIn, which the
+		// session plays once the first frame is up, scrolls them in.
+		const auto shift = [&](const char* node) {
+			const auto value = runtime.PresentedValue(node,"transform");
+			Check(value.has_value(),"a framing transform");
+			return value ? static_cast<float>(value->data[1]) : 0.f;
+		};
+		const auto fade = [&](const char* node) {
+			const auto value = runtime.PresentedValue(node,"opacity");
+			Check(value.has_value(),"a framing opacity");
+			return value ? static_cast<float>(value->data[0]) : -1.f;
+		};
+		Check(Near(shift("frame-top-band"),-180,.5f) && Near(shift("frame-top"),-180,.5f) && Near(shift("frame-bottom-band"),210,.5f) &&
+			Near(shift("frame-bottom"),210,.5f) && Near(fade("objectives"),0,.001f) && Near(fade("server-card"),0,.001f),
+			"the screen presents with its framing parked and its cards hidden");
+		Check(runtime.RunEvent("frameIn",11.6,effects,error),"frameIn plays");
+		runtime.Frame(viewport,11.75);
+		Check(shift("frame-top-band") > -60 && shift("frame-top-band") < 0 && shift("frame-top") < shift("frame-top-band") - 20 &&
+			shift("frame-bottom-band") > 0 && shift("frame-bottom-band") < 60 && shift("frame-bottom") > shift("frame-bottom-band") + 20,
+			"the bands decelerate in and their furniture trails them");
+		runtime.Frame(viewport,11.891);
+		Check(Near(fade("load-top-flare"),1,.02f) && Near(fade("load-bottom-flare"),.33f,.05f),"the top edge lights as it arrives, the bottom's after it");
+		runtime.Frame(viewport,11.901);
+		Check(Near(shift("frame-top-band"),3.75f,.05f),"the top band passes its seat by 2.5 u");
+		runtime.Frame(viewport,12.25);
+		Check(Near(shift("frame-top-band"),0,.001f) && Near(shift("frame-bottom-band"),0,.001f) && Near(shift("frame-top"),0,.001f) &&
+			Near(shift("frame-bottom"),0,.001f) && Near(fade("load-top-flare"),0,.001f) && Near(fade("load-bottom-flare"),0,.001f) &&
+			Near(fade("objectives"),1,.001f) && Near(fade("server-card"),1,.001f),"the framing locks in its seat and the edges cool");
 		host.reducedMotion = true;
-		runtime.SetReducedMotion(true,12);
-		Check(runtime.RunEvent("handoff",12,effects,error),"handoff under reduced motion");
-		runtime.Frame(viewport,12.04);
+		runtime.SetReducedMotion(true,13);
+		Check(runtime.RunEvent("handoff",13,effects,error),"handoff under reduced motion");
+		runtime.Frame(viewport,13.04);
 		Check(opacity() > .3f && opacity() < .7f,"half way after 40 ms");
-		runtime.Frame(viewport,12.09);
+		runtime.Frame(viewport,13.09);
 		Check(Near(opacity(),0,.001f),"handed off within 80 ms");
-		Check(runtime.RunEvent("present",12.2,effects,error),"present under reduced motion");
-		runtime.Frame(viewport,12.21);
+		Check(runtime.RunEvent("present",13.2,effects,error),"present under reduced motion");
+		runtime.Frame(viewport,13.21);
 		Check(Near(opacity(),1,.001f),"whole again");
+		Check(Near(shift("frame-top-band"),-180,.5f) && Near(shift("frame-bottom"),210,.5f),"parked under reduced motion too");
+		Check(runtime.RunEvent("frameIn",13.22,effects,error),"frameIn under reduced motion");
+		runtime.Frame(viewport,13.23);
+		Check(Near(shift("frame-top-band"),0,.001f) && Near(shift("frame-bottom-band"),0,.001f) && Near(shift("frame-top"),0,.001f) &&
+			Near(shift("frame-bottom"),0,.001f) && fade("load-top-flare") < .001f,"reduced motion seats the framing at once, unlit");
+		runtime.Frame(viewport,13.31);
+		Check(Near(fade("objectives"),1,.001f),"and the cards are in within 80 ms");
 		host.reducedMotion = false;
-		runtime.SetReducedMotion(false,12.3);
+		runtime.SetReducedMotion(false,13.4);
 	}
 	// The Single Player page and its Campaign sub-page (sections 8 and 9, the
 	// sub-page level of 1.10): their rest states, going deeper and Back.

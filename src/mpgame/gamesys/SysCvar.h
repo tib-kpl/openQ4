@@ -97,6 +97,7 @@ extern idCVar	g_showActiveEntities;
 extern idCVar	g_showEnemies;
 extern idCVar	g_presentationInterpolation;
 extern idCVar	g_frametime;
+extern idCVar	g_clipFastQueries;
 extern idCVar	g_timeentities;
 
 // RAVEN BEGIN
@@ -235,6 +236,9 @@ extern idCVar	g_enhancedPhysics;
 extern idCVar	rb_enhancedIterations;
 extern idCVar	rb_enhancedMargin;
 extern idCVar	rb_enhancedFrictionScale;
+extern idCVar	rb_enhancedImpactFrictionScale;
+extern idCVar	rb_enhancedBounceResting;
+extern idCVar	rb_enhancedFeatureGaps;
 extern idCVar	rb_enhancedRollingFriction;
 extern idCVar	rb_enhancedSpinningFriction;
 extern idCVar	rb_enhancedRotationSweep;
@@ -246,9 +250,12 @@ extern idCVar	rb_enhancedRestTest;
 extern idCVar	rb_enhancedDebug;
 extern idCVar	af_enhancedIterations;
 extern idCVar	af_enhancedTolerance;
+extern idCVar	af_enhancedEmbeddedSweep;
+extern idCVar	af_enhancedAuditFrames;
 extern idCVar	af_enhancedFallbackError;
 extern idCVar	af_enhancedWarmStart;
 extern idCVar	af_enhancedMargin;
+extern idCVar	af_enhancedFeatureGaps;
 extern idCVar	af_enhancedSlop;
 extern idCVar	af_enhancedRecoveryRate;
 extern idCVar	af_enhancedMaxRecovery;
@@ -394,6 +401,8 @@ extern idCVar	cl_gun_y;
 extern idCVar	cl_gun_z;
 extern idCVar	g_weaponFovEffect;
 extern idCVar	g_weaponMuzzleKick;
+extern idCVar	g_viewKick;
+extern idCVar	g_screenShake;
 // RAVEN BEGIN
 // bdube: cvar for messing with foreshortening
 extern idCVar	g_gun_pitch;
@@ -571,6 +580,7 @@ extern idCVar g_perfTest_aiNoObstacleAvoid;
 extern idCVar g_perfTest_aiUndying;
 extern idCVar g_perfTest_aiNoVisTrace;
 extern idCVar g_perfTest_noJointTransform;
+extern idCVar g_precachePlayerModels;
 extern idCVar g_perfTest_noPlayerFocus;
 extern idCVar g_perfTest_noProjectiles;
 

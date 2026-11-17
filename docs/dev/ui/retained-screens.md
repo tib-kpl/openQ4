@@ -9,6 +9,106 @@ adds partial evidence for `FLOW-024`, `FLOW-047`, `FLOW-048`, `ART-030` and
 `REN-014` in the [requirement register](product-requirements.md); the
 remaining screen migrations and the final gates stay open.
 
+## 17 November 2026: The Awakening's pause
+
+While The Awakening is the running campaign (`FS_AwakeningActive()`, with or
+without a mod over it) and the player is not Strogg, the single-player pause
+is `guis/menu/pause_awakening.rui`, and its SAVE GAME, LOAD GAME and RESTART
+LEVEL hand off to `loadgame_awakening.rui`, `savegame_awakening.rui` and
+`restartlevel_awakening.rui` (visual specification 1.40 to 1.45, sections 6,
+8 and 13.7; `FLOW-071`). `tools/ui/retained_awakening.py` builds each from
+the Marine document the generator has just made and carries it into the
+family, so the two pauses never drift apart in layout, bindings or actions.
+
+- **Choosing it.** `UpdateRetainedHome` asks for the Strogg pause first, then
+  the Awakening pause; the Marine pause stands in when neither presents.
+  `BeginRetainedPage` follows the pause that handed off. The level load reads
+  the Awakening pause and starts parsing its three pages on the job workers
+  only while the expansion's campaign is mounted.
+- **Palette.** The section 4 tokens replace the Marine colors everywhere,
+  timelines and bindings included; other olive tints turn to the same hue of
+  ice; `marine.orange` stays the one interaction color, and a done
+  objective's check stays green.
+- **Frames.** The bands are the horned silhouettes with 30-degree flanks,
+  each a group holding its rim-lit art, the fullers, the frost and the rime
+  line. Navigation, section and action plates end in a blade and light the
+  lens about their marker with hover, focus and press. The level block and
+  every confirmation take the horned corner, the confirmations a horn under
+  the chamfer too; the plinth ends in a blade and the level block's foot rule
+  is a needle. The campaign's name follows GAME PAUSED, placed by its
+  measured width in each language and left out of a tall view.
+- **Frost, snow and haze.** Each band holds its frost in a group masked by
+  the band's own silhouette and feathered black over the last 6 u inside its
+  edge; the group carries the band's opposite motion, so the frost stays with
+  the view while the band moves over it. Crystals are seeded across the
+  widest view and, within 200 u of each corner, anchored to that corner, so
+  every aspect gets dense corners. `frost.grow` reveals them in six steps of
+  reach on its 900 ms curve rather than as a continuous front. The prompt
+  bar's slot is carved at home and the title's and BACK's slots on a page.
+  Snow is two layers drawn twice along the artwork's 13-degree line, so one
+  looping transform per layer (80 s far, 34 s near) carries every flake;
+  far flakes are squares under 1.5 dp, and flakes do not sway. The haze lies
+  under the light band.
+- **Motion.** Everything that travelled on `accel(a, d)` takes the glide.
+  `open` closes the bands in from 30 u over 400 ms, the prompt bar with the
+  bottom band, while the frost grows; `depart` docks the bottom band from
+  50 ms and the top band from 90 ms, both arriving at 550 ms; `returnHome`
+  brings the bottom band home from the first frame and the top band 40 ms
+  later, and the home level scrolls in its last 32 u from the trailing side
+  from 450 ms. The rime line swells to 0.90 at the middle of each move. A
+  page's `arrive` scrolls its stage in its last 32 u from the leading side.
+- **Size.** Each copy adds about 2.4 MB of frost and snow geometry to its
+  Marine page: the pause is 3.8 MB against 1.3 MB, CONTROLS 9.5 MB against
+  7.4 MB. The level load reads the pause and starts parsing its pages and
+  SETTINGS on the job workers; the categories load as they open.
+- **Settings.** The pause's SETTINGS opens `settings_awakening.rui`, and its
+  CONTROLS, GAME OPTIONS, DISPLAY and AUDIO open
+  `settings/controls_awakening.rui`, `game_awakening.rui`,
+  `system_awakening.rui` and `audio_awakening.rui`: the Marine pages carried
+  into the family as the pause is, their bands resting at the page or
+  sub-page dock their Marine pages give them, with the crumbs, title and
+  prompt bar carved out of the frost. The copies keep their document ids,
+  which their application contracts name (the SYSTEM page is checked by
+  id). `SyncRetainedSettingsFamily` picks the family as SETTINGS opens: The
+  Awakening's while the Awakening pause is the home behind it, the Marine
+  family from the title, the Marine and Strogg pauses and multiplayer. A
+  change of family drops the cached settings views, and `FindRetainedGui`
+  reads the family's copy of a settings page, the Marine page standing in
+  when the copy is not installed. Wherever a document moves its bands
+  (`frame.step` between SETTINGS and a category, or the pause's dock), the
+  frost takes the opposite motion and the rime line swells.
+- **Notices and narrow views.** The copies carry the session's notices where
+  their Marine pages do (the pause, its pages and SETTINGS), and the bottom
+  band, its frost and its slots measure from the view's foot, as
+  `fit_narrow` anchors the Marine band, so a view narrower than 4:3 keeps
+  them on its edge.
+- **Not yet.** The objectives display keeps the Marine shapes under the
+  Awakening pause; tabs and lists scroll as the Marine ones do; a page
+  leaving on Back still disappears at once rather than scrolling out; and
+  high contrast and power saving do not yet drop the frost, snow and haze.
+
+Checked in game on `m01_stranarus_trench1` (`fs_game q4xbase`) on Vulkan at
+1280x720 and 1680x720 with `openq4_assertMenuActivation` and
+`openq4_retainedGui` only: the pause opening with the frost growing, the dock
+to Save Game with the carried title, Save Game in the family, Back gliding
+home, and the quit confirmation's horns, with no UI warnings in the log;
+then SETTINGS, CONTROLS, Back and DISPLAY in the family, and the pause and
+SETTINGS in a 720x960 view. The
+generator's `--check` holds every document; `ui_retained_pause.py` passes;
+`ui_retained_gate.py` passes its source assertions, including the new
+Awakening selection ones, and then stops compiling its session harness on
+errors already on `main` (Create Server presets and
+`idServerScan::MatchTypeName`).
+
+## 14 November 2026: the title drops its dither
+
+At the user's request the title's backdrop no longer passes through the
+ordered dither: `field-dither` is gone from `title.rui`, so the dimmed
+pictures and their light reach the view as drawn. The dimming, the picture-change
+faults, the menu-move faults and the slips are unchanged, and a settled frame
+now runs no backdrop pass at all. The 13 November entry below records the
+dither as it was. The `backdrop-dither` property stays in the format.
+
 ## 13 November 2026: the title's signal
 
 The title's backdrop now reaches the player as a display signal (user request:
@@ -418,8 +518,7 @@ after editing the script; `--check` fails when an output is stale.
   stays put. Reduced motion (`ui_retainedReducedMotion`) hides the glint and
   keeps the rim. The backdrop, the light and grid, and the framing bands lean
   up to 6 dp away from the pointer, deeper layers further, while the content
-  stays fixed (section 13.8 depth). The pictures are dimmed and reach the
-  view through an ordered dither, and each picture change and each of the
+  stays fixed (section 13.8 depth). The pictures are dimmed, and each picture change and each of the
   menu's moves is a brief signal fault ([the title's signal](#13-november-2026-the-titles-signal)).
   The session publishes the pointer's
   place, or a held look stick's deflection while it leads (menu focus moves
@@ -2007,7 +2106,8 @@ CONTROLS page built like the other settings pages
 carries the stock page's 49 bindings in its order, its four tabs as the
 page's tabs (MOVEMENT, WEAPONS, ATTACK/LOOK and OTHER); see
 [the settings sub-pages](#the-settings-sub-pages-31-october-2026) for its
-layout. Each row names the action over
+layout. Since 17 November it also holds the mouse and controller settings
+([MOUSE and CONTROLLER on CONTROLS](#mouse-and-controller-on-controls-17-november-2026)). Each row names the action over
 the keys bound to it, which the session publishes as the language names the
 keys and joins a list (`Session_RetainedList`), or the stock page's word for
 none. A hint on the heading line (`#str_231545`, in every language) says
@@ -2054,7 +2154,10 @@ CROSSHAIR, HUD, GAMEPLAY, VIEW WEAPON and VIRTUAL REALITY. The three headings
 the stock page lacked (`#str_231542` to `#str_231544`) are each language's
 own section names from its Section list, in capitals. The sections stand on
 five tabs, which took the place of the Section row on 31 October; see
-[the settings sub-pages](#the-settings-sub-pages-31-october-2026).
+[the settings sub-pages](#the-settings-sub-pages-31-october-2026). On 17
+November MOUSE INPUT, CONTROLLER and the aim rows moved to CONTROLS, leaving
+three tabs
+([MOUSE and CONTROLLER on CONTROLS](#mouse-and-controller-on-controls-17-november-2026)).
 
 The 73 rows that name a CVar read it back through the page's CVar state and
 set it with `settings.player.set`, which the adapter allows for exactly what
@@ -2092,6 +2195,51 @@ pins each computed row to its stock choice, the language list to the stock
 one and every CVar row to a stock control and an adapter rule. Captured at
 16:9 in English and Russian and at 9:16, with the fallback; each run switches
 the language to German on the way.
+
+## MOUSE and CONTROLLER on CONTROLS (17 November 2026)
+
+Issue #220: players look for the mouse and controller settings under
+CONTROLS, not GAME OPTIONS, where the stock settings menu kept them beside
+the gameplay options. The retained CONTROLS page now ends with two tabs after
+its four binding tabs:
+
+- **MOUSE** (`#str_231777`, a new string in every shipped language, so that
+  six tabs fit the strip in German) leads with the aim settings that were on
+  GAME OPTIONS' GENERAL tab: Free Look, Toggle Zoom and Scope Sensitivity.
+  Scope Sensitivity and Toggle Zoom act on every device's look, but Free Look
+  is the mouse's, so the three open this tab. The stock MOUSE INPUT rows
+  follow, six rows to a column.
+- **CONTROLLER** is the stock CONTROLLER section, nine rows and eleven.
+
+The rows are the GAME OPTIONS page's, renamed `controls_*`, and still set
+their CVars with `settings.player.set`; the allowlist and its stock ranges
+are unchanged. Their builders moved from `retained_game.py` to
+`retained_settings_rows.py` (`toggle`, `slider`, `choice`, `cvar_row`), which
+both pages share. `rows_value_column` places a page's value column so that
+every label and every fine slider's range message fits in two lines. GAME
+OPTIONS had relied on the long mouse labels for that room, and without them
+German's range message on the gun offsets overflowed.
+
+The key hint (`#str_231545`) stands only on the binding tabs: a settings
+sub-page's `note` may now name its tabs. The session clears a row on Delete
+or Backspace only when the row is a binding
+(`idSessionLocal::RetainedControlsKey`), so the device tabs' typed numbers
+edit as text; the west face button's clear does nothing on them.
+
+GAME OPTIONS keeps GENERAL (general / gameplay), HUD (HUD / crosshair and
+view weapon) and VIRTUAL REALITY. View Weapon moved beside Crosshair because
+Screenshot Format (#223) filled GENERAL's second column past fourteen rows.
+The classic menus (`ui_retained 0`) keep the stock layout. GAME OPTIONS now
+has 49 CVar rows and CONTROLS 32.
+
+`openq4-ui-retained-controls` checks the device tabs: their CVar rows, the
+hint on the binding tabs alone, Free Look's Accept, the sensitivity's step
+and typed value, the columns, and the tabs' wrap. Its OTHER checks now use
+rows 37 to 49: the Classic ruleset's hook (2a36515de) moved them, and the
+test still named 36 to 48. `openq4-ui-retained-game` checks that the moved
+rows and their settings are gone, and that View Weapon stands under Crosshair.
+The gate keeps each stock GAME OPTIONS setting on one page and pins the
+binding-row-only Delete.
 
 ## The AUDIO page (25 October 2026)
 
@@ -2295,8 +2443,8 @@ as Create Server is, and no page shows more than two columns of rows.
 
 | Page | Tabs and columns |
 | --- | --- |
-| CONTROLS | MOVEMENT, WEAPONS, ATTACK/LOOK, OTHER; each tab's bindings split over two columns, the key hint on the heading line |
-| GAME OPTIONS | GENERAL (general / gameplay and view weapon), MOUSE INPUT, CONTROLLER (sticks and look / rumble, gyro, touch and prompts), HUD (HUD / crosshair), VIRTUAL REALITY |
+| CONTROLS | MOVEMENT, WEAPONS, ATTACK/LOOK, OTHER, each tab's bindings split over two columns with the key hint on the heading line; MOUSE (aim / mouse), CONTROLLER (sticks and look / rumble, gyro, touch and prompts) |
+| GAME OPTIONS | GENERAL (general / gameplay), HUD (HUD / crosshair and view weapon), VIRTUAL REALITY |
 | AUDIO | No tabs: LEVELS and DEVICES / EFFECTS |
 
 GAME OPTIONS lost its Section row: the tabs do its job. After a language

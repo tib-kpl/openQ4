@@ -877,7 +877,7 @@ landscape phone shapes, binding no evidence record. The stock GUIs (Classic
 included), multiplayer objective markers, swipe controls' 24 dp edge margin,
 fold and multi-window resizes and device acceptance remain.
 
-There are **123 partial, 232 pending and 0 verified requirements**, counting the
+There are **124 partial, 233 pending and 0 verified requirements**, counting the
 42 superseded rows at their recorded states. `BEH-002`
 remains partial for the implemented settings transaction/service boundary.
 `BEH-005` remains partial for committed action delivery and cancellation; stock
@@ -1286,3 +1286,49 @@ audio and caption work changed after they were bound; no evidence scope or
 result changes. There are 355 rows, 313 active requirements and 42
 historical superseded rows; the 358 migration variants and seven final gates
 remain unaccepted.
+
+## Revision 25: The Awakening's in-game menus and their transitions
+
+Visual specifications 1.40 to 1.42 curated The Awakening's in-game menu
+family, and 1.45 gives it elegant transitions at the product owner's request:
+every small step on the framing bands becomes an even 30-degree flank, the
+bands close in as the menu opens and glide between the menu levels on one
+jolt-free curve, each level scrolls out as the next scrolls in from the side
+the menu travels from, tabs and lists scroll rather than jump, and the rime
+line brightens while an edge travels. The register did not hold the family,
+so `FLOW-071` appends it whole: its palette, the Valkaryne frames, frost, snow
+and haze, and the Awakening motion, across the pause and every screen it
+opens, with the Strogg pause and the other families unchanged. It is pending.
+The revision re-binds the visual specification and the records on
+`runtime-performance.md`, `performance-presets.md` (two records) and
+`audio-voice-evidence.md`, whose documents the preset and caption work changed
+after they were bound; no evidence scope or result changes. There are 356
+rows, 314 active requirements and 42 historical superseded rows; the 358
+migration variants and seven final gates remain unaccepted.
+
+## Revision 26: The loading screen's entrance
+
+Visual specification 1.46 scrolls the Remastered loading screen's frame into
+view at the product owner's request: each load shows the levelshot alone, then
+the top and bottom bands sweep in from beyond the view's edges, pass their seat
+and lock back, the furniture they carry trailing them, while their inner edges
+light as they seat and the objectives and server card fade in. `FLOW-047`
+already holds the loading screens and keeps its scope, so `FLOW-072` appends
+the entrance alone. It is pending. The revision re-binds the visual
+specification; no evidence scope or result changes. There are 357 rows, 315
+active requirements and 42 historical superseded rows; the 358 migration
+variants and seven final gates remain unaccepted.
+
+## 17 November 2026: The Awakening's pause
+
+[The Awakening's pause](retained-screens.md#17-november-2026-the-awakenings-pause)
+adds bounded evidence to `FLOW-071`, which moves from pending to partial:
+while the expansion's campaign runs and the player is not Strogg, the
+retained pause, its Load Game, Save Game and Restart Level pages and the
+SETTINGS page with its four categories take the Awakening family's palette,
+frames, frost, snow and haze and its motion. The objectives display's
+frames, tab and list scrolling,
+a page's scroll out on Back, the high-contrast and power-saving variants and
+the acceptance captures remain. The increment re-binds the retained screens
+notes. All normative requirements, constraints, dependencies, historical rows
+and acceptance gates remain unchanged.

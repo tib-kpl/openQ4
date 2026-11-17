@@ -1,0 +1,200 @@
+<style>
+/* components sheet (cp-): section 13.13 as the generators build it */
+.cp-shot{--dp:calc(100cqw / 1280);container-type:inline-size;position:relative;width:100%;overflow:hidden}
+.cp-shot > svg.cp-band{position:absolute;left:0;top:0;width:100%;height:calc(70 * var(--dp))}
+.cp-shot .cp-in{position:relative;width:100%;height:calc(150 * var(--dp))}
+.cp-ntc{position:absolute;right:calc(24 * var(--dp));width:calc(400 * var(--dp));height:calc(30 * var(--dp))}
+.cp-ntc > svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.cp-ntc .t{position:absolute;left:calc(32 * var(--dp));top:0;height:100%;display:flex;align-items:center;font:500 calc(14 * var(--dp))/1 var(--f-low);color:rgba(255,255,255,.9);white-space:nowrap}
+.cp-ntc .sy{position:absolute;left:calc(8 * var(--dp));top:calc(7 * var(--dp));width:calc(16 * var(--dp));height:calc(16 * var(--dp))}
+.cp-ntc .a{position:absolute;top:calc(4 * var(--dp));right:calc(4 * var(--dp));height:calc(22 * var(--dp));padding:0 calc(8 * var(--dp));border:0;cursor:pointer;
+  background:rgba(139,150,75,.36);clip-path:polygon(0 0,100% 0,100% 100%,calc(5 * var(--dp)) 100%,0 calc(100% - 5 * var(--dp)));
+  font:500 calc(14 * var(--dp))/1 var(--f-low);color:rgba(255,255,255,.9)}
+.cp-ntc .a:hover,.cp-ntc .a:focus-visible{outline:none;color:var(--orange);background:rgba(139,150,75,.35);box-shadow:inset calc(1.2 * var(--dp)) calc(-1.2 * var(--dp)) 0 var(--orange)}
+.cp-ntc.in{animation:cpNtcIn .16s cubic-bezier(.16,1,.3,1) both}
+@keyframes cpNtcIn{from{opacity:0;translate:calc(12 * var(--dp)) 0}}
+.cp-tags{display:flex;gap:9px;flex-wrap:wrap;align-items:center}
+.cp-tag{position:relative;isolation:isolate;display:inline-flex;align-items:center;height:24px;padding:0 9px;border:0;background:none;cursor:pointer;
+  font:400 10.4px/1 var(--f-marine);letter-spacing:.04em;text-transform:uppercase;color:rgba(255,255,255,.85)}
+.cp-tag::before{content:"";position:absolute;inset:0;z-index:-1;opacity:.28;background:rgba(139,150,75,.5);box-shadow:inset 0 0 0 1px #8B964B;
+  clip-path:polygon(7.5px 0,100% 0,100% 100%,0 100%,0 7.5px)}
+.cp-tag::after{content:"";position:absolute;left:0;top:0;width:11px;height:11px;z-index:-1;opacity:.28;background:linear-gradient(135deg,transparent 4.6px,#8B964B 4.6px 5.7px,transparent 5.7px)}
+.cp-tag:hover::before,.cp-tag:hover::after{opacity:.7}
+.cp-tag.on::before{opacity:.6;background:rgba(227,137,0,.35);box-shadow:inset 0 0 0 1px #E38900}
+.cp-tag.on::after{opacity:.6;background:linear-gradient(135deg,transparent 4.6px,#E38900 4.6px 5.7px,transparent 5.7px)}
+.cp-tag.f{padding-right:26px}
+.cp-tag.f i{position:absolute;right:7px;top:7px;width:10px;height:10px;display:none;
+  background:linear-gradient(45deg,transparent 42%,#FFBE23 42% 58%,transparent 58%),linear-gradient(-45deg,transparent 42%,#FFBE23 42% 58%,transparent 58%)}
+.cp-tag.f.on i{display:block}
+.cp-nq{display:grid;gap:2px;max-width:420px}
+.cp-nq div{display:grid;grid-template-columns:minmax(0,1fr) 22px 64px;gap:10px;align-items:center;padding:4px 0;border-bottom:1px solid rgba(255,156,0,.14);
+  font:500 15px/1.2 var(--f-low);color:var(--t80);font-variant-numeric:tabular-nums}
+.cp-nq div span:last-child{justify-self:end}
+.cp-nq svg{width:22px;height:16px;display:block}
+.cp-dlg{position:relative;z-index:1;box-sizing:border-box;width:min(560px,100%);padding:16px;display:grid;gap:0}
+.cp-dlg > svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;z-index:-1}
+.cp-dlg .tt{font:400 15.2px/28px var(--f-marine);color:rgba(255,255,255,.88);margin-bottom:12px}
+.cp-dlg .ms{font:400 11px/23px var(--f-marine);color:rgba(255,255,255,.88);min-height:48px;margin-bottom:8px}
+.cp-dlg .cd{font:400 19.3px/34px var(--f-marine);color:#E38900;margin-bottom:12px;font-variant-numeric:tabular-nums}
+.cp-acts{display:flex;flex-wrap:wrap;gap:8px}
+.cp-btn{position:relative;isolation:isolate;flex:1 1 0;min-width:0;max-width:128px;min-height:44px;padding:10px;border:0;background:none;cursor:pointer;
+  font:400 11px/23px var(--f-marine);text-transform:uppercase;color:rgba(255,255,255,.88)}
+.cp-btn svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none;z-index:-1}
+.cp-btn .fo{opacity:.12}
+.cp-btn:hover .fo{opacity:.55}.cp-btn:focus-visible{outline:none}.cp-btn:focus-visible .fo,.cp-btn.is-focus .fo{opacity:1}.cp-btn:active .fo{opacity:.8}
+.cp-rows{position:relative;display:grid;gap:0;max-width:430px;margin-bottom:28px}
+.cp-row{position:relative;height:36px;display:grid;grid-template-columns:150px minmax(0,1fr) 24px;align-items:center;padding-left:21px;cursor:pointer;
+  font:500 14px/13px var(--f-low);color:rgba(255,255,255,.85)}
+.cp-row::before{content:"";position:absolute;inset:1px 0;z-index:-1;background:rgba(139,150,75,.12);box-shadow:inset 0 0 0 1px rgba(139,150,75,.32);clip-path:polygon(6px 0,100% 0,100% 100%,0 100%,0 6px)}
+.cp-row:hover::before{background:linear-gradient(90deg,rgba(139,150,75,.27),rgba(139,150,75,.06)),rgba(139,150,75,.12)}
+.cp-row.f{color:var(--orange)}
+.cp-row.f::before{background:linear-gradient(90deg,rgba(139,150,75,.45),rgba(139,150,75,.1)),rgba(139,150,75,.12)}
+.cp-row.f::after{content:"";position:absolute;left:0;top:1px;bottom:1px;width:6px;background:var(--orange);clip-path:polygon(0 6px,100% 0,100% 100%,0 100%)}
+.cp-row .v{font:500 14px/1 var(--f-low);color:#FFBE23;white-space:nowrap;overflow:hidden}
+.cp-row .ch{width:12px;height:6px}
+.cp-box{position:relative;width:14px;height:14px;box-shadow:inset 0 0 0 1.5px #FFBE23}
+.cp-box.on::after{content:"";position:absolute;inset:3.5px;background:#FFBE23}
+.cp-list{position:absolute;left:0;right:0;z-index:2;background:rgba(0,0,0,.96);box-shadow:0 0 0 1px rgba(178,205,67,.2),0 0 0 2px #000;padding:2px 0 2px 2px;display:none}
+.cp-list.open{display:block}
+.cp-list div{height:22px;padding-left:8px;font:500 15px/22px var(--f-low);color:rgba(255,255,255,.9);cursor:pointer;margin-right:16px}
+.cp-list div.sel{background:rgba(139,150,75,.35)}
+.cp-list div:hover,.cp-list div.hi{background:rgba(227,137,0,.3)}
+.cp-list div.sel.hi{background:linear-gradient(rgba(227,137,0,.3),rgba(227,137,0,.3)),rgba(139,150,75,.35)}
+.cp-empty{display:grid;gap:8px;max-width:420px}
+.cp-empty .eh{font:400 13.8px/24px var(--f-marine);color:#B8C29E;text-transform:uppercase}
+.cp-empty .es{font:500 17px/22px var(--f-low);color:rgba(255,255,255,.8)}
+.cp-load{opacity:1}
+.cp-spec{display:inline-block;margin-left:8px;padding:2px 7px 2px 9px;font:600 10px/1.3 var(--f-low);letter-spacing:.08em;text-transform:uppercase;color:var(--t50);
+  background:rgba(255,255,255,.08);clip-path:polygon(4px 0,100% 0,100% 100%,0 100%,0 4px);vertical-align:1px}
+.cp-spec.part{color:rgba(255,190,35,.8)}
+@media (prefers-reduced-motion:reduce){.cp-ntc.in{animation:none}}
+</style>
+<section class="sheet" id="components">
+  <h2 class="sheet-h">Atlas - modern components</h2>
+  <p class="sheet-p">Section 13.13 components, drawn as the retained interface builds them where it does, each assembled from stock parts (cut plates, header bands, markers, the dialog constructions and the value color). Components the interface does not build yet carry a <span class="cp-spec" style="margin:0">Spec · not built</span> tag and stay drawn from the specification.</p>
+  <div class="stage dim menu" style="padding-top:0">
+    <div class="cp-shot" id="cpNotices" role="img" aria-label="Notice stack at the top trailing corner">
+      <svg class="cp-band" viewBox="0 0 1280 70" preserveAspectRatio="none" aria-hidden="true"><path d="M0 0H1280V8H1235L1180 62H278L256 40H0Z" fill="#000"/><path d="M0 40H256L278 62H1180L1235 8H1280" fill="none" stroke="#626934" stroke-opacity=".5" stroke-width="2"/></svg>
+      <div class="cp-in"></div>
+    </div>
+    <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center;margin-top:8px">
+      <p class="cap"><b>Notice</b> 400 × 30 dp header-band plates, 14 dp from the view's top and 24 dp from its trailing edge, 6 dp apart, newest first, at most three: black 0.85 under an olive band that fades out toward the trailing end, the 1.5 dp rail on the leading edge, its 8 dp cut and the top. A 16 dp symbol tile, Lowpixel 14 dp at white 0.90, and an optional action plate (Undo). <b>notice.enter</b> 160 ms from 12 dp, <b>notice.leave</b> 200 ms; 4 s, 8 s with an action; a lost controller stays until it returns.</p>
+      <button class="replay" id="cpReplay">Replay notices</button>
+    </div>
+  </div>
+  <div class="grid">
+    <div class="demo">
+      <h3 class="h5">Search across every category <span class="cp-spec">Spec · not built</span></h3>
+      <label class="searchf"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.5" cy="6.5" r="4.8" fill="none" stroke="rgba(255,255,255,.7)" stroke-width="1.5"/><path d="M10 10l4.5 4.5" stroke="rgba(255,255,255,.7)" stroke-width="1.5"/></svg><input id="search" type="search" value="sens" aria-label="Search settings" autocomplete="off"></label>
+      <div class="results" id="results"></div>
+      <p class="cap">Results update with every keystroke, matching labels, values and language-table synonyms, each with its category path. Accept jumps to the setting.</p>
+    </div>
+    <div class="demo">
+      <h3 class="h5">Source and filter tags · Join Game</h3>
+      <div class="cp-tags" id="cpSource"><button class="cp-tag on" data-group="src">Internet</button><button class="cp-tag" data-group="src">LAN</button></div>
+      <div class="cp-tags" id="cpFilters" style="margin-top:8px"><button class="cp-tag f on">Not full<i></i></button><button class="cp-tag f">Not empty<i></i></button><button class="cp-tag f">No password<i></i></button></div>
+      <p class="cap">Cut tags 24 dp tall with a 7.5 dp cut, Marine 15 dp: unset an olive 0.50 fill with a 1 dp olive edge at 0.28 (0.70 under the pointer, 1.00 with focus); set an orange 0.35 fill and orange edge at 0.60, a filter tag adding a 10 dp close cross in marine.value. Click to toggle.</p>
+      <h3 class="h5">Network quality</h3>
+      <div class="cp-nq" id="cpNq"></div>
+      <p class="cap">Four bars 3.3 dp wide on a 5 dp pitch, 4.5 dp rising 3.3 dp a bar: four to 60 ms, three to 120, two to 200, one above. Three or four bars read in status.success, two in status.warning, one in status.error; unlit bars stay at 0.20 of the same color.</p>
+    </div>
+  </div>
+  <div class="grid">
+    <div class="demo">
+      <h3 class="h5">Choice list and check box · settings rows</h3>
+      <div class="cp-rows" id="cpRows">
+        <div class="cp-row" data-kind="choice" data-values="Disabled|Enabled"><span>VR Mode</span><span class="v">Disabled</span><svg class="ch" viewBox="0 0 12 6"><path d="M0 0L6 6L12 0" fill="none" stroke="#FFBE23" stroke-width="1.5"/></svg></div>
+        <div class="cp-row f" data-kind="choice" data-values="30|45|60|90" data-at="1"><span>Snap Turn Angle</span><span class="v">45</span><svg class="ch" viewBox="0 0 12 6"><path d="M0 0L6 6L12 0" fill="none" stroke="#FFBE23" stroke-width="1.5"/></svg></div>
+        <div class="cp-row" data-kind="toggle"><span>UI Aspect</span><span><i class="cp-box on"></i></span><span></span></div>
+        <div class="cp-row" data-kind="choice" data-values="Low|Medium|High"><span>Comfort Vignette</span><span class="v">Low</span><svg class="ch" viewBox="0 0 12 6"><path d="M0 0L6 6L12 0" fill="none" stroke="#FFBE23" stroke-width="1.5"/></svg></div>
+        <div class="cp-list" id="cpList" role="listbox" aria-label="Choices"></div>
+      </div>
+      <p class="cap">Rows on the 36 dp pitch: an olive 0.12 plate with a 0.32 edge and a 6 dp cut, label Lowpixel 14 dp at 21 dp, value in marine.value, a 12 × 6 dp chevron. Focus adds the orange rail and the olive wash. Accept unfolds the list under the row: black 0.96 with the stock #B2CD43 1 dp edge at 0.20 and, since spec 1.38, a 4 dp black stroke beneath whose outer 2 dp shows; 22 dp rows in Lowpixel 15 dp, the current value olive 0.35, the highlight orange 0.30, at most eight rows before it scrolls. A yes or no is a 14 dp marine.value box with a 7 dp mark. Click a row.</p>
+    </div>
+    <div class="demo">
+      <h3 class="h5">Empty state and loading rows</h3>
+      <div class="cp-empty">
+        <span class="eh">No saved games</span>
+        <span class="es">Your saves, and the checkpoints and autosaves the campaign makes, appear here.</span>
+        <button class="pl arow" style="max-width:300px"><i class="mk"></i><span class="lb">New game</span></button>
+      </div>
+      <div aria-label="Loading rows" class="cp-load" id="cpLoad"><div class="skel"></div><div class="skel" style="width:88%"></div><div class="skel" style="width:94%"></div></div>
+      <button class="replay" id="cpReveal">Replay row.reveal</button>
+      <p class="cap"><b>Load Game</b> with no saves: the heading in Marine 20 dp, one Lowpixel 17/22 dp sentence at white 0.80, NEW GAME at the title (CLEAR FILTERS while a filter hides every save). <b>Join Game</b> while a scan has listed nothing: row plates at rest without labels, no shimmer and no spinner; the first servers replace them with <b>row.reveal</b>, each row fading in over 120 ms, 15 ms after the one above, 90 ms at most.</p>
+    </div>
+  </div>
+  <div class="stage mstage menu" data-under="display" style="min-height:0">
+    <div class="scrim"></div>
+    <div class="cp-dlg" role="dialog" aria-label="Keep these display settings?">
+      <svg aria-hidden="true"></svg>
+      <div class="tt">Keep these display settings?</div>
+      <div class="ms">Changes are waiting for confirmation.</div>
+      <div class="cd" id="cpCount">15</div>
+      <div class="cp-acts"><button class="cp-btn is-focus" id="cpKeep"><svg aria-hidden="true"></svg>Keep</button><button class="cp-btn" id="cpRevert"><svg aria-hidden="true"></svg>Revert</button></div>
+    </div>
+  </div>
+  <p class="cap"><b>Countdown confirmation</b> as the DISPLAY page builds it: a dialog 35 em wide at most over the page's soft focus (a 0.60 scrim where soft focus is off), its plate #090C08 with a 1 dp olive 0.70 edge, cut 12 dp at three corners, and the 4 dp black frame of spec 1.38 beneath. Title Marine 22 dp, message Marine 16 dp, the seconds left in Marine 28 dp orange from the settings service's 15 s; timing out reverts. Keep (only while it can confirm), Revert and Retry are cut plates with an orange focus outline at 0.12 rest, 0.55 hover, 1.00 focus. No tick ramp yet.</p>
+  <div class="stage mstage menu" data-under="controls" style="min-height:0">
+    <div class="scrim"></div><div class="gcol"></div>
+      <div class="fr modal" data-shape="modal" role="dialog" aria-label="Binding conflict">
+        <div class="mt">Binding conflict</div>
+        <p>Mouse 2 already opens <b style="color:rgba(255,190,35,.8);font-weight:500">Zoom</b> in Controls - Weapons. Swap the two bindings or clear Zoom?</p>
+        <div class="mact"><button class="pl act is-focus"><i class="mk"></i><span class="lb">Swap</span></button><button class="pl act"><i class="mk"></i><span class="lb">Clear zoom</span></button><button class="pl act"><i class="mk"></i><span class="lb">Cancel</span></button></div>
+      </div>
+  </div>
+  <p class="cap"><b>Binding conflict</b> <span class="cp-spec">Spec · not built</span> names the action that holds the input and offers Swap, Clear or Cancel. Today the Controls page captures in the row ("Press any key..."): Escape cancels and Delete clears, and a new key simply takes the binding.</p>
+  <div class="grid">
+    <div class="demo">
+      <h3 class="h5">Transfer progress · first-run data setup <span class="cp-spec">Spec · not built</span></h3>
+      <div class="xfer">
+        <div class="xrow"><svg viewBox="0 0 18 18"><path d="M3 9.5L7 13.5L15 4.5" fill="none" stroke="#B5C784" stroke-width="1.6"/></svg><span>pak000.pk4</span><span class="s">verified</span></div>
+        <div class="xrow"><svg viewBox="0 0 18 18"><path d="M3 9.5L7 13.5L15 4.5" fill="none" stroke="#B5C784" stroke-width="1.6"/></svg><span>pak001.pk4</span><span class="s">verified</span></div>
+        <div class="xrow"><svg viewBox="0 0 18 18"><path d="M9 3v9M5 8l4 4 4-4M3 15h12" fill="none" stroke="#E38900" stroke-width="1.5"/></svg><span>pak002.pk4</span><span class="s">copying</span></div>
+        <div class="prog" style="--p:41%"><i></i></div>
+        <div class="xsum">1.18 of 2.87 GB · 48 MB/s · 0:36 left</div>
+      </div>
+      <p class="cap">Each archive is checked against the official checksums. Pausing, suspension and restarts keep progress; a failure names its fix.</p>
+    </div>
+    <div class="demo">
+      <h3 class="h5">More actions <span class="cp-spec">Spec · not built</span></h3>
+      <div class="fr pop" data-shape="pop" style="max-width:280px">
+        <div class="bind" style="font-size:15px;gap:10px;padding:3px 0"><span class="gl" style="width:18px;height:18px;font-size:10px">X</span>Add to favorites</div>
+        <div class="bind" style="font-size:15px;gap:10px;padding:3px 0"><span class="gl" style="width:18px;height:18px;font-size:10px">Y</span>Copy server address</div>
+        <div class="bind" style="font-size:15px;gap:10px;padding:3px 0"><span class="gl bump" style="height:16px">RB</span>Show rules</div>
+      </div>
+      <p class="cap">The prompt bar shows Accept and Back only today, so nothing overflows into a More action. Undo is built: the notice that follows removing a favorite.</p>
+    </div>
+  </div>
+  <div class="grid">
+    <div class="demo">
+      <h3 class="h5">Crosshair editor <span class="cp-spec">Spec · not built</span></h3>
+      <div class="xhed">
+        <div class="xprev"><svg id="xprev" viewBox="-60 -60 120 120"></svg></div>
+        <div style="display:grid;gap:12px">
+          <div class="xgrid" id="xgrid"></div>
+          <div class="slider"><span class="l" style="min-width:60px;font-size:15px">Size</span><svg class="ramp-s" id="xsize" width="107" height="16" role="slider" tabindex="0" aria-label="Crosshair size" aria-valuemin="0" aria-valuemax="20" aria-valuenow="8"></svg><output>8</output></div>
+          <div class="xcols" id="xcols"></div>
+        </div>
+      </div>
+      <p class="cap">Target: a live preview, the crosshair grid, a 24–72 dp size and the stock menu's eight swatches. Built today on GAME OPTIONS - HUD: a slider over the 20 stock crosshairs with the chosen one drawn 26 dp at the row's end, and a choice of the same eight colors.</p>
+    </div>
+    <div class="demo">
+      <h3 class="h5">Stick response and color vision <span class="cp-spec">Spec · not built</span></h3>
+      <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start">
+        <svg class="plot" id="stick" viewBox="-110 -110 220 220" role="img" aria-label="Left stick dead zone and live position"></svg>
+        <svg class="plot" id="curve" viewBox="-10 -110 120 120" role="img" aria-label="Response curve"></svg>
+      </div>
+      <div class="pal">
+        <span></span><span class="hd" style="font:600 11px/1.3 var(--f-low);letter-spacing:.08em;color:var(--t40)">MARINES</span><span class="hd" style="font:600 11px/1.3 var(--f-low);letter-spacing:.08em;color:var(--t40)">STROGG</span><span class="hd" style="font:600 11px/1.3 var(--f-low);letter-spacing:.08em;color:var(--t40)">MEGA</span><span class="hd" style="font:600 11px/1.3 var(--f-low);letter-spacing:.08em;color:var(--t40)">RAILGUN</span>
+        <span>Default</span><i style="--c:#6AA42B"><svg viewBox="0 0 14 14"><path d="M7 1l5 3v6l-5 3-5-3V4z" fill="#10140a"/></svg></i><i style="--c:#FF7B04"><svg viewBox="0 0 14 14"><path d="M2 3l5 2 5-2-2 5 2 5-5-2-5 2 2-5z" fill="#10140a"/></svg></i><i style="--c:rgb(0,128,255)"></i><i style="--c:rgb(0,255,0)"></i>
+        <span>Blue-orange</span><i style="--c:#3E8EDE"><svg viewBox="0 0 14 14"><path d="M7 1l5 3v6l-5 3-5-3V4z" fill="#10140a"/></svg></i><i style="--c:#F28E2B"><svg viewBox="0 0 14 14"><path d="M2 3l5 2 5-2-2 5 2 5-5-2-5 2 2-5z" fill="#10140a"/></svg></i><i style="--c:#3E8EDE"></i><i style="--c:#F7E04B"></i>
+      </div>
+      <p class="cap">Target plots and palettes. Built today: the CONTROLS - CONTROLLER tab sets dead zone, curve, trigger and battery thresholds as plain setting rows.</p>
+    </div>
+  </div>
+  <div class="demo">
+    <h3 class="h5">Text backing <span class="cp-spec part">Partly built</span></h3>
+    <div class="backing"><p>Objective updated: reach the hangar control room.</p><p class="on">Objective updated: reach the hangar control room.</p></div>
+    <p class="cap">Target: an opaque plate at black 0.85 behind the text in its own row shape. Built: <b>Opaque Menu Backing</b> (ui_retainedOpaqueBacking, GAME OPTIONS) puts the stock 0.94 scrim behind dialogs instead of soft focus and backs the HUD readouts.</p>
+  </div>
+</section>
