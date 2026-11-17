@@ -430,6 +430,8 @@ public:
 	// Arena, Create Server, Join Game or Demos page.
 	bool				RetainedChildPageActive() const;
 	void				PublishRetainedSavePage( idUserInterface *gui, int select );
+	// "<date> <time> - <level>": the name a manual save starts with, so none has to be typed.
+	idStr				AutoSaveName() const;
 	void				PublishRetainedSaveSelection( idUserInterface *gui, bool name );
 	void				HandleRetainedSaveRequest( idUserInterface *gui, const char *request );
 	bool				RetainedSaveGame( idUserInterface *gui, const char *name );

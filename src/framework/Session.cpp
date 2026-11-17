@@ -8904,6 +8904,38 @@ void Session_AppForeground( int suspendedMs ) {
 idSessionLocal::SaveGame
 ===============
 */
+/*
+===============
+idSessionLocal::AutoSaveName
+
+The local date and time, which no two saves share, then the level's display name:
+"2026-11-17 14.32.05 - Bunker Antiaerien". No colon, so it is also a valid file name.
+===============
+*/
+idStr idSessionLocal::AutoSaveName() const {
+	const idStr mapName = mapSpawnData.serverInfo.GetString( "si_map" );
+	idStr levelName = mapName;
+	idDict mapDeclDict;
+	const char *entityFilter = mapSpawnData.serverInfo.GetString( "si_entityFilter", "" );
+	if ( Session_GetMapDeclDict( mapName, entityFilter, mapDeclDict ) ) {
+		levelName = common->GetLanguageDict()->GetString( mapDeclDict.GetString( "name", mapName ) );
+	}
+	levelName.RemoveColors();
+	levelName.StripLeading( ' ' );
+	levelName.StripTrailing( ' ' );
+
+	const time_t now = time( NULL );
+	struct tm local;
+#if defined( _WIN32 )
+	localtime_s( &local, &now );
+#else
+	localtime_r( &now, &local );
+#endif
+	// The date leads: the name column is narrow and the Location column already shows the level.
+	return idStr( va( "%04d-%02d-%02d %02d.%02d.%02d - %s", local.tm_year + 1900, local.tm_mon + 1,
+		local.tm_mday, local.tm_hour, local.tm_min, local.tm_sec, levelName.c_str() ) );
+}
+
 bool idSessionLocal::SaveGame( const char *saveName, saveType_t saveType ) {
 #ifdef	ID_DEDICATED
 	common->Printf( "Dedicated servers cannot save games.\n" );

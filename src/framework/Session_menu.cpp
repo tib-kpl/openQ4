@@ -8168,14 +8168,15 @@ bool idSessionLocal::BeginRetainedPage( const char *request ) {
 		page->SetStateInt( "browser.filter", 0 );
 	}
 	// The saves, read while the home hands off: the newest selected to load,
-	// none to save over. Each arrival to save starts with no name, as the
-	// stock page's field did; a restart starts at the level's difficulty.
+	// none to save over. Each arrival to save starts with a name made of the date and the level,
+	// where the stock page's field started empty; a restart starts at the level's difficulty.
 	if ( restarting ) {
 		page->SetStateInt( "restart.skill", idMath::ClampInt( 0, 4, cvarSystem->GetCVarInteger( "g_skill" ) ) );
 		page->StateChanged( common->GetPresentationTime() );
 	} else if ( saving ) {
 		retainedSaveTarget.Clear();
-		page->SetStateString( "save.name", "" );
+		// A name made from the level and the time, so a save is one press of SAVE GAME.
+		page->SetStateString( "save.name", AutoSaveName().c_str() );
 		page->SetStateString( "save.target", "" );
 		page->SetStateString( "save.notice", "" );
 		PublishRetainedSavePage( page, -1 );
