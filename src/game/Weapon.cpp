@@ -3607,6 +3607,24 @@ void rvWeapon::Hitscan( const idDict& dict, const idVec3& muzzleOrigin, const id
 		}
 		dir.Normalize();
 
+		// openQ4: the shot leaves the barrel, which sits to the side of the eye, but goes along the
+		// view axis, so it ran parallel to the crosshair and landed beside it. Aim it at the point
+		// the crosshair is on instead (single player; online keeps the retail behaviour).
+		if ( !gameLocal.isMultiplayer && ( muzzleOrigin - playerViewOrigin ).LengthSqr() > 1.0f ) {
+			const float aimRange = 8192.0f;
+			idVec3 target = playerViewOrigin + dir * aimRange;
+			trace_t aimTrace;
+			gameLocal.TracePoint( owner, aimTrace, playerViewOrigin, target, MASK_SHOT_RENDERMODEL, owner );
+			if ( aimTrace.fraction < 1.0f ) {
+				target = aimTrace.endpos;
+			}
+			idVec3 toTarget = target - muzzleOrigin;
+			if ( toTarget.LengthSqr() > 16.0f ) {
+				toTarget.Normalize();
+				dir = toTarget;
+			}
+		}
+
 		gameLocal.HitScan( dict, muzzleOrigin, dir, fxOrigin, owner, false, 1.0f, NULL, areas );
 
 		if ( gameLocal.isServer ) {
