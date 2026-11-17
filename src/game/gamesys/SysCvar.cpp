@@ -192,6 +192,7 @@ idCVar g_classicDynamicLightScale(	"g_classicDynamicLightScale",	"1",	CVAR_GAME 
 idCVar g_doubleVision(				"g_doubleVision",			"1",			CVAR_GAME | CVAR_ARCHIVE | CVAR_BOOL, "show double vision when taking damage" );
 idCVar g_monsters(					"g_monsters",				"1",			CVAR_GAME | CVAR_BOOL, "" );
 idCVar g_aimAssist(				"g_aimAssist",				"2",			CVAR_GAME | CVAR_INTEGER | PC_CVAR_ARCHIVE, "gamepad aim assistance in single player: 0 off, 1 low, 2 medium, 3 high", 0, 3 );
+idCVar g_aimAssistDebug(			"g_aimAssistDebug",			"0",			CVAR_GAME | CVAR_BOOL, "print the aim assist state once a second" );
 idCVar g_decals(					"g_decals",					"1",			CVAR_GAME | PC_CVAR_ARCHIVE | CVAR_BOOL, "show decals such as bullet holes" );
 idCVar g_knockback(					"g_knockback",				"1000",			CVAR_GAME | CVAR_INTEGER, "" );
 idCVar g_skill(						"g_skill",					"1",			CVAR_GAME | CVAR_INTEGER, "difficulty level", 0, MAX_SKILL_LEVELS - 1 );

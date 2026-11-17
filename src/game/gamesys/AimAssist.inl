@@ -137,6 +137,17 @@ view. `previousView` is where the view was before that input.
 ==============
 */
 void idPlayer::AimAssistUpdateView( const idAngles &previousView ) {
+	static int nextDebugTime = 0;
+	if ( nextDebugTime > gameLocal.time + 2000 ) {	// the map restarted: game time went back
+		nextDebugTime = 0;
+	}
+	const bool debug = g_aimAssistDebug.GetBool() && gameLocal.time >= nextDebugTime;
+	if ( debug ) {
+		nextDebugTime = gameLocal.time + 1000;
+		gameLocal.Printf( "AIMASSIST level=%d mp=%d local=%d controller=%d health=%d noclip=%d influence=%d cinematic=%d wheel=%d weapon=%d tuning=%d\n",
+			g_aimAssist.GetInteger(), gameLocal.isMultiplayer, gameLocal.GetLocalPlayer() == this, cvarSystem->GetCVarBool( "ui_radialStickActive" ),
+			health, noclip, influenceActive, gameLocal.inCinematic, weaponWheelActive, weapon != NULL, AimAssistTuning() != NULL );
+	}
 	const openQ4AimAssistTuning_t *tuning = static_cast<const openQ4AimAssistTuning_t *>( AimAssistTuning() );
 	if ( tuning == NULL || weapon == NULL ) {
 		aimAssistTarget = NULL;
@@ -155,6 +166,9 @@ void idPlayer::AimAssistUpdateView( const idAngles &previousView ) {
 	idAngles targetAngles;
 	float cone = tuning->cone;
 	idEntity *target = AimAssistFindTarget( GetEyePosition(), viewAngles, tuning->cone, tuning->range, point, targetAngles, cone );
+	if ( debug ) {
+		gameLocal.Printf( "AIMASSIST input=%.2f deg target=%s\n", input, target != NULL ? target->name.c_str() : "none" );
+	}
 	if ( target == NULL ) {
 		aimAssistTarget = NULL;
 		return;

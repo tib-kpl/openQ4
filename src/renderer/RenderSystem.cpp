@@ -309,6 +309,18 @@ static void R_PerformanceCounters( void ) {
 		common->Printf( "lightScale: %f\n", backEnd.pc.maxLightValue );
 	}
 
+#if defined( __ANDROID__ )
+	{	// a slow frame, once a second at most: where did the time go?
+		static int nextReport = 0;
+		const int now = sys->Milliseconds();
+		if ( ( tr.pc.frontEndMsec + backEnd.pc.msec ) > 25 && now >= nextReport ) {
+			nextReport = now + 1000;
+			common->Printf( "PERF frontEnd=%dms backEnd=%dms draws=%d indexes=%d shadowIdx=%d lights=%d viewEnts=%d shadowEnts=%d views=%d\n",
+				tr.pc.frontEndMsec, backEnd.pc.msec, backEnd.pc.c_drawElements, backEnd.pc.c_totalIndexes, backEnd.pc.c_shadowIndexes,
+				tr.pc.c_viewLights, tr.pc.c_visibleViewEntities, tr.pc.c_shadowViewEntities, tr.pc.c_numViews );
+		}
+	}
+#endif
 	memset( &tr.pc, 0, sizeof( tr.pc ) );
 	memset( &backEnd.pc, 0, sizeof( backEnd.pc ) );
 }

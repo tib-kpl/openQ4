@@ -1163,7 +1163,7 @@ float SCR_DrawFPS( float y ) {
 		const char *s = va( "%ifps", fps );
 		const float w = strlen( s ) * charWidth;
 
-		Con_DrawSizedStringExt( SCREEN_WIDTH - charWidth * 0.5f - w, y + SCR_DiagnosticTextTopPadding(), charWidth, charHeight, s, colorWhite, true );
+		Con_DrawSizedStringExt( SCREEN_WIDTH - charWidth * 0.5f - w, y + SCR_DiagnosticTextTopPadding(), charWidth, charHeight, s, idVec4( 1.0f, 1.0f, 1.0f, 0.55f ), true );
 	}
 
 	return y + SCR_DiagnosticLineAdvance( charHeight );
@@ -5179,7 +5179,12 @@ void	idConsoleLocal::Draw( bool forceFullScreen ) {
 		}
 	}
 
+#if defined( __ANDROID__ )
+	// A handheld has no other way to see how the game runs.
+	const int showFPSMode = Max( 1, com_showFPS.GetInteger() );
+#else
 	const int showFPSMode = com_showFPS.GetInteger();
+#endif
 	if ( showFPSMode == 2 || ( showFPSMode > 0 && sessLocal.IsMapSpawned() && !sessLocal.IsGUIActive() ) ) {
 		y = SCR_DrawFPS( 0 );
 	}
