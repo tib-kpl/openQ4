@@ -636,11 +636,12 @@ def system_document() -> dict:
     gate(doc, "settings_vsync", EDITABLE)
     windowed = no(draft("r_fullscreen"))
     exclusive = no(draft("r_fullscreenDesktop"))
-    sizing_live = both(LIVE)
+    # Android's window manager owns the window: its size cannot be typed.
+    sizing_live = both(LIVE, st("settings.display.windowSizeEditable"))
     width = size_row(doc, "settings_window_width", "#str_229946", x, edit("r_windowWidth"), "r_windowWidth", 320)
     height = size_row(doc, "settings_window_height", "#str_229947", x, edit("r_windowHeight"), "r_windowHeight", 240)
     for ident in ("settings_window_width", "settings_window_height"):
-        gate(doc, ident, both(sizing_live, windowed), opacity=dim(windowed, 0.45))
+        gate(doc, ident, both(sizing_live, windowed), opacity=dim(both(windowed, st("settings.display.windowSizeEditable")), 0.45))
     mode = choice(doc, "settings_display_mode", "#str_229975", x, "display.mode", st("settings.display.mode.selected"),
                   [(st(f"settings.display.mode.{index}.label"), index) for index in range(system_display_catalog.MODE_SLOTS)],
                   count=st("settings.display.mode.optionCount"))
@@ -648,7 +649,7 @@ def system_document() -> dict:
     custom_w = size_row(doc, "settings_custom_width", "#str_229948", x, "size.r_customWidth", "r_customWidth", 320)
     custom_h = size_row(doc, "settings_custom_height", "#str_229949", x, "size.r_customHeight", "r_customHeight", 240)
     for ident in ("settings_custom_width", "settings_custom_height"):
-        gate(doc, ident, both(sizing_live, exclusive), opacity=dim(exclusive, 0.45))
+        gate(doc, ident, both(sizing_live, exclusive), opacity=dim(both(exclusive, st("settings.display.windowSizeEditable")), 0.45))
     refresh = choice(doc, "settings_display_refresh", "#str_229945", x, "display.refresh", st("settings.display.refresh.selected"),
                      [(st(f"settings.display.refresh.{index}.label"), index) for index in range(system_display_catalog.REFRESH_SLOTS)],
                      count=st("settings.display.refresh.optionCount"))

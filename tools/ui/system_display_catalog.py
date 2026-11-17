@@ -18,6 +18,7 @@ def keys():
     declarations = {
         PREFIX + 'available': {'type': 'boolean', 'initial': False},
         PREFIX + 'spanAvailable': {'type': 'boolean', 'initial': False},
+        PREFIX + 'windowSizeEditable': {'type': 'boolean', 'initial': True},
         PREFIX + 'catalog': {'type': 'string', 'initial': ''},
         PREFIX + 'count': {'type': 'number', 'initial': 0},
         PREFIX + 'optionCount': {'type': 'number', 'initial': 1},

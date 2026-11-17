@@ -167,6 +167,12 @@ void DisplayCatalogStatus(Service& service, std::uint64_t owner, StateValues& va
     const auto& catalog = service.catalog.catalog;
     values["settings.display.available"] = catalog.available;
     values["settings.display.spanAvailable"] = catalog.spanAvailable;
+#if defined(__ANDROID__)
+    // The activity owns the window; SDL refuses to resize it.
+    values["settings.display.windowSizeEditable"] = false;
+#else
+    values["settings.display.windowSizeEditable"] = true;
+#endif
     values["settings.display.catalog"] = std::to_string(service.catalog.token);
     values["settings.display.count"] = static_cast<double>(catalog.count);
     values["settings.display.optionCount"] = static_cast<double>(1 + catalog.devices.size());
@@ -774,7 +780,7 @@ const std::map<std::string,std::size_t>& UI_SettingsStateSchema() {
             {"settings.lightGrid.effective",1},{"settings.lightGrid.pending",1},
             {"settings.renderer.available",1},{"settings.renderer.fallback",1},
             {"settings.msaa.clamped",1},{"settings.msaa.status",2},
-            {"settings.display.available",1},{"settings.display.spanAvailable",1},{"settings.display.catalog",2},
+            {"settings.display.available",1},{"settings.display.spanAvailable",1},{"settings.display.windowSizeEditable",1},{"settings.display.catalog",2},
             {"settings.display.count",0},{"settings.display.optionCount",0},
             {"settings.display.mode.optionCount",0},{"settings.display.mode.selected",0},
             {"settings.display.refresh.optionCount",0},{"settings.display.refresh.selected",0}};
