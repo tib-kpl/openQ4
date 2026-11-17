@@ -6868,6 +6868,18 @@ void idCommonLocal::Frame( void ) {
 		Common_MarkFrameWork(openq4::FrameWorkPhase::Draw);
 
 		// report timing information
+#if defined( __ANDROID__ )
+		{	// a slow frame, once a second at most: game, front end or back end?
+			static int slowLastTime = 0, slowNextReport = 0;
+			const int slowNow = Sys_Milliseconds();
+			const int slowMsec = slowNow - slowLastTime;
+			slowLastTime = slowNow;
+			if ( slowMsec > 33 && slowMsec < 1000 && slowNow >= slowNextReport ) {
+				slowNextReport = slowNow + 1000;
+				Printf( "SLOWFRAME all=%dms game=%dms frontEnd=%dms backEnd=%dms\n", slowMsec, time_gameFrame, time_frontend, time_backend );
+			}
+		}
+#endif
 		if ( com_speeds.GetBool() ) {
 			static int	lastTime;
 			int		nowTime = Sys_Milliseconds();

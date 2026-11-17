@@ -739,6 +739,13 @@ idCVar r_forceAppleGL21InteractionCorridor( "r_forceAppleGL21InteractionCorridor
 idCVar r_jitter( "r_jitter", "0", CVAR_RENDERER | CVAR_BOOL, "randomly subpixel jitter the projection matrix" );
 idCVar r_levelshotSupersample( "r_levelshotSupersample", "1", CVAR_RENDERER | CVAR_FLOAT, "levelshot source scale: each 4:3 view is rendered this many times the tile height, then area-averaged down to the tile", 1.0f, 4.0f );
 
+// Every lit light is another pass over what it touches. A handheld GPU took 28 to 31 ms a
+// frame in combat with 41 to 47 lights (Adreno 740), so Android keeps the nearest 16.
+#if defined( __ANDROID__ )
+idCVar r_maxViewLights( "r_maxViewLights", "16", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "most lights lit per view, nearest first; 0 = no limit", 0, 256 );
+#else
+idCVar r_maxViewLights( "r_maxViewLights", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "most lights lit per view, nearest first; 0 = no limit", 0, 256 );
+#endif
 idCVar r_skipSuppress( "r_skipSuppress", "0", CVAR_RENDERER | CVAR_BOOL, "ignore the per-view suppressions" );
 idCVar r_skipPostProcess( "r_skipPostProcess", "0", CVAR_RENDERER | CVAR_BOOL, "skip all post-process renderings" );
 idCVar r_skipLightScale( "r_skipLightScale", "0", CVAR_RENDERER | CVAR_BOOL, "don't do any post-interaction light scaling, makes things dim on low-dynamic range cards" );

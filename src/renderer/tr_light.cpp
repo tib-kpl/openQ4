@@ -2154,6 +2154,59 @@ void R_AddLightSurfaces( void ) {
 	idRenderLightLocal *light;
 	viewLight_t		**ptr;
 
+	// Keep the nearest lights when there are more than the budget. Fog and blend lights
+	// are not counted: they are cheap and part of the picture.
+	if ( r_maxViewLights.GetInteger() > 0 ) {
+		struct nearestLight_t { viewLight_t *vLight; float distSqr; };
+		static nearestLight_t candidates[ 1024 ];
+		int count = 0;
+		for ( vLight = tr.viewDef->viewLights; vLight && count < 1024; vLight = vLight->next ) {
+			const idMaterial *shader = vLight->lightDef->lightShader;
+			if ( shader && ( shader->IsFogLight() || shader->IsBlendLight() ) ) {
+				continue;
+			}
+			candidates[ count ].vLight = vLight;
+			candidates[ count ].distSqr = ( vLight->lightDef->parms.origin - tr.viewDef->renderView.vieworg ).LengthSqr();
+			count++;
+		}
+		const int budget = r_maxViewLights.GetInteger();
+		if ( count > budget ) {
+			// the budget's farthest distance: partial selection by repeated max is fine for ~50
+			float limit = 0.0f;
+			for ( int keep = 0; keep < budget; keep++ ) {
+				int best = keep;
+				for ( int i = keep + 1; i < count; i++ ) {
+					if ( candidates[ i ].distSqr < candidates[ best ].distSqr ) best = i;
+				}
+				nearestLight_t swap = candidates[ keep ]; candidates[ keep ] = candidates[ best ]; candidates[ best ] = swap;
+				limit = candidates[ keep ].distSqr;
+			}
+			ptr = &tr.viewDef->viewLights;
+			int kept = 0;
+			while ( *ptr ) {
+				vLight = *ptr;
+				const idMaterial *shader = vLight->lightDef->lightShader;
+				const bool counted = !( shader && ( shader->IsFogLight() || shader->IsBlendLight() ) );
+				bool drop = false;
+				if ( counted ) {
+					bool listed = false;
+					for ( int i = 0; i < budget; i++ ) {
+						if ( candidates[ i ].vLight == vLight ) { listed = true; break; }
+					}
+					drop = !listed;
+				}
+				if ( drop ) {
+					*ptr = vLight->next;
+					vLight->lightDef->viewCount = -1;
+				} else {
+					kept++;
+					ptr = &vLight->next;
+				}
+			}
+			( void )limit; ( void )kept;
+		}
+	}
+
 	// go through each visible light, possibly removing some from the list
 	ptr = &tr.viewDef->viewLights;
 	while ( *ptr ) {
