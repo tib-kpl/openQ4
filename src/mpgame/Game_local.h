@@ -140,6 +140,7 @@ const int MAX_SAVEGAME_ANIMATED_ANIMS					= 256;
 
 void gameError( const char *fmt, ... );
 void rvNormalizeProjectedRenderLight( renderLight_t &light, const char *ownerName, const char *lightName );
+idVec3 rvKeepCarriedLightOnHolderSide( const idEntity *holder, const idVec3 &eye, const idVec3 &desired, const idVec3 &forward, float clearance, int contentMask );
 
 //============================================================================
 
@@ -949,6 +950,18 @@ public:
 
 	const idDeclEntityDef *	FindEntityDef( const char *name, bool makeDefault = true ) const;
 	const idDict *			FindEntityDefDict( const char *name, bool makeDefault = true ) const;
+	void					ClearEntityDefCache( void ) const;
+
+private:
+	// openQ4: multiplayer FindEntityDef answers for the map, found or not
+	struct entityDefCacheEntry_t {
+		idStr					name;
+		const idDeclEntityDef *	decl;
+	};
+	mutable idHashIndex		entityDefCacheHash;
+	mutable idList<entityDefCacheEntry_t> entityDefCache;
+
+public:
 
 	void					RegisterEntity( idEntity *ent );
 	void					UnregisterEntity( idEntity *ent );

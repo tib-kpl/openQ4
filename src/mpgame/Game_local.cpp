@@ -6,6 +6,7 @@
 
 #include "../idlib/NumericString.h"
 #include "../sys/AutoVersion.h"
+#include "../framework/BuildVersion.h"
 
 struct game_name_s {
 	game_name_s( void ) {
@@ -82,6 +83,31 @@ static bool rvProjectedLightVecFinite( const idVec3 &value ) {
 static bool rvProjectedLightVecUsable( const idVec3 &value ) {
 	static const float VECTOR_EPSILON_SQR = 1.0e-6f;
 	return rvProjectedLightVecFinite( value ) && value.LengthSqr() > VECTOR_EPSILON_SQR;
+}
+
+/*
+================
+rvKeepCarriedLightOnHolderSide
+
+openQ4: a light carried on a gun (a flashlight) is placed at a joint that can
+reach through a wall the holder's eye is still in front of. A light placed past
+that wall lights the room behind it and leaves the wall in front dark. Trace
+from the eye to just past the desired origin along the beam: if anything is in
+the way, the light goes back along that line to `clearance` short of it, which
+also keeps it off a surface right in front of it. Never further back than the
+eye. One point trace.
+================
+*/
+idVec3 rvKeepCarriedLightOnHolderSide( const idEntity *holder, const idVec3 &eye, const idVec3 &desired, const idVec3 &forward, float clearance, int contentMask ) {
+	const idVec3 probe = desired + forward * clearance;
+	trace_t tr;
+	gameLocal.TracePoint( holder, tr, eye, probe, contentMask, holder );
+	if ( tr.fraction >= 1.0f ) {
+		return desired;
+	}
+	idVec3 dir = probe - eye;
+	const float length = dir.Normalize();
+	return eye + dir * Max( 0.0f, length * tr.fraction - clearance );
 }
 
 void rvNormalizeProjectedRenderLight( renderLight_t &light, const char *ownerName, const char *lightName ) {
@@ -1745,6 +1771,7 @@ void idGameLocal::LoadMap( const char *mapName, int randseed ) {
 	MEM_SCOPED_TAG(tag,MA_PARSER);
 // RAVEN END
 	bool sameMap = (mapFile && idStr::Icmp(mapFile->GetName(), mapName) == 0);
+	ClearEntityDefCache();
 	const int loadStartMsec = Sys_Milliseconds();
 	int phaseStartMsec = loadStartMsec;
 	int mapParseMsec = 0;
@@ -3089,6 +3116,7 @@ idGameLocal::MapShutdown
 */
 void idGameLocal::MapShutdown( void ) {
 	idSaveGame::ClearDictionaryCache();
+	ClearEntityDefCache();
 	Printf( "------------ Game Map Shutdown --------------\n" );
 
 	mpGame.PrepareForMapShutdown();
@@ -6234,14 +6262,47 @@ idGameLocal::FindEntityDef
 */
 const idDeclEntityDef *idGameLocal::FindEntityDef( const char *name, bool makeDefault ) const {
 	TIME_THIS_SCOPE( __FUNCLINE__);
-	const idDecl *decl = NULL;
-	if ( isMultiplayer ) {
-		decl = declManager->FindType( DECL_ENTITYDEF, va( "%s_mp", name ), false );
+	if ( !isMultiplayer || name == NULL || name[ 0 ] == '\0' ) {
+		return static_cast<const idDeclEntityDef *>( declManager->FindType( DECL_ENTITYDEF, name, makeDefault ) );
 	}
+
+	// openQ4: multiplayer asks for "<name>_mp" first, which cost a formatted name
+	// and a failed lookup ahead of nearly every real one; bots ask several times
+	// a tic. The answer, found or not, holds for the map: decls are purged only
+	// at a level load, when ClearEntityDefCache runs, and reparse in place.
+	const int key = entityDefCacheHash.GenerateKey( name, false );
+	for ( int i = entityDefCacheHash.First( key ); i != -1; i = entityDefCacheHash.Next( i ) ) {
+		if ( entityDefCache[ i ].name.Icmp( name ) == 0 ) {
+			if ( entityDefCache[ i ].decl != NULL || !makeDefault ) {
+				return entityDefCache[ i ].decl;
+			}
+			// a default was asked for where none exists: that is the lookup's job
+			return static_cast<const idDeclEntityDef *>( declManager->FindType( DECL_ENTITYDEF, name, true ) );
+		}
+	}
+
+	const idDecl *decl = declManager->FindType( DECL_ENTITYDEF, va( "%s_mp", name ), false );
 	if ( !decl ) {
-		decl = declManager->FindType( DECL_ENTITYDEF, name, makeDefault );
+		decl = declManager->FindType( DECL_ENTITYDEF, name, false );
+	}
+	entityDefCacheEntry_t entry;
+	entry.name = name;
+	entry.decl = static_cast<const idDeclEntityDef *>( decl );
+	entityDefCacheHash.Add( key, entityDefCache.Append( entry ) );
+	if ( !decl && makeDefault ) {
+		decl = declManager->FindType( DECL_ENTITYDEF, name, true );
 	}
 	return static_cast<const idDeclEntityDef *>( decl );
+}
+
+/*
+================
+idGameLocal::ClearEntityDefCache
+================
+*/
+void idGameLocal::ClearEntityDefCache( void ) const {
+	entityDefCacheHash.Clear();
+	entityDefCache.Clear();
 }
 
 /*

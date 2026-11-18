@@ -7,6 +7,154 @@ later entries are unreleased development work. Historical CI/publication success
 does not restore the withdrawn release. See
 [player release status](../user/release-status.md).
 
+## More texture pack formats, and an option to keep big packs in memory, 18 November 2026
+
+- **More DDS files load.** BC1 and BC3 (DXT1/DXT5) files saved with a DX10
+  header, which is what `texconv` writes for sRGB formats, now load instead of
+  being skipped, and so do BC4 and BC5 files (common for normal maps and masks)
+  and uncompressed DDS files. BC5 normal maps get their Z channel rebuilt.
+  [The formats table](../user/texture-replacements.md#formats) lists them all.
+- **Compress textures that are not DDS.** A pack of TGA or PNG files, or loose
+  originals that make a pack look out of date, can multiply a map's video
+  memory. `image_useCompression 1` and `image_useNormalCompression 2`, Quake
+  4's own settings, now store such textures compressed: DXT1 when the image has
+  no transparency, DXT5 when it has, and bump maps in Quake 4's normal-map
+  layout. Both are off by default, so nothing changes unless you turn them on.
+  Quake 4's own DDS textures, sky boxes and menu art are never re-encoded.
+- **First loads that compress are faster.** Compressing a texture is now spread
+  across processor cores, which shortens the first load after installing a
+  pack. The same applies to Android devices that compress to ETC2, and with
+  `image_useETC2 2` or higher they now store opaque colour textures at half the
+  size (not yet checked on a device).
+- **Correct memory figures.** `listImages` counted large texture packs wrongly:
+  its total turned negative past 2 GB, a single 8K texture could read as
+  negative, and each size was an estimate. It now adds up the mipmap levels
+  actually stored, and names every format.
+- **What to do.** Nothing. Replace the client and both renderers together.
+
+## Flashlights that stop at walls, 17 November 2026
+
+- **Your flashlight lights the wall in front of you.** Held against a wall, a
+  door or a thin panel, the gun reached through it and the flashlight was placed
+  on the far side: the room behind lit up and the wall you faced stayed dark.
+  The light is now kept on your side of anything between your eyes and the gun,
+  and at least 8 units from it. The same applies to the flashlight other views
+  see and to the marines' flashlights. It costs no more than before: one point
+  trace per light per game frame.
+- **Marines' flashlight beams cone out and stop at walls.** The original beam
+  was a thin bundle of lines about 100 units long that went straight through
+  any wall in front of it. It now leaves the flashlight itself, mounted under
+  the barrel, rather than the muzzle, and widens at the flashlight's authored
+  angle (`flashlightAngle`) out to its reach (`flashlightRadius`). It fades
+  with distance like the light and ends at the first wall or character in its
+  way. It is drawn with Quake 4's own soft glow, so no texture streaks stretch
+  along it. `g_flashlightBeam 0` brings back the original effect.
+- **What to do.** Nothing. Replace the client, both renderers and both game
+  modules together.
+
+## VR: the gun's own hands in your left hand, 17 November 2026
+
+- **Left-handed players see real hands on the gun.** With **Weapon Hand** set to
+  Left (`vr_leftHanded 1`), each gun is now held by its own modelled hands,
+  mirrored: a left hand on the grip and the right hand supporting it or
+  following your controller. Before, your character's simpler hands held it.
+  The gun itself is not mirrored, so ammunition counters and markings still
+  read the right way round. It works with or without the VR body.
+- **Mirrored models draw the right way out.** OpenGL and Vulkan both drew a
+  mirrored model inside out in some passes; they now face it correctly.
+- **What to do.** Nothing. Replace the client, both renderers and both game
+  modules together.
+
+## Smart weapon switching, a Last Weapon key and Quake Live-style defaults, 17 November 2026
+
+- **Pickups no longer pull your weapon away mid-fight.** Auto Weapon Switch
+  (`ui_autoSwitch`) gains a third choice, **Smart**, and it is the new default.
+  In multiplayer a pickup takes over only from the gauntlet, the machinegun you
+  spawn with, a weapon that needs no ammunition (the Classic ruleset's blaster)
+  or a weapon that has run dry. With the railgun up, running over a shotgun
+  keeps the railgun. In single player you still switch to each weapon the first
+  time you get it. **Always** is Quake 4's old behaviour and **Off** never
+  switches. A [weapon preference order](../user/multiplayer-client-options.md#weapon-preference-order)
+  still has to agree before a switch, and buying still switches. The
+  [gameplay guide](../user/gameplay-settings.md#weapon-switching) explains it.
+- **Last Weapon.** A new key switches back to the weapon you held before, on
+  `G` by default and on the controller's right bumper as before. The bumper used
+  to do nothing in single player; it now works in both modes. Find it under
+  **Settings → Controls → Weapons → Last Weapon**.
+- **Defaults checked against Quake Live.** Quake Live keeps each number key on
+  its own weapon slot and the wheel on next and previous weapon, which openQ4
+  already does, so the number keys keep Quake 4's slot order. From Quake Live's
+  layout openQ4 takes the weapon toggle (here `G`, because `F` is the
+  flashlight) and puts the grappling hook on `Mouse4`.
+- **What to do.** Nothing for the switch: a profile still on Quake 4's default
+  (`ui_autoSwitch 1`) moves to Smart once, and `0` stays off. The new keys reach
+  new profiles and a reset of the controls to their defaults; an existing profile keeps its own
+  bindings, so bind Last Weapon and the hook yourself if you want them. Replace
+  the client, both game modules and pak0 together. Servers decide the switch
+  from each player's setting, so on an older server Smart behaves as Always.
+
+## Multiplayer: the rest of the 17 November audit, 17 November 2026
+
+- **Bounce Shot and Burst Fire look right online.** Other players now see a
+  Bounce Shot bolt bounce and a Burst Fire rocket steer, where they saw both
+  fly straight to an impact that never happened. Both fly at their weapon's
+  normal multiplayer speed.
+- **Classic armour: no paying for nothing.** Under the Classic ruleset, an
+  armour purchase that would add nothing is refused before any credits are
+  spent, and bots go for Classic armour, which they used to ignore.
+- **Multiview demos record 20 snapshots a second.** That is what the default
+  setting always asked for; recordings took 15. Expect files about a third
+  larger than before.
+- **Busier servers join cleanly.** A player joining a full server whose
+  players all have long settings no longer gets disconnected on arrival:
+  the other players' details are sent as fast as the connection takes them.
+- **Server hardening.** A player who has proved their connection is never
+  turned away by the server's flood limits, and an IPv6 host counts as one
+  source however many addresses it uses. Wrong rcon passwords keep counting
+  however many other addresses ask the server for a challenge, and over a
+  map change. A client that keeps sending broken packets is disconnected
+  instead of filling the log, and a name containing one particular invalid
+  byte no longer scrambles that player's settings.
+- **Map rotation and managed matches.** Announcing the next map no longer
+  applies other settings you have typed for the next map early, and a
+  refereed or series match no longer has its next map replaced by the
+  rotation.
+- **Smaller fixes.** Under Quad Hog, a frag made by the hog's last rocket
+  still scores when the same blast kills the hog. The chase and death
+  cameras stay out of low ceilings, bodies sink at the same speed on every
+  screen, and item timers, bot definition lookups and resting items cost the
+  server less each frame.
+
+## Animated crosshairs cost a fraction of what they did, 17 November 2026
+
+- **Less frame time while the crosshair moves.** A moving animated crosshair
+  used to take 1.2 to 4 ms of CPU every frame it changed, which is every frame
+  you fire, spin up or reload. It now takes 0.25 to 1.2 ms. Measured at
+  1920x1080 per drawn frame, before and after (mean of two runs each): spinning
+  hyperblaster 2.62 to 1.08 ms, lightning gun firing 3.65 to 0.25 ms, nailgun
+  spinning 1.42 to 0.36 ms, rocket launcher reloading 2.46 to 1.20 ms,
+  machinegun reloading 2.24 to 1.06 ms, grenade launcher reloading 1.72 to
+  0.95 ms, gauntlet 0.88 to 0.30 ms. A still crosshair drops from 0.12 to
+  0.07 ms.
+- **Smoother edges on the crosshair's strokes.** Arcs, ticks, bars and dots now
+  keep their edge pixels, so rings read rounder and thin strokes no longer lose
+  their soft edge at an angle. The pieces cut from the original art (grenade
+  launcher, nailgun, lightning gun, napalm launcher, vehicle cannon) draw
+  exactly as before.
+- **How.** The game's moving pieces are covered directly instead of going
+  through the general path compiler and a clip; a piece cut from a design
+  compiles only the paths it can show; a piece that only moved reuses its
+  compiled coverage at a whole-pixel offset (placed to a quarter pixel); and
+  the pieces draw as a few batched geometries, settled ones apart from moving
+  ones, instead of one geometry each. The stock HUD's own drawing is unchanged.
+- **For developers.** `testCrosshair profile [frames]` prints the CPU cost of
+  the next drawn frames (`XH_PROFILE`, game part and interface part). Replace
+  the client and both game modules together.
+- Evidence: `openq4-ui-vector` (`CoverConvexPolygon` matches the path compiler
+  per pixel in both windings), `crosshair_cvar_refresh_contract.py`,
+  `ui_hud_catalog_state.py`, `ui_manager_lifecycle.py`; nine held crosshair
+  states profiled with `testCrosshair profile 360` on `game/airdefense1`, and
+  thirteen held states captured before and after.
 ## Aim assist on a controller, and an Android display menu that no longer freezes, 17 November 2026
 
 - **Aim Assist for controller players (single player).** Options > Controller has

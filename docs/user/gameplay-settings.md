@@ -11,7 +11,7 @@ This guide covers how the game plays, looks and sounds: difficulty and Turbo Mod
 | Difficulty, Turbo Mode | The **New Game** page; during a campaign, the in-game menu's **Restart Level** | The **New Game** page; during a campaign, the in-game menu's **Difficulty** |
 | HUD layout, size and opacity | **Settings → Game Options → HUD** | Game Options, **HUD** section |
 | Crosshair, hit marker, animated crosshair | **Settings → Game Options → HUD** | Game Options, **Crosshair** section (no animated crosshair) |
-| Skip cinematics, corpses, enhanced physics, language, console access | **Settings → Game Options → General** | Game Options, **Gameplay** section |
+| Auto weapon switch, skip cinematics, corpses, enhanced physics, language, console access | **Settings → Game Options → General** | Game Options, **Gameplay** section |
 | Weapon field of view and position | **Settings → Game Options → HUD** (**General** in 0.14.1) | Game Options, **View Weapon** section |
 | Volume, room reverb, speakers, subtitles | **Settings → Audio** | **Settings → Audio** |
 
@@ -247,6 +247,18 @@ These are on by default and rarely need changing. Each takes effect after `s_res
 
 **Screen Shake** (`g_screenShake`) on the same page sets the shake from explosions, including your own rockets and grenades, from collapsing machinery and loud sounds, and from riding The Awakening's speeder bike, `0` none to `1` full. Both apply at once. Multiplayer weapons and explosions never kick or shake the view, so these settings change nothing there.
 
+### Weapon switching
+
+**Not in 0.14.1.** **Settings → Game Options → General → Auto Weapon Switch** (`ui_autoSwitch`) decides what happens when you pick up a weapon:
+
+- **Smart** (`2`, the default) switches only when it helps. In multiplayer a pickup takes over from the gauntlet, from the machinegun you spawn with, from a weapon that needs no ammunition such as the Classic ruleset's blaster, or from a weapon that has run dry, and never pulls a real weapon out of your hands mid-fight: running over a shotgun with the railgun up keeps the railgun. In single player you switch to a weapon the first time you get it, as Quake 4 always did.
+- **Always** (`1`) switches to every weapon you pick up in multiplayer, and to every new weapon in single player: Quake 4's original behaviour.
+- **Off** (`0`) never switches; a weapon handed to you by a character in the campaign is still raised.
+
+Profiles from earlier versions that still had Quake 4's default (`1`) move to Smart once; `0` stays off. If you also set a [weapon preference order](multiplayer-client-options.md#weapon-preference-order), a switch Smart allows still has to go up your order. Buying always switches to what you bought.
+
+**Last weapon** (`G`, or the controller's right bumper) switches back to the weapon you held before, in single player and multiplayer. Rebind it under **Settings → Controls → Weapons → Last Weapon**.
+
 ### Corpses
 
 **Settings → Game Options → General** has **Corpse Time** (how long bodies stay) and **Corpse Sink** (how they leave). From the console:
@@ -271,6 +283,10 @@ It is off by default; off runs the original physics exactly. A change takes effe
 ### Classic dynamic lights
 
 `g_classicDynamicLights` (on by default) brings back the Quake II and Quake III habit of lighting the world from the action: muzzle flashes throw a short, wide pool of light, bright projectiles carry their own glow, and explosions flash the surrounding walls. The colours come from the shipped Quake 4 assets. `g_classicDynamicLightScale` scales the radius of all of them from `0.25` to `4`; try lowering it before turning the feature off. See [Classic dynamic lights](classic-dynamic-lights.md) for the per-weapon colours.
+
+### Flashlights
+
+**Not in 0.14.1.** Your flashlight stays on your side of the wall. Held hard against a wall, a door or a thin panel, the gun used to reach through it, so the flashlight lit the room behind and left the wall in front of you dark. The marines' flashlight beams now shine from the flashlight under the barrel, widen out to the flashlight's reach as a soft cone, and stop at the first wall or person in the way; the original thin beam passed straight through walls. `g_flashlightBeam 0` brings the original beam back.
 
 ## Settings reference
 
@@ -315,6 +331,7 @@ All of these are saved automatically. Type them in the console, or put them in a
 |---|---:|---|
 | `g_skill` | `1` | Difficulty, `0` Private to `4` Warlord. A saved game brings back its own. |
 | `g_turboMode` | `0` | Turbo Mode (single-player). |
+| `ui_autoSwitch` | `2` | Weapon pickups: `0` never switch, `1` always switch (Quake 4), `2` smart. **Not in 0.14.1:** Quake 4's switch was `0` or `1`, default `1`. |
 | `g_fov` | `90` | Field of view, measured on a 4:3 screen. |
 | `g_autoSkipCinematics` | `0` | `1` skips cinematics as they start. |
 | `ui_cinematicShake` | `1` | Extra cinematic camera movement, `0` to `1`. |
@@ -326,6 +343,7 @@ All of these are saved automatically. Type them in the console, or put them in a
 | `g_enhancedPhysics` | `0` | `1` uses the enhanced ragdoll and object physics from the next map; multiplayer follows the server. |
 | `g_classicDynamicLights` | `1` | Dynamic lights on muzzle flashes, bright projectiles and explosions. |
 | `g_classicDynamicLightScale` | `1` | Radius of those lights, `0.25` to `4`. |
+| `g_flashlightBeam` | `1` | Characters' visible flashlight beams: `1` widen to the light's reach and stop at walls, `0` the original thin beam. **Not in 0.14.1.** |
 
 ### Sound and subtitles
 

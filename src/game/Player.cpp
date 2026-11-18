@@ -6508,8 +6508,10 @@ void idPlayer::LastWeapon( void ) {
 	if ( !(inventory.weapons & ( 1 << previousWeapon ) ) ) {
 		return;
 	}
-	
-	idealWeapon = previousWeapon;
+
+	// openQ4: through SelectWeapon, which refuses while weapons are disabled, in a
+	// cinematic or when the last weapon is out of ammunition, as a weapon key does.
+	SelectWeapon( previousWeapon, false );
 }
 
 /*
@@ -10156,10 +10158,11 @@ void idPlayer::PerformImpulse( int impulse ) {
 			break;
 		}
 
-// 		case IMPULSE_51: {
-// 			LastWeapon();
-// 			break;
-// 		}
+		// openQ4: the last weapon (Quake Live's "weapon toggle"), as in multiplayer
+		case IMPULSE_51: {
+			LastWeapon();
+			break;
+		}
 // jmarshall end
 	} 
 
@@ -12929,7 +12932,7 @@ bool idPlayer::GetVRWeaponTransform( idVec3 &origin, idMat3 &axis, bool presenta
 	// the gun sits in the hand the way its own model holds it
 	idVec3 barrel;
 	idVec3 grip;
-	weapon->GetVRHold( barrel, grip );
+	weapon->GetVRHold( barrel, grip, frame.weaponHand == VR_HAND_LEFT );
 	return VR_WeaponTransform( frame, eyeOrigin, trackingYaw, barrel, grip, origin, axis );
 }
 

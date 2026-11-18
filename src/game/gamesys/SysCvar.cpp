@@ -2,6 +2,7 @@
 
 
 #include "../Game_local.h"
+#include "../../sys/AutoVersion.h"
 
 #if defined( _DEBUG )
 	#define	BUILD_DEBUG	"-debug"
@@ -151,7 +152,7 @@ idCVar ui_clan(						"ui_clan",					"",	CVAR_GAME | CVAR_USERINFO | PC_CVAR_ARCH
 idCVar ui_handicap(					"ui_handicap",				"100",	CVAR_GAME | CVAR_USERINFO | CVAR_ARCHIVE | CVAR_INTEGER, "player handicap percentage", 1, 100 );
 idCVar ui_hitscanTint(				"ui_hitscanTint",			"120.0 0.6 1.0",	CVAR_GAME | CVAR_USERINFO | CVAR_ARCHIVE, "a tint applied to select hitscan effects.  Specified as a value in HSV color space. Hue [0.0-360.0] Saturation [0.0-1.0] Value [0.75-1.0]" );
 // RAVEN END
-idCVar ui_autoSwitch(				"ui_autoSwitch",			"1",			CVAR_GAME | CVAR_USERINFO | CVAR_ARCHIVE | CVAR_BOOL, "auto switch weapon" );
+idCVar ui_autoSwitch(				"ui_autoSwitch",			"2",			CVAR_GAME | CVAR_USERINFO | CVAR_ARCHIVE | CVAR_INTEGER, "switch to a weapon when picking it up: 0 never, 1 always (Quake 4), 2 smart: in multiplayer only from the gauntlet, the machinegun or an empty weapon (single player switches only to weapons not yet carried)", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
 idCVar ui_autoReload(				"ui_autoReload",			"1",			CVAR_GAME | CVAR_USERINFO | CVAR_ARCHIVE | CVAR_BOOL, "auto reload weapon" );
 idCVar ui_showGun(					"ui_showGun",				"1",			CVAR_GAME | CVAR_USERINFO | CVAR_ARCHIVE | CVAR_BOOL, "show gun" );
 idCVar ui_ready(					"ui_ready",				si_readyArgs[ 0 ],	CVAR_GAME | CVAR_USERINFO, "player is ready to start playing", idCmdSystem::ArgCompletion_String<si_readyArgs> );
@@ -576,6 +577,7 @@ idCVar pm_vehicleSoundLerpScale(	"pm_vehicleSoundLerpScale",		"10",		CVAR_GAME |
 idCVar g_showPlayerShadow(			"g_showPlayerShadow",		"1",			CVAR_GAME | PC_CVAR_ARCHIVE | CVAR_BOOL, "enables shadow of player model" );
 idCVar g_showPresentationPose(		"g_showPresentationPose",	"0",			CVAR_GAME | CVAR_BOOL, "report whether the local player's body reaches the presentation clock" );
 idCVar g_presentationClockCapture(	"g_presentationClockCapture",	"0",		CVAR_GAME | CVAR_INTEGER, "capture this many presentation-clock samples, then dump them once" );
+idCVar g_flashlightBeam(			"g_flashlightBeam",			"1",			CVAR_GAME | PC_CVAR_ARCHIVE | CVAR_BOOL, "visible flashlight beams on characters' guns: 1 = a beam that widens to the flashlight's reach and stops at the first surface in its way, 0 = the original thin effect, which passes through walls" );
 idCVar g_dynamicLightShadows(		"g_dynamicLightShadows",	"-1",			CVAR_GAME | PC_CVAR_ARCHIVE | CVAR_INTEGER, "weapon lights request shadows (gun flashlight, muzzle flashes, projectile and explosion lights, and the lights in weapon and monster effects): -1 = auto (the flashlight wherever shadows are drawn, the rest at the highest machine spec: Quality, Ultra and Maximum), 0 = never, 1 = always", -1, 1 );
 
 bool G_DynamicLightShadowsEnabled( void ) {

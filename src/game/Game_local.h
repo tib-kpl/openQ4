@@ -37,7 +37,6 @@ inline void operator delete[]( void *p ) { Memory::Free(p); }
 class idRenderWorld;
 extern idRenderWorld *				gameRenderWorld;
 
-#include "../sys/AutoVersion.h"
 // the "gameversion" client command will print this plus compile date
 #define	GAME_VERSION		"baseQUAKE4-1"
 
@@ -154,6 +153,7 @@ const int MAX_SAVEGAME_ANIMATED_ANIMS					= 256;
 
 void gameError( const char *fmt, ... );
 void rvNormalizeProjectedRenderLight( renderLight_t &light, const char *ownerName, const char *lightName );
+idVec3 rvKeepCarriedLightOnHolderSide( const idEntity *holder, const idVec3 &eye, const idVec3 &desired, const idVec3 &forward, float clearance, int contentMask );
 void gameDebugLogDamage( const char *source, idEntity *victim, idEntity *inflictor, idEntity *attacker,
 	const idDict *damageDef, const char *damageDefName, const idVec3 &dir, float damageScale, int location,
 	int damage, int armorSave, int healthBefore, int healthAfter, int methodOfDeath );
