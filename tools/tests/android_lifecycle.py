@@ -37,6 +37,7 @@ struct SDL_Event {int type;};
 struct SDL_AtomicInt {int value=0;};
 static SDL_AtomicInt s_sdlLifecyclePending;
 static SDL_AtomicInt s_sdlAppBackgrounded;
+static SDL_AtomicInt s_sdlGLSurfaceRebind;
 static int SDL_GetAtomicInt(SDL_AtomicInt* value){return value->value;}
 static int SDL_SetAtomicInt(SDL_AtomicInt* value,int replacement){int old=value->value;value->value=replacement;return old;}
 static bool SDL_CompareAndSwapAtomicInt(SDL_AtomicInt* value,int expected,int replacement){if(value->value!=expected)return false;value->value=replacement;return true;}
