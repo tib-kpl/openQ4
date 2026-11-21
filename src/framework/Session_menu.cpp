@@ -183,7 +183,10 @@ static const int RETAINED_MP_TEAM_SLOTS = 3;
 // against its field's rules.
 static const char *const RETAINED_MP_VOTE_FIELDS[] = {
 	"mpVoteMap", "mpVoteGameType", "mpVoteTimeLimit", "mpVoteFragLimit", "mpVoteCaptureLimit", "mpVoteTourneyLimit",
-	"mpVoteControlTime", "mpVoteBalance", "mpVoteShuffle", "mpVoteRestart", "mpVoteBuying", "mpVoteKick"
+	"mpVoteControlTime", "mpVoteBalance", "mpVoteShuffle", "mpVoteRestart", "mpVoteBuying", "mpVoteKick",
+	// The casual callvote fields (MP-12), after the kick as the game orders them.
+	"mpVoteNextMap", "mpVoteRandomMap", "mpVoteRoundLimit", "mpVoteOvertime", "mpVoteRuleset", "mpVoteInstagib",
+	"mpVoteReadyAll", "mpVoteCoinToss"
 };
 // The Admin page's drafted server settings, whose controls request "<verb>
 // <value>", in the order of the game's retainedVoteField_t without the kick;
@@ -4436,6 +4439,17 @@ void idSessionLocal::HandleMainMenuCommands( const char *menuCommand ) {
 			return;
 		}
 
+		// The multiplayer menu's AUDIO route: the retained page over the main
+		// menu as it comes up, else the stock AUDIO page.
+		if ( !idStr::Icmp( cmd, "openRetainedAudioFromMp" ) ) {
+			if ( !OpenRetainedAudio() && guiMainMenu != NULL ) {
+				guiMainMenu->SetStateBool( "retainedAudio", false );
+				guiMainMenu->StateChanged( common->GetPresentationTime() );
+				guiMainMenu->HandleNamedEvent( "fromMp_toAudioStock" );
+			}
+			return;
+		}
+
 		if ( !idStr::Icmp( cmd, "openRetainedGame" ) ) {
 			OpenRetainedGameRoute( false );
 			return;
@@ -5444,7 +5458,9 @@ static void Session_SetCampaignPageSkill( idUserInterface *gui, int skill, bool 
 // commands alike: a difficulty, turbo, START, a chapter and its start, and
 // BACK to the campaigns (onto CHAPTERS from the retained CHAPTERS page).
 static void Session_HandleCampaignPageRequest( idSessionLocal &session, idUserInterface *gui, const char *request, bool retained ) {
-    const char *campaign = Session_AwakeningPageActive() ? "awakening" : "quake4";
+    // A page opened ahead of its campaign's switch starts that campaign.
+    const char *pending = session.PendingCampaign( gui );
+    const char *campaign = pending != NULL ? pending : Session_AwakeningPageActive() ? "awakening" : "quake4";
     const bool chaptersBack = !idStr::Icmp( request, "campaignChaptersBack" );
     if ( !idStr::Icmp( request, "campaignSkillBack" ) || chaptersBack ) {
         if ( retained ) session.BeginRetainedCampaignSkill( gui, "", true, chaptersBack ); else session.OpenCampaignSelector( true );
@@ -6135,6 +6151,7 @@ void idSessionLocal::GuiFrameEvents() {
 	UpdateRetainedHome();
 	RetainedHomeFrameEvent();
 	UpdateRetainedSubpage();
+	UpdatePendingCampaignRemount();
 	UpdateRetainedPage();
 	UpdateRetainedMultiplayerPage();
 	UpdateRetainedJoinGame();
@@ -6855,7 +6872,25 @@ static const retainedCreateSetting_t RETAINED_CREATE_SETTINGS[] = {
 	{ "createFallDamage",	"falldamage",	"si_fallDamage",			0, 999,	false },
 	{ "createWeaponRespawn",	"weaponrespawn",	"si_weaponRespawn",		0, 999,	false },
 	{ "createPreset",		"preset",		"si_preset",				0, 11,	false },	// Session_RetainedCreateValue
+	// The host settings the multiplayer menu tree audit (20 November 2026)
+	// brought onto the page from the console: the map database's rotation and
+	// map requests, who sees item timers, casual team timeouts, the spectator
+	// lock and moving idle players to spectators (seconds: the page offers
+	// off, one, two, five and ten minutes).
+	{ "createMapRotation",	"maprotation",	"g_mapRotation",			0, 3,	false },
+	{ "createMapQueue",		"mapqueue",		"g_mapQueue",				0, 1,	true },
+	{ "createItemTimers",	"itemtimers",	"si_itemTimers",			0, 2,	false },
+	{ "createTimeouts",		"timeouts",		"si_timeouts",				0, 10,	false },
+	{ "createSpectatorLock",	"spectatorlock",	"si_spectatorLock",		0, 2,	false },
+	{ "createInactivity",	"inactivity",	"g_inactivity",				0, 600,	false },
+	// What players may show each other (MP-15): the strongest brightskin,
+	// rimlight and outline (si_maxBrightskin, Off, Low, Medium or no limit:
+	// Session_RetainedCreateValue) and forced models.
+	{ "createMaxBrightskin",	"maxbrightskin",	"si_maxBrightskin",		0, 3,	false },	// Session_RetainedCreateValue
+	{ "createForcedModels",	"forcedmodels",	"si_forcedModels",			0, 1,	true },
 };
+// si_maxBrightskin's levels, the appearance rows' Off, Low, Medium and High.
+static const float RETAINED_CREATE_BRIGHTSKIN_LEVELS[] = { 0.0f, 0.35f, 0.7f, 1.0f };
 static const int RETAINED_CREATE_SETTING_COUNT = static_cast<int>( sizeof( RETAINED_CREATE_SETTINGS ) / sizeof( RETAINED_CREATE_SETTINGS[0] ) );
 // The page's text fields: the verb a field asks with once its text is in its
 // page state, that state, the CVar the session writes and the most bytes it
@@ -7334,6 +7369,14 @@ static bool Session_CampaignNeedsReload( const char *game, const char *base ) {
 }
 #endif
 
+static idCVar com_campaignRemount( "com_campaignRemount", "1", CVAR_SYSTEM | CVAR_BOOL,
+    "switch between Quake 4 and The Awakening in place at the menu; 0 reloads the engine for each switch" );
+static idCVar com_campaignSwitchExec( "com_campaignSwitchExec", "", CVAR_SYSTEM,
+    "a cfg executed after each in-place campaign switch, for test harnesses" );
+// How long the difficulty page opened ahead of a switch runs before the switch:
+// its arrival (150 ms) and focus (300 ms) timelines.
+static const int CAMPAIGN_REMOUNT_SETTLE_MSEC = 400;
+
 void idSessionLocal::SelectCampaign( const char *campaign, bool start, bool chapters ) {
 #ifndef ID_DEDICATED
     const bool awakening = !idStr::Icmp( campaign, "awakening" );
@@ -7354,18 +7397,45 @@ void idSessionLocal::SelectCampaign( const char *campaign, bool start, bool chap
     // Consume one-shot command-line overrides before a full engine restart.
     common->StartupVariable( "si_gameType", true );
     if ( Session_CampaignNeedsReload( gameDir, gameBase ) ) {
-        cvarSystem->SetCVarString( "fs_game", gameDir );
-        cvarSystem->SetCVarString( "fs_game_base", gameBase );
+        if ( campaignRemounting ) {
+            // The switch just ran and the mount still differs (the filesystem
+            // refused the directories): stay on this campaign's page rather
+            // than switching again and again.
+            common->Warning( "The %s campaign could not be mounted (fs_game '%s', fs_game_base '%s')", campaign,
+                cvarSystem->GetCVarString( "fs_game" ), cvarSystem->GetCVarString( "fs_game_base" ) );
+            campaignRemounting = false;
+            OpenCampaignSelector( true );
+            return;
+        }
         cvarSystem->SetCVarString( "si_gameType", "singleplayer" );
-        cvarSystem->SetCVarString( "com_nextGameModule", "game_sp" );
-        idCmdArgs continuation;
-        continuation.AppendArg( "campaignSelect" );
-        continuation.AppendArg( campaign );
-        if ( start ) continuation.AppendArg( "start" );
-        else if ( chapters ) continuation.AppendArg( "chapters" );
-        cmdSystem->SetupReloadEngineMenu( continuation );
+        if ( start ) {
+            // START on a page opened ahead of the switch: this request makes it
+            pendingRemountPage = NULL;
+            pendingRemountQueued = false;
+        }
+        if ( CanRemountCampaign() ) {
+            if ( !start && !chapters && !arena && OpenRetainedCampaignSkill( awakening ? 1 : 0 ) ) {
+                // The campaign's difficulty page scrolls in at once, titled for
+                // it, and the switch runs once the page rests
+                // (UpdatePendingCampaignRemount): the brief hold falls on a
+                // still page instead of cutting the transition. The page
+                // holds nothing of the campaign's content; CHAPTERS does, so
+                // that page opens after the switch.
+                pendingRemountPage = guiActive;
+                pendingRemountCampaign = campaign;
+                pendingRemountAt = common->GetPresentationTime() + CAMPAIGN_REMOUNT_SETTLE_MSEC;
+                return;
+            }
+            // In place, between frames: never inside the interface's own
+            // dispatch, whose GUIs the switch may load again.
+            cmdSystem->BufferCommandText( CMD_EXEC_APPEND, va( "campaignRemount %s%s\n", campaign,
+                start ? " start" : chapters ? " chapters" : "" ) );
+            return;
+        }
+        ReloadEngineForCampaign( campaign, gameDir, gameBase, start, chapters );
         return;
     }
+    campaignRemounting = false;
     common->Printf( "CAMPAIGN_SELECTED id=%s gameDir=%s module=%s\n", campaign, gameDir,
         cvarSystem->GetCVarString( "com_activeGameModule" ) );
     if ( start && !arena ) {
@@ -7400,6 +7470,143 @@ void idSessionLocal::SelectCampaign( const char *campaign, bool start, bool chap
 #endif
 }
 
+/*
+==============
+idSessionLocal::CanRemountCampaign
+
+Whether a campaign switch can change the game directories in place
+(Com_RemountCampaign) rather than reload the engine: single player at the
+menu, with no level, demo, server or connection running. com_campaignRemount 0
+always reloads the engine, as every switch did before.
+==============
+*/
+bool idSessionLocal::CanRemountCampaign() const {
+#ifdef ID_DEDICATED
+    return false;
+#else
+    return com_campaignRemount.GetBool() && game != NULL && !mapSpawned && !insideExecuteMapChange &&
+        !loadingSaveGame && !readDemo && !writeDemo && !IsDemoPlaybackActive() && !com_editorActive &&
+        !idAsyncNetwork::IsActive() && !com_SingleDeclFile.GetBool() &&
+        !idStr::Icmp( cvarSystem->GetCVarString( "com_activeGameModule" ), "game_sp" ) &&
+        !cvarSystem->GetCVarString( "com_nextGameModule" )[0];
+#endif
+}
+
+void idSessionLocal::ReloadEngineForCampaign( const char *campaign, const char *gameDir, const char *gameBase, bool start, bool chapters ) {
+    cvarSystem->SetCVarString( "fs_game", gameDir );
+    cvarSystem->SetCVarString( "fs_game_base", gameBase );
+    cvarSystem->SetCVarString( "si_gameType", "singleplayer" );
+    cvarSystem->SetCVarString( "com_nextGameModule", "game_sp" );
+    idCmdArgs continuation;
+    continuation.AppendArg( "campaignSelect" );
+    continuation.AppendArg( campaign );
+    if ( start ) continuation.AppendArg( "start" );
+    else if ( chapters ) continuation.AppendArg( "chapters" );
+    cmdSystem->SetupReloadEngineMenu( continuation );
+}
+
+/*
+==============
+idSessionLocal::RemountCampaign
+
+The queued half of a campaign switch (campaignRemount): mount the campaign's
+game directories in place, then carry on into its page or its first level as
+SelectCampaign would have. Anything that changed since the request was queued
+takes the engine reload instead.
+==============
+*/
+void idSessionLocal::RemountCampaign( const char *campaign, bool start, bool chapters, idUserInterface *page ) {
+#ifndef ID_DEDICATED
+    const bool awakening = !idStr::Icmp( campaign, "awakening" );
+    const bool arena = !idStr::Icmp( campaign, "arena" );
+    idStr gameDir, gameBase;
+    Session_CampaignGameDirs( awakening, arena, gameDir, gameBase );
+    if ( !Session_CampaignNeedsReload( gameDir, gameBase ) ) {
+        SelectCampaign( campaign, start, chapters );
+        return;
+    }
+    if ( !CanRemountCampaign() ) {
+        ReloadEngineForCampaign( campaign, gameDir, gameBase, start, chapters );
+        return;
+    }
+    cvarSystem->SetCVarString( "si_gameType", "singleplayer" );
+    if ( !Com_RemountCampaign( gameDir, gameBase ) ) {
+        // part way through: the engine reload finishes the switch
+        ReloadEngineForCampaign( campaign, gameDir, gameBase, start, chapters );
+        return;
+    }
+    CampaignRemounted();
+    if ( page != NULL && guiActive == page ) {
+        // the difficulty page already on screen keeps the difficulty and
+        // turbo choice it holds; it only learns the mounted campaign
+        page->SetStateString( "campaign_title", Session_AwakeningPageActive() ? "#str_230040" : "#str_230039" );
+        page->StateChanged( common->GetPresentationTime() );
+        common->Printf( "CAMPAIGN_SELECTED id=%s gameDir=%s module=%s\n", campaign, fileSystem->GetActiveGameDir(),
+            cvarSystem->GetCVarString( "com_activeGameModule" ) );
+    } else {
+        campaignRemounting = true;
+        SelectCampaign( campaign, start, chapters );
+    }
+    if ( com_campaignSwitchExec.GetString()[0] ) {
+        // test harnesses carry on from here, as g_autoExecAfterMapLoad after a load
+        cmdSystem->BufferCommandText( CMD_EXEC_APPEND, va( "exec %s\n", com_campaignSwitchExec.GetString() ) );
+    }
+#endif
+}
+
+/*
+==============
+idSessionLocal::UpdatePendingCampaignRemount
+
+The difficulty page of a campaign not yet mounted is on screen: once it has
+come to rest, queue the switch (campaignRemount), which fills the page in place.
+Leaving the page first, by Back or anything else, cancels the switch: nothing
+of the other campaign was mounted.
+==============
+*/
+void idSessionLocal::UpdatePendingCampaignRemount() {
+#ifndef ID_DEDICATED
+    if ( pendingRemountPage == NULL || pendingRemountQueued ) {
+        return;
+    }
+    if ( guiActive != pendingRemountPage || retainedSubpageFrom != NULL || mapSpawned ) {
+        if ( cvarSystem->GetCVarBool( "ui_retainedTrace" ) ) {
+            common->Printf( "CAMPAIGN_SWITCH cancelled to=%s: the page was left first\n", pendingRemountCampaign.c_str() );
+        }
+        pendingRemountPage = NULL;
+        pendingRemountCampaign.Clear();
+        return;
+    }
+    if ( common->GetPresentationTime() < pendingRemountAt ) {
+        return;
+    }
+    pendingRemountQueued = true;
+    cmdSystem->BufferCommandText( CMD_EXEC_APPEND, va( "campaignRemount %s\n", pendingRemountCampaign.c_str() ) );
+#endif
+}
+
+/*
+==============
+idSessionLocal::CampaignRemounted
+
+The session after a campaign remount: the game module, the decls and the
+filesystem are the new campaign's, the open page is still on screen. Forget what
+was worked out for the old campaign and bring the menu music back (the switch
+stopped every sound; the menu's music is now the new campaign's).
+==============
+*/
+void idSessionLocal::CampaignRemounted() {
+#ifndef ID_DEDICATED
+    retainedPauseStrogg = -1;
+    // The main menu's own timeline plays it only while that menu runs; the
+    // page on screen is a sub-page, so start it here as its "music" command
+    // does. The campaign's sound shaders choose the track.
+    if ( menuSoundWorld != NULL && !mapSpawned ) {
+        menuSoundWorld->PlayShaderDirectly( "main_menu", 2 );
+    }
+#endif
+}
+
 // The CHAPTERS page: the active campaign's levels, the chosen one focused.
 bool idSessionLocal::OpenRetainedCampaignChapters() {
 #ifdef ID_DEDICATED
@@ -7415,7 +7622,7 @@ bool idSessionLocal::OpenRetainedCampaignChapters() {
 #endif
 }
 
-bool idSessionLocal::OpenRetainedCampaignSkill() {
+bool idSessionLocal::OpenRetainedCampaignSkill( int awakeningTitle ) {
 #ifdef ID_DEDICATED
     return false;
 #else
@@ -7424,7 +7631,8 @@ bool idSessionLocal::OpenRetainedCampaignSkill() {
     if ( !gui ) return false;
     Session_SetCampaignPageSkill( gui, cvarSystem->GetCVarInteger( "g_skill" ), false );
     gui->SetStateBool( "turbo", false );
-    gui->SetStateString( "campaign_title", Session_AwakeningPageActive() ? "#str_230040" : "#str_230039" );
+    const bool awakening = awakeningTitle < 0 ? Session_AwakeningPageActive() : awakeningTitle != 0;
+    gui->SetStateString( "campaign_title", awakening ? "#str_230040" : "#str_230039" );
     SetGUI( gui, NULL );
     gui->StateChanged( common->GetPresentationTime() );
     return true;
@@ -9021,9 +9229,146 @@ the page and returns to it; BACK returns the title, from the page dock as from
 a stock page. A page or a change of level under way takes no further request.
 ===============
 */
+#ifndef ID_DEDICATED
+// The weapon order dialog (WEAPON ORDER, on Player Setup and the multiplayer
+// card's Settings page): the weapons ui_weaponOrder ranks, by the game's
+// weapon names and their stock labels, in the default order Use Weapon Order
+// starts from (the strongest first). The game reads the setting itself
+// (src/mpgame/mp/WeaponOrder.h); a name or alias it lists that the dialog
+// does not know keeps its place no longer once the dialog moves a weapon.
+// RETAINED_WEAPON_ORDER is WEAPON_ORDER_ROWS in tools/ui/retained_player_setup.py.
+typedef struct retainedWeaponOrder_s {
+	const char *	name;
+	const char *	alias;
+	const char *	label;
+} retainedWeaponOrder_t;
+static const retainedWeaponOrder_t RETAINED_WEAPON_ORDER[] = {
+	{ "dmg",				"bfg",	"#str_200113" },
+	{ "railgun",			"rg",	"#str_200111" },
+	{ "rocketlauncher",		"rl",	"#str_200110" },
+	{ "lightninggun",		"lg",	"#str_200112" },
+	{ "napalmgun",			"nap",	"#str_222001" },
+	{ "hyperblaster",		"hb",	"#str_200107" },
+	{ "nailgun",			"ng",	"#str_200109" },
+	{ "grenadelauncher",	"gl",	"#str_200108" },
+	{ "shotgun",			"sg",	"#str_200105" },
+	{ "machinegun",			"mg",	"#str_200106" },
+};
+static const int RETAINED_WEAPON_ORDER_COUNT = static_cast<int>( sizeof( RETAINED_WEAPON_ORDER ) / sizeof( RETAINED_WEAPON_ORDER[0] ) );
+static int retainedWeaponOrderPicked = -1;
+
+// The order ui_weaponOrder gives, as rows of RETAINED_WEAPON_ORDER: the
+// weapons it names in its order (by name, "weapon_" name, "_mp" name or
+// alias), then the others in the default order. False when it is blank.
+static bool Session_WeaponOrder( int order[ RETAINED_WEAPON_ORDER_COUNT ] ) {
+	const idCmdArgs args( cvarSystem->GetCVarString( "ui_weaponOrder" ), false );
+	bool listed[ RETAINED_WEAPON_ORDER_COUNT ] = {};
+	int count = 0;
+	for ( int token = 0; token < args.Argc(); token++ ) {
+		idStr name = args.Argv( token );
+		name.ToLower();
+		name.StripLeadingOnce( "weapon_" );
+		name.StripTrailingOnce( "_mp" );
+		for ( int i = 0; i < RETAINED_WEAPON_ORDER_COUNT; i++ ) {
+			if ( !listed[ i ] && ( name == RETAINED_WEAPON_ORDER[ i ].name || name == RETAINED_WEAPON_ORDER[ i ].alias ) ) {
+				listed[ i ] = true;
+				order[ count++ ] = i;
+				break;
+			}
+		}
+	}
+	const bool any = args.Argc() > 0;
+	for ( int i = 0; i < RETAINED_WEAPON_ORDER_COUNT; i++ ) {
+		if ( !listed[ i ] ) {
+			order[ count++ ] = i;
+		}
+	}
+	return any;
+}
+
+static void Session_SetWeaponOrder( const int order[ RETAINED_WEAPON_ORDER_COUNT ] ) {
+	idStr text;
+	for ( int i = 0; i < RETAINED_WEAPON_ORDER_COUNT; i++ ) {
+		if ( i > 0 ) {
+			text += " ";
+		}
+		text += RETAINED_WEAPON_ORDER[ order[ i ] ].name;
+	}
+	cvarSystem->SetCVarString( "ui_weaponOrder", text.c_str() );
+}
+
+// The dialog's state: whether an order is set, the weapons by rank and the
+// one picked to move.
+static void Session_PublishWeaponOrder( idUserInterface *gui ) {
+	int order[ RETAINED_WEAPON_ORDER_COUNT ];
+	const bool on = Session_WeaponOrder( order );
+	gui->SetStateBool( "order.on", on );
+	for ( int i = 0; i < RETAINED_WEAPON_ORDER_COUNT; i++ ) {
+		gui->SetStateString( va( "order.row%d", i ), common->GetLocalizedString( RETAINED_WEAPON_ORDER[ order[ i ] ].label ) );
+	}
+	gui->SetStateInt( "order.picked", on ? retainedWeaponOrderPicked : -1 );
+	gui->StateChanged( common->GetPresentationTime() );
+}
+
+// The dialog's requests, on whichever page shows it: weaponOrderOpen
+// publishes it with nothing picked; weaponOrderPick takes the row in
+// order.pick: the first picks it, a second row moves the picked weapon there
+// and the picked row again puts it back; weaponOrderEnable sets an order (the
+// one shown) or clears the setting; weaponOrderReset sets the default order.
+static bool Session_WeaponOrderRequest( idUserInterface *gui, const char *request ) {
+	if ( gui == NULL || request == NULL || idStr::Icmpn( request, "weaponOrder", 11 ) != 0 ) {
+		return false;
+	}
+	int order[ RETAINED_WEAPON_ORDER_COUNT ];
+	const bool on = Session_WeaponOrder( order );
+	if ( !idStr::Icmp( request, "weaponOrderOpen" ) ) {
+		retainedWeaponOrderPicked = -1;
+	} else if ( !idStr::Icmp( request, "weaponOrderPick" ) ) {
+		const int row = gui->State().GetInt( "order.pick", "-1" );
+		if ( on && row >= 0 && row < RETAINED_WEAPON_ORDER_COUNT ) {
+			if ( retainedWeaponOrderPicked < 0 || retainedWeaponOrderPicked >= RETAINED_WEAPON_ORDER_COUNT ) {
+				retainedWeaponOrderPicked = row;
+			} else if ( retainedWeaponOrderPicked == row ) {
+				retainedWeaponOrderPicked = -1;
+			} else {
+				const int moved = order[ retainedWeaponOrderPicked ];
+				const int step = row > retainedWeaponOrderPicked ? 1 : -1;
+				for ( int i = retainedWeaponOrderPicked; i != row; i += step ) {
+					order[ i ] = order[ i + step ];
+				}
+				order[ row ] = moved;
+				retainedWeaponOrderPicked = -1;
+				Session_SetWeaponOrder( order );
+			}
+		}
+	} else if ( !idStr::Icmpn( request, "weaponOrderEnable ", 18 ) ) {
+		retainedWeaponOrderPicked = -1;
+		if ( atoi( request + 18 ) != 0 ) {
+			Session_SetWeaponOrder( order );
+		} else {
+			cvarSystem->SetCVarString( "ui_weaponOrder", "" );
+		}
+	} else if ( !idStr::Icmp( request, "weaponOrderReset" ) ) {
+		retainedWeaponOrderPicked = -1;
+		for ( int i = 0; i < RETAINED_WEAPON_ORDER_COUNT; i++ ) {
+			order[ i ] = i;
+		}
+		Session_SetWeaponOrder( order );
+	} else {
+		return false;
+	}
+	Session_PublishWeaponOrder( gui );
+	return true;
+}
+#endif
+
 void idSessionLocal::HandleRetainedMultiplayerPageRequest( idUserInterface *gui, const char *request ) {
 #ifndef ID_DEDICATED
 	if ( retainedMpPageDest != 0 || retainedSubpageFrom != NULL || guiMainMenu == NULL ) {
+		return;
+	}
+	// Player Setup's WEAPON ORDER dialog.
+	if ( Session_WeaponOrderRequest( gui, request ) ) {
 		return;
 	}
 	if ( !idStr::Icmpn(request,openq4::ui::PlayerSetupRequestPrefix,sizeof(openq4::ui::PlayerSetupRequestPrefix)-1) ) {
@@ -9494,6 +9839,17 @@ static int Session_RetainedCreateValue( const retainedCreateSetting_t &setting )
 	if ( !idStr::Icmp( setting.verb, "createPreset" ) ) {
 		return Session_RetainedCreatePreset();
 	}
+	if ( !idStr::Icmp( setting.verb, "createMaxBrightskin" ) ) {
+		// The nearest level: a console value between two shows the nearer.
+		const float limit = cvarSystem->GetCVarFloat( "si_maxBrightskin" );
+		int nearest = 0;
+		for ( int i = 1; i < 4; ++i ) {
+			if ( idMath::Fabs( limit - RETAINED_CREATE_BRIGHTSKIN_LEVELS[ i ] ) < idMath::Fabs( limit - RETAINED_CREATE_BRIGHTSKIN_LEVELS[ nearest ] ) ) {
+				nearest = i;
+			}
+		}
+		return nearest;
+	}
 	return idMath::ClampInt( setting.minimum, setting.maximum, cvarSystem->GetCVarInteger( setting.cvar ) );
 }
 
@@ -9512,6 +9868,10 @@ static void Session_SetRetainedCreateValue( const retainedCreateSetting_t &setti
 	}
 	if ( !idStr::Icmp( setting.verb, "createPreset" ) ) {
 		Session_SetRetainedCreatePreset( value );
+		return;
+	}
+	if ( !idStr::Icmp( setting.verb, "createMaxBrightskin" ) ) {
+		cvarSystem->SetCVarFloat( "si_maxBrightskin", RETAINED_CREATE_BRIGHTSKIN_LEVELS[ idMath::ClampInt( 0, 3, value ) ] );
 		return;
 	}
 	cvarSystem->SetCVarInteger( setting.cvar, value );
@@ -11760,6 +12120,10 @@ void idSessionLocal::HandleRetainedMultiplayerRequest( idUserInterface *gui, con
 	if ( gui == NULL || request == NULL || gui != guiRetainedMultiplayer || !RetainedMultiplayerCovers() || game == NULL ) {
 		return;
 	}
+	// The Settings page's WEAPON ORDER dialog.
+	if ( Session_WeaponOrderRequest( gui, request ) ) {
+		return;
+	}
 	if ( !idStr::Icmp( request, "mpSummaryChat" ) ) {
 		// The summary's chat field starts typing, which the session owns.
 		if ( RetainedSummaryCovers() ) {
@@ -12008,6 +12372,8 @@ void idSessionLocal::HandleRetainedMultiplayerRequest( idUserInterface *gui, con
 		command = "mainMenu fromMp_toGameoptions";
 	} else if ( !idStr::Icmp( request, "mpSettingsSystem" ) ) {
 		command = "mainMenu fromMp_toSystem";
+	} else if ( !idStr::Icmp( request, "mpSettingsAudio" ) ) {
+		command = "mainMenu fromMp_toAudio";
 	} else if ( !idStr::Icmp( request, "mpClose" ) ) {
 		command = "close";
 	} else if ( !idStr::Icmp( request, "mpMainMenu" ) ) {

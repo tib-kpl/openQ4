@@ -2101,6 +2101,23 @@ failure on different hardware. A separate discrepancy is visible: console
 System page continues to display its old `Balanced` selection. Its binding
 refresh and the full interactive apply flow remain separate work under UI-01.
 
+## Menus in motion, 20 November 2026
+
+Measured with each page's opening animations playing rather than settled
+([menu frame costs](menu-frame-costs.md)): the Awakening pages' drifting
+snow recompiled every frame (about 10 ms of CPU a frame, 2,100 draws), a
+dialog's glow tessellated its turning mask and relaid out the page behind it
+every frame. A vector that keeps sliding now compiles at half-pixel phases
+its cache holds, a vector of 16 paths or more draws its paths as one or two
+geometries, each glow pulse turns under one linear-mask wedge, and a vector
+leaf's fade updates its layer's opacity without a layout pass. The Awakening
+pause fell to 0.24 ms and 167 draws a frame in the benchmark. A shown toggle,
+slider or list no longer forces a style and layout pass every frame: its
+view repaints after a state change, so GAME OPTIONS, DISPLAY and AUDIO take
+none at rest. Number fields and scrollbars at rest take none either (Create
+Server 0.79 to 0.05 ms); only a field being edited, a held pointer or
+RmlUi's own requested update keeps one a frame.
+
 ## Remaining requirements
 
 Fractional motion and cold compilation still need optimized-build profiling,

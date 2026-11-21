@@ -1625,11 +1625,11 @@ there only `ui_retainedMultiplayer 1` offers the page.
   server spawns.
 - **Fallback.** In game, or where the page is not installed, cannot load or
   stops drawing, CREATE SERVER opens the stock page.
-- **Captures.** `createserver` goes deeper, chooses CTF, opens ADVANCED
-  OPTIONS, turns Use Password on and types a password, which shows as its
+- **Captures.** `createserver` goes deeper, chooses CTF, shows the SERVER
+  tab, turns Use Password on and types a password, which shows as its
   mask while editing and once the session has taken it, opens the seeded
-  ban list, removes the second ban and closes it, closes the dialog and
-  climbs back; `createserverstart` chooses Team DM and starts a listen server
+  ban list, removes the second ban and closes it, shows RULES and MODIFIERS
+  and climbs back; `createserverstart` chooses Team DM and starts a listen server
   on the loopback, following the reloaded module.
 
 ## Spectate on Join Game (3 November 2026)
@@ -2241,6 +2241,142 @@ rows and their settings are gone, and that View Weapon stands under Crosshair.
 The gate keeps each stock GAME OPTIONS setting on one page and pins the
 binding-row-only Delete.
 
+## The multiplayer menu tree audit (20 November 2026)
+
+A review of every multiplayer page, its options and their widgets, against
+what multiplayer now offers (MP-12 to MP-16), found settings the console
+alone reached, a second level that hid most of Create Server, and two
+in-match plates that named the wrong pages. The retained pages now read:
+
+- **CREATE SERVER, one level.** The stock page showed eleven settings and
+  kept the rest behind ADVANCED OPTIONS, a dialog that had grown four tabs.
+  Every setting now stands on the page under the multiplayer card's tab
+  strip over the settings column (Q and E, or the shoulder buttons): MATCH
+  (the game type first, its limits, the round limit in the round modes,
+  Max and Min Players, Fill With Bots and Bot Skill, Warmup, Ready Up, Map
+  Rotation and Map Requests), RULES (the ruleset and its hook, the team
+  settings, Weapon Stay, Buying, the overtime period, the mercy lead, Item
+  Timers, Allow Spectators and the Spectator Lock), MODIFIERS (the preset,
+  the modifiers, the arena, powerups, weapon respawn and the three scales)
+  and SERVER (name, type, Dedicated, the passwords, voting, voice, Idle
+  Timeout, Pure, server mods, the rate and the ban list, which opens PLAYER
+  BAN LIST over the page). Thirteen rows show; a longer tab scrolls. Each
+  arrival shows MATCH. Rows dim where they cannot act: the team rows outside
+  team modes, the hook under Quake 4's rules, the spectator lock with no
+  spectators, the rules a fixed loadout overrides; the map cycle script's
+  name shows only while Map Rotation runs it. Time Limit, Max and Min
+  Players, the round limit and Timeouts per Team are sliders (they were
+  typed fields, which a controller could only reach through the on-screen
+  keyboard); the open-ended counts stay fields. New rows: Map Rotation
+  (`g_mapRotation`), Map Requests (`g_mapQueue`), Item Timers
+  (`si_itemTimers`), Timeouts per Team (`si_timeouts`), Spectator Lock
+  (`si_spectatorLock`) and Idle Timeout (`g_inactivity`), declared for the
+  menu with game_mp's defaults (`Session_DeclareMultiplayerMenuGameCVars`)
+  as are `si_overtime`, `si_mercyLimit` and `si_roundLimit`, which read 0 at
+  the menu before. Overtime takes its title-case label, "Overtime Period
+  (Seconds)".
+- **What players may show and the weapon order** (the same day, by user
+  request): Create Server's RULES gains Highlight Limit (`si_maxBrightskin`
+  as Off, Low, Medium or High, the session mapping the levels 0, 0.35, 0.7
+  and 1) and Allow Forced Models (`si_forcedModels`); Player Setup's PLAYER
+  tab and the in-match Settings page's PLAYER section gain Weapon Order,
+  which opens WEAPON ORDER over the page ([multiplayer menus](multiplayer-menus.md#the-settings-page)).
+- **PLAYER SETUP, a HUD tab.** The MP-15 HUD options (Hit Sound, Crosshair
+  Names, Crosshair Ammo, Item Timers, Team Locations, Local Clock) and the
+  MP-16 spectating ones (Spectator Speed, Follow View), which the console
+  alone set, as `settings.player.set` rows. The rows grew to 612 dp from
+  40 dp in so the four tabs fit Brazilian Portuguese, still clear of the
+  preview's bay; a tall view caps their scale at the column's width.
+- **The in-match Settings page, three sections** (PLAYER, APPEARANCE, HUD)
+  on the Match page's inner strip, the triggers stepping them; its plates
+  are Controls, Game Options, Display and Audio (System named the page the
+  main menu calls Display, and Audio had no way there). The Welcome card's
+  Settings page sets the four plates two by two.
+- **The Vote page** offers the casual votes: Skip to Next Map, Random Map,
+  the round limit, the overtime period, the ruleset, Instagib, Ready
+  Everyone and a coin toss, grouped with the stock fields by what they
+  change, in a column that scrolls. The game's `retainedVoteField_t` carries
+  them after the kick, so the Admin page's fields are unchanged.
+- **The Server page** names the rules the match is played by (the ruleset
+  and the modifiers) and hides MAP ROTATION's heading when the server lists
+  no rotation.
+- **The Match page's reasons** stand on their row's middle line; they hung
+  from the row's top.
+
+Considered and left: a fifth Create Server tab for players and access (five
+tabs need 669 dp in Brazilian Portuguese, past the column's 566 dp); moving
+the map list into a tab (the levelshot and list stay beside every tab, so
+the map is never out of sight); folding OPPONENTS and TEAMMATES into one
+table on Player Setup (its 45 dp rows have no room for two columns); and
+votes for modifiers and presets, which have no vote flags yet (MP-12).
+
+Thirty-three strings (`#str_232600` to `#str_232632`) are new in all twelve
+languages. The classic menus (`ui_retained 0`) keep the stock layout.
+`openq4-ui-retained-screens` (`mp-pages`, `mp-vote-match`, `mp-card`,
+`mp-settings-welcome`) checks the tabs, rows, gates, sections and the new
+vote rows; `mp_bot_server_menu.py` checks every menu-declared CVar's default
+against game_mp's.
+
+## The settings tree audit (20 November 2026)
+
+A review of every settings sub-page, its tabs, sections and widget types,
+found rows grouped by when they were added rather than by what they change.
+The retained pages now read:
+
+- **GAME OPTIONS, five tabs.** GENERAL (GAMEPLAY / INTERFACE and ITEMS AND
+  PLAYERS), HUD (HUD / CROSSHAIR), VIEW WEAPON (Show Gun, Gun Position and
+  the X, Y and Z offsets / Weapon FOV, Weapon FOV Aspect, Weapon Kick),
+  ACCESSIBILITY (MOTION: View Kick, Screen Shake, Cinematic Shake /
+  VISIBILITY: Reduced Flashing, Opaque Menu Backing) and VIRTUAL REALITY.
+  Before, GENERAL mixed weapon handling, presentation, multiplayer looks and
+  comfort; its GAMEPLAY section held Language, Console Access and Screenshot
+  Format; Show Gun and Gun Position stood two tabs away from the view weapon's
+  other rows; and the comfort rows were spread over three sections.
+- **VR Mode, Room Scale, Two-Handed Grip and Physical Crouch are toggles**,
+  as every other on/off row is; they were Disabled/Enabled lists. Their
+  `settings.player.set` allowlist entries (`FindPlayerSetting`) are Boolean
+  now, which the toggles' Boolean values need. The stock page keeps its
+  lists.
+- **CONTROLS' device tabs have headings.** MOUSE: AIM (Free Look, Invert
+  Mouse, Toggle Zoom, Scope Sensitivity) and MOUSE INPUT (Sensitivity, CPI,
+  Smoothing, View Filter) / ACCELERATION. CONTROLLER: STICKS and PROMPTS /
+  TRIGGERS AND RUMBLE and GYRO AND TOUCH. Sensitivity and the CPI that scales
+  it had stood in different columns, and the low battery rumble rows were
+  apart from Rumble.
+- **AUDIO's subtitle rows have their own SUBTITLES heading**; under EFFECTS
+  they read as sound effects.
+- **DISPLAY, four tabs.** GRAPHICS (unchanged), SCREEN (DISPLAY with V-Sync
+  and the new Frame Rate Cap / DISPLAY SIZING), IMAGE QUALITY (Brightness,
+  Resolution Scale, MSAA with its notes, Post AA Mode and the new Anisotropic
+  Filtering / RENDERING: the three Enable rows and the ambient light) and
+  EFFECTS (LIGHTING: Enable Shadows, the new Shadow Maps, Character
+  Self-Shadows, Irradiance Volumes, Preload Light Grids / POST-PROCESSING:
+  Bloom, SSAO, HDR Tonemap, the new Motion Blur, CRT Emulation). MSAA had
+  stood on SCREEN while Post AA was on IMAGE QUALITY. The four new rows edit
+  settings the performance presets already set (`com_maxfps`,
+  `image_anisotropy`, `r_useShadowMap`, `r_motionBlur`), which players had
+  reached only through a preset or the console. All four were in the SYSTEM
+  catalog and its EDITS list with the Immediate effect, so the catalog, its
+  effect plan and the journal are unchanged. Shadow Maps acts only while
+  Enable Shadows is on, and Character Self-Shadows only while Shadow Maps is
+  on too, since it acts only under shadow-mapped lights. A frame cap the list
+  lacks (a console value, or Auto-Detect's display refresh on a power-limited
+  device) shows no choice until one is picked.
+
+Considered and left: a seventh CONTROLS tab splitting gyro and touch off
+CONTROLLER (its twenty rows fit two headed columns of eleven, and the strip
+is full in German); tabs on AUDIO (one screen holds it); and an ACCESSIBILITY
+section on the SETTINGS page itself, which would need a fifth sub-page and
+session kind while the subtitle rows belong with the audio they caption.
+
+Twenty strings (`#str_232542` to `#str_232560`) are new in all twelve
+languages. The classic menus (`ui_retained 0`) keep the stock layout.
+`openq4-ui-retained-game`, `openq4-ui-retained-controls` and
+`openq4-ui-system-presets` check the new tabs, columns and gates; the
+CONTROLS check also had stale binding indices from Last Weapon (11-17),
+which made it stop at its first assertion. The capture harness's
+`settings-tree` scenario screenshots every tab of every page.
+
 ## The AUDIO page (25 October 2026)
 
 The settings screen's AUDIO button opens a retained AUDIO page while the
@@ -2443,9 +2579,11 @@ as Create Server is, and no page shows more than two columns of rows.
 
 | Page | Tabs and columns |
 | --- | --- |
-| CONTROLS | MOVEMENT, WEAPONS, ATTACK/LOOK, OTHER, each tab's bindings split over two columns with the key hint on the heading line; MOUSE (aim / mouse), CONTROLLER (sticks and look / rumble, gyro, touch and prompts) |
-| GAME OPTIONS | GENERAL (general / gameplay), HUD (HUD / crosshair and view weapon), VIRTUAL REALITY |
-| AUDIO | No tabs: LEVELS and DEVICES / EFFECTS |
+| CONTROLS | MOVEMENT, WEAPONS, ATTACK/LOOK, OTHER, each tab's bindings split over two columns with the key hint on the heading line; MOUSE (aim and mouse input / acceleration), CONTROLLER (sticks and prompts / triggers and rumble, gyro and touch) |
+| GAME OPTIONS | GENERAL (gameplay / interface, items and players), HUD (HUD / crosshair), VIEW WEAPON (its place / its view), ACCESSIBILITY (motion / visibility), VIRTUAL REALITY |
+| AUDIO | No tabs: LEVELS and DEVICES / EFFECTS and SUBTITLES |
+
+The table is the layout after the settings tree audit of 20 November 2026.
 
 GAME OPTIONS lost its Section row: the tabs do its job. After a language
 reload the page returns to GENERAL, on Language, from whichever tab was
@@ -2531,8 +2669,11 @@ construction CONTROLS, GAME OPTIONS and AUDIO use, generated by
 | Tab | First column | Second column |
 | --- | --- | --- |
 | GRAPHICS | Performance Preset, Auto-Detect, Rendering backend, Rendering device, Renderer Fallback and its fallback line, Restart renderer (while a change waits), the active renderer and the device notice | INTERFACE: UI scale, Text size, UI Aspect, Reset UI sizes and the fit note |
-| SCREEN | DISPLAY: Display Device and Expand Across Displays (with several displays), the span's reason line, Fullscreen, Borderless Window, Fullscreen Policy, MSAA, V-Sync | DISPLAY SIZING: Window Width and Height, Display Resolution, the custom-size hint, Custom FS Width and Height, Refresh Rate |
-| IMAGE QUALITY | IMAGE QUALITY: Brightness, the five Enable rows, Bloom, SSAO, HDR Tonemap, Post AA Mode, Resolution Scale | RENDERING: Force ambient light, Ambient brightness, CRT Emulation, Irradiance Volumes, Preload Light Grids with its help and the map's light-grid status |
+| SCREEN | DISPLAY: Display Device and Expand Across Displays (with several displays), the span's reason line, Fullscreen, Borderless Window, Fullscreen Policy, V-Sync, Frame Rate Cap | DISPLAY SIZING: Window Width and Height, Display Resolution, the custom-size hint, Custom FS Width and Height, Refresh Rate |
+| IMAGE QUALITY | IMAGE QUALITY: Brightness, Resolution Scale, MSAA with its help and clamp lines, Post AA Mode, Anisotropic Filtering | RENDERING: Enable Specular, Enable Bump Maps, Enable Detailed Sky, Force ambient light, Ambient brightness |
+| EFFECTS | LIGHTING: Enable Shadows, Shadow Maps, Character Self-Shadows, Irradiance Volumes, Preload Light Grids with its help and the map's light-grid status | POST-PROCESSING: Bloom, SSAO, HDR Tonemap, Motion Blur, CRT Emulation |
+
+The table is the layout after the settings tree audit of 20 November 2026; MSAA was on SCREEN and EFFECTS' rows on IMAGE QUALITY before it.
 
 - **What it keeps.** Everything the page did is unchanged: the settings
   service's `settings.system.*` operations and its `settings.*` state, the

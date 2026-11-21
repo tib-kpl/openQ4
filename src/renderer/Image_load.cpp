@@ -556,7 +556,7 @@ static ID_INLINE bool R_BinaryImageHeaderSupportedByRenderer( const bimageFile_t
 	if ( ( format == FMT_DXT1 || format == FMT_DXT5 ) && !glConfig.textureCompressionAvailable ) {
 		return false;
 	}
-	if ( format == FMT_BC7 && !glConfig.bptcTextureCompressionAvailable ) {
+	if ( IsBPTCFormat( format ) && !glConfig.bptcTextureCompressionAvailable ) {
 		return false;
 	}
 	if ( ( format == FMT_ETC2_RGB8 || format == FMT_ETC2_RGBA8 || format == FMT_EAC_RG11 ) &&
@@ -953,7 +953,16 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 		}
 		if ( R_IsPreferredDDSStale( preferredDDSName, preferredDDSFileTime, originalSourceTime ) ) {
 			if ( cvarSystem->GetCVarBool( "image_showPrecompressedTextures" ) ) {
-				common->Printf( "Ignoring stale DDS replacement %s for %s\n", preferredDDSName.c_str(), GetName() );
+				// Say which file won: a pk4 member never makes a DDS stale, so it
+				// is always a loose file, and players otherwise have to guess
+				// which of their folders holds it (#217).
+				idStr loosePaths;
+				if ( R_DescribeLooseImageSources( GetName(), loosePaths ) > 0 ) {
+					common->Printf( "Ignoring stale DDS replacement %s for %s: newer loose source %s\n",
+						preferredDDSName.c_str(), GetName(), loosePaths.c_str() );
+				} else {
+					common->Printf( "Ignoring stale DDS replacement %s for %s\n", preferredDDSName.c_str(), GetName() );
+				}
 			}
 			preferredDDSImage = false;
 			preferredDDSPrecompressed = false;
@@ -1423,6 +1432,42 @@ void idImage::Bind() {
 		}
 	}
 
+}
+
+/*
+================
+R_BindUntrackedTextureUnit
+
+Binds a texture to a unit past the tracked ones (idImage::BindUntracked), or
+with texture 0 unbinds the unit's 2D and cube targets. The active unit is
+restored to the tracked one, so GL_SelectTexture's filter stays true.
+================
+*/
+void R_BindUntrackedTextureUnit( int texUnit, unsigned int target, unsigned int texture ) {
+	if ( texture != 0 && glConfig.backendCaps.hasDSA && glBindTextureUnit != NULL ) {
+		glBindTextureUnit( static_cast<GLuint>( texUnit ), texture );
+		return;
+	}
+	glActiveTextureARB( GL_TEXTURE0_ARB + texUnit );
+	if ( texture != 0 ) {
+		glBindTexture( target, texture );
+	} else {
+		glBindTexture( GL_TEXTURE_2D, 0 );
+		glBindTexture( GL_TEXTURE_CUBE_MAP_EXT, 0 );
+	}
+	glActiveTextureARB( GL_TEXTURE0_ARB + Max( 0, backEnd.glState.currenttmu ) );
+}
+
+void idImage::BindUntracked( int texUnit ) {
+	if ( !IsLoaded() ) {
+		ActuallyLoadImage( true );
+	}
+	// As Bind: only 2D and cube images are bound.
+	if ( opts.textureType == TT_2D ) {
+		R_BindUntrackedTextureUnit( texUnit, GL_TEXTURE_2D, texnum );
+	} else if ( opts.textureType == TT_CUBIC ) {
+		R_BindUntrackedTextureUnit( texUnit, GL_TEXTURE_CUBE_MAP_EXT, texnum );
+	}
 }
 
 /*
@@ -2206,6 +2251,8 @@ void idImage::Print() const {
 		NAME_FORMAT( DXT1 );
 		NAME_FORMAT( DXT5 );
 		NAME_FORMAT( BC7 );
+		NAME_FORMAT( BC6H_UF16 );
+		NAME_FORMAT( BC6H_SF16 );
 		NAME_FORMAT( ETC2_RGB8 );
 		NAME_FORMAT( ETC2_RGBA8 );
 		NAME_FORMAT( EAC_RG11 );

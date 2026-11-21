@@ -3846,6 +3846,20 @@ static void Session_CampaignSelect_f( const idCmdArgs &args ) {
     sessLocal.SelectCampaign( args.Argv( 1 ), start, chapters );
 }
 
+static void Session_CampaignRemount_f( const idCmdArgs &args ) {
+    const bool start = args.Argc() == 3 && !idStr::Icmp( args.Argv( 2 ), "start" );
+    const bool chapters = args.Argc() == 3 && !idStr::Icmp( args.Argv( 2 ), "chapters" );
+    if ( args.Argc() < 2 || args.Argc() > 3 || ( args.Argc() == 3 && !start && !chapters ) ) {
+        common->Printf( "usage: campaignRemount quake4|awakening|arena [start|chapters]\n" ); return;
+    }
+    // The difficulty page opened ahead of the switch learns its campaign's
+    // state in place (SelectCampaign, UpdatePendingCampaignRemount).
+    idUserInterface *page = sessLocal.pendingRemountQueued ? sessLocal.pendingRemountPage : NULL;
+    sessLocal.pendingRemountPage = NULL;
+    sessLocal.pendingRemountQueued = false;
+    sessLocal.RemountCampaign( args.Argv( 1 ), start, chapters, page );
+}
+
 static void Session_CampaignMenu_f( const idCmdArgs &args ) {
     if ( args.Argc() > 2 || ( args.Argc() == 2 && idStr::Icmp( args.Argv( 1 ), "campaigns" ) ) ) return;
     sessLocal.OpenCampaignSelector( args.Argc() == 2 );
@@ -4268,6 +4282,11 @@ void idSessionLocal::Clear() {
 	systemGuiTransition = systemGuiBackEvent = false;
 	guiRetainedHome = guiRetainedTitle = guiRetainedPause = guiRetainedPauseStrogg = guiRetainedPauseAwakening = NULL;
 	retainedPauseStrogg = -1;
+	campaignRemounting = false;
+	pendingRemountPage = NULL;
+	pendingRemountCampaign.Clear();
+	pendingRemountAt = 0;
+	pendingRemountQueued = false;
 	retainedNewestSave = 0;
 	guiRetainedReleasing = NULL;
 	retainedReleaseUntil = 0;
@@ -11069,7 +11088,7 @@ void idSessionLocal::RunGameTic() {
 ===============
 Session_DeclareMultiplayerMenuGameCVars
 
-The create-server menu edits multiplayer settings that only game_mp declares,
+The create-server menu and Player Setup edit multiplayer settings that only game_mp declares,
 but it is reachable while game_sp is loaded - the module is not swapped until
 spawnServer. A GUI widget resolves its cvar once, when the gui is parsed, and
 idChoiceWindow::InitVars warns and then does nothing at all when the name is
@@ -11086,10 +11105,34 @@ static void Session_DeclareMultiplayerMenuGameCVars( void ) {
 	struct menuGameCVar_t {
 		const char *name;
 		const char *value;
+		int flags;
 	};
+	// The Create Server page's host settings and the multiplayer HUD and
+	// spectating options Player Setup edits (the multiplayer menu tree audit,
+	// 20 November 2026), each with game_mp's default and kind.
 	static const menuGameCVar_t menuGameCVars[] = {
-		{ "bot_minPlayers",	"0" },
-		{ "bot_skill",		"3" }
+		{ "bot_minPlayers",			"0",	CVAR_INTEGER },
+		{ "bot_skill",				"3",	CVAR_INTEGER },
+		{ "g_mapRotation",			"1",	CVAR_INTEGER },
+		{ "g_mapQueue",				"1",	CVAR_BOOL },
+		{ "si_itemTimers",			"1",	CVAR_INTEGER | CVAR_SERVERINFO },
+		{ "si_timeouts",			"0",	CVAR_INTEGER | CVAR_SERVERINFO },
+		{ "si_spectatorLock",		"0",	CVAR_INTEGER | CVAR_SERVERINFO },
+		{ "si_overtime",			"120",	CVAR_INTEGER | CVAR_SERVERINFO },
+		{ "si_mercyLimit",			"0",	CVAR_INTEGER | CVAR_SERVERINFO },
+		{ "si_roundLimit",			"8",	CVAR_INTEGER | CVAR_SERVERINFO },
+		{ "si_maxBrightskin",		"1",	CVAR_FLOAT | CVAR_SERVERINFO },
+		{ "si_forcedModels",		"1",	CVAR_BOOL | CVAR_SERVERINFO },
+		{ "ui_weaponOrder",			"",		CVAR_USERINFO },
+		{ "g_inactivity",			"0",	CVAR_INTEGER },
+		{ "hud_hitSound",			"1",	CVAR_INTEGER },
+		{ "hud_crosshairAmmo",		"0",	CVAR_BOOL },
+		{ "hud_crosshairNames",		"1",	CVAR_INTEGER },
+		{ "hud_itemTimers",			"1",	CVAR_BOOL },
+		{ "hud_teamLocations",		"1",	CVAR_BOOL },
+		{ "hud_localClock",			"0",	CVAR_INTEGER },
+		{ "ui_spectatorSpeed",		"100",	CVAR_INTEGER | CVAR_USERINFO },
+		{ "g_spectatorFollowView",	"0",	CVAR_INTEGER }
 	};
 
 	for ( int i = 0; i < (int)( sizeof( menuGameCVars ) / sizeof( menuGameCVars[0] ) ); i++ ) {
@@ -11097,7 +11140,7 @@ static void Session_DeclareMultiplayerMenuGameCVars( void ) {
 			continue;
 		}
 		cvarSystem->SetCVarString( menuGameCVars[i].name, menuGameCVars[i].value,
-			CVAR_GAME | CVAR_INTEGER | CVAR_ARCHIVE );
+			CVAR_GAME | CVAR_ARCHIVE | menuGameCVars[i].flags );
 	}
 }
 #endif
@@ -11125,6 +11168,7 @@ void idSessionLocal::Init() {
 	cmdSystem->AddCommand( "iamtheduke", Session_IAmTheDuke_f, CMD_FL_SYSTEM|CMD_FL_CHEAT, "toggles the SP-only iamtheduke cheat text overlay" );
 	cmdSystem->AddCommand( "bakeLightGrids", Session_BakeLightGrids_f, CMD_FL_SYSTEM|CMD_FL_CHEAT, "bakes openQ4-compatible lightgrid metadata and irradiance atlases for the current map or a batch of maps" );
     cmdSystem->AddCommand( "campaignSelect", Session_CampaignSelect_f, CMD_FL_SYSTEM, "selects a built-in single-player campaign" );
+    cmdSystem->AddCommand( "campaignRemount", Session_CampaignRemount_f, CMD_FL_SYSTEM, "switches to a built-in single-player campaign in place (queued by campaignSelect)" );
     cmdSystem->AddCommand( "campaignList", Session_CampaignList_f, CMD_FL_SYSTEM, "reports built-in campaign content readiness without mounting it" );
     cmdSystem->AddCommand( "campaignMenu", Session_CampaignMenu_f, CMD_FL_SYSTEM, "opens the single-player or campaign selector" );
     cmdSystem->AddCommand( "campaignChapters", Session_CampaignChapters_f, CMD_FL_SYSTEM, "lists the active campaign's chapters and which are reached" );

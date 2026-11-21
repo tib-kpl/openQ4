@@ -603,7 +603,8 @@ public:
     idUserInterface* guiRetainedReleasing = nullptr; int retainedReleaseUntil = 0;
     idUserInterface* retainedSubpageFrom = nullptr; bool retainedSubpageDeeper = false; int retainedSubpageBegan = 0, retainedSubpageUntil = 0;
     int retainedDetailTarget = 0; idStr retainedDetailCampaign;
-    bool OpenRetainedCampaignSkill(); bool OpenRetainedCampaignChapters(); void BeginRetainedCampaignSkill(idUserInterface*, const char*, bool = false, bool = false);
+    bool OpenRetainedCampaignSkill(int awakeningTitle = -1); bool OpenRetainedCampaignChapters(); void BeginRetainedCampaignSkill(idUserInterface*, const char*, bool = false, bool = false);
+    const char* PendingCampaign(const idUserInterface*) const { return nullptr; }
     idUserInterface* guiLoading = nullptr; bool retainedLoadingActive = false;
     int retainedLoadingTip = -1, retainedLoadingTipSlot = 0, retainedLoadingTipAt = 0; void PublishRetainedLoadingTip(bool);
     void BeginRetainedSubpage(idUserInterface*, bool, retainedSubpage_t = RETAINED_SUBPAGE_CAMPAIGN); void UpdateRetainedSubpage();
@@ -3424,7 +3425,8 @@ int main() {
         };
         for (const auto& [verb, page] : std::vector<std::pair<const char*, const char*>>{{"mpSettingsControls", "fromMp_toControls"},
                                                                                          {"mpSettingsGame", "fromMp_toGameoptions"},
-                                                                                         {"mpSettingsSystem", "fromMp_toSystem"}}) {
+                                                                                         {"mpSettingsSystem", "fromMp_toSystem"},
+                                                                                         {"mpSettingsAudio", "fromMp_toAudio"}}) {
             s.guiActive = &mpMenu; s.guiRetainedReleasing = nullptr; s.UpdateRetainedMultiplayer(); CHECK(s.guiRetainedMultiplayer == card);
             s.HandleRetainedSessionRequest(card, verb);
             CHECK(gameObject.guiCommands.back() == std::string("mainMenu ") + page && s.guiActive == s.guiMainMenu &&
@@ -5042,7 +5044,7 @@ def check_create_server(menu: str) -> None:
     assert sorted([*create.FRAG_TYPES, *create.CAPTURE_TYPES, *create.CONTROL_TYPES]) == list(range(len(create.GAMETYPES)))
     rows = re.findall(r'\{ "(create[A-Za-z]+)",\s+"([a-z]+)",\s+"([A-Za-z_]+)",\s+(-?\d+), (\d+),\s+(true|false) \}',
                       re.search(r'RETAINED_CREATE_SETTINGS\[\] = \{(.*?)\n\};', text, re.S).group(1))
-    offered = [(verb, state, minimum, maximum, kind) for state, verb, _label, kind, minimum, maximum, _message in create.SETTINGS + create.ADVANCED
+    offered = [(verb, state, minimum, maximum, kind) for state, verb, _label, kind, minimum, maximum, _message in create.SETTINGS
                if state != 'gametype']
     assert [(verb, state, int(low), int(high)) for verb, state, _cvar, low, high, _boolean in rows] == \
         [(verb, state, low, high) for verb, state, low, high, _kind in offered], 'the session offers the generator\'s settings'
@@ -5386,7 +5388,7 @@ def check_retained_multiplayer(menu: str, session: str) -> None:
     assert 'vote' not in handoffs
     adapter = (ROOT / 'src/ui/UserInterfaceRetained.cpp').read_text(encoding='utf-8', errors='replace')
     # (The Create Server page's verbs are check_create_server's.)
-    value_verbs = {verb for verb in cpp_allowlist(adapter, 'bool SessionMenuValueCommand(') if not verb.startswith(('create', 'audio', 'game', 'controls'))}
+    value_verbs = {verb for verb in cpp_allowlist(adapter, 'bool SessionMenuValueCommand(') if not verb.startswith(('create', 'audio', 'game', 'controls', 'weaponOrder'))}
     fields = re.findall(r'"(mpVote[A-Za-z]+)"', re.search(r'RETAINED_MP_VOTE_FIELDS\[\] = \{([^}]*)\};', menu).group(1))
     appearance = re.findall(r'"(mp[A-Za-z]+)"', re.search(r'RETAINED_MP_APPEARANCE_VALUES\[\] = \{([^}]*)\};', menu).group(1))
     choices = re.findall(r'"(mp[A-Za-z]+)"', re.search(r'RETAINED_MP_MATCH_CHOICES\[\] = \{([^}]*)\};', menu).group(1))
@@ -5398,18 +5400,21 @@ def check_retained_multiplayer(menu: str, session: str) -> None:
     assert enum[-1] == 'RVF_COUNT'
     keys = [name[len('RVF_'):].lower() for name in enum[:-1]]
     assert keys == [verb[len('mpVote'):].lower() for verb in fields]
-    assert [(key, verb) for key, verb, _label, _control in retained_mp_menus.VOTE_ROWS] == list(zip(keys, fields))
-    # The Admin page's Server section drafts the same fields without the
-    # kick: the session's table, the document's rows and the game's publisher
-    # follow the game's order.
+    # The page orders its rows by what they change (the multiplayer menu tree
+    # audit); each is one of the game's fields with the session's verb.
+    assert sorted((key, verb) for key, verb, _label, _control in retained_mp_menus.VOTE_ROWS) == sorted(zip(keys, fields))
+    # The Admin page's Server section drafts the stock fields before the
+    # kick (the casual votes follow it): the session's table, the document's
+    # rows and the game's publisher follow the game's order.
     import retained_mp_admin
-    assert keys[-1] == 'kick' and [(key, verb) for key, verb, _label, _control in retained_mp_admin.ROWS] == list(zip(keys[:-1], admin_fields))
+    kick = keys.index('kick')
+    assert [(key, verb) for key, verb, _label, _control in retained_mp_admin.ROWS] == list(zip(keys[:kick], admin_fields))
     for key, verb, _label, control in retained_mp_admin.ROWS:
         arguments = {'command': verb, 'value': {'input': 'value'}}
         assert document['actions'][verb] == {'operation': 'session.menuValue', 'input': 'boolean' if control[0] == 'toggle' else 'number',
                                              'arguments': arguments}, verb
     admin_publisher = function_body(mp_game, 'void idMultiplayerGame::PublishRetainedAdmin(')
-    assert re.findall(r'"([a-z]+)"', re.search(r'static const char \*const fields\[ RVF_COUNT \] = \{([^}]*)\};', admin_publisher).group(1)) == keys
+    assert re.findall(r'"([a-z]+)"', re.search(r'static const char \*const fields\[ RVF_COUNT \] = \{([^}]*)\};', admin_publisher).group(1)) == keys[:kick + 1]
     for constant, value in (('PLAYERS', retained_mp_admin.PLAYERS), ('BANS', 32), ('CONSOLE_LINES', retained_mp_admin.CONSOLE_LINES)):
         assert f'static const int RETAINED_ADMIN_{constant} = {value};' in header, constant
     assert f'static const int RETAINED_MP_PASSWORD_BYTES = {retained_mp_admin.PASSWORD_BYTES};' in menu

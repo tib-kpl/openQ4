@@ -271,7 +271,12 @@ typedef enum {
 	SVC_INVERSE_MODULATE
 } stageVertexColor_t;
 
-static const int	MAX_FRAGMENT_IMAGES = 8;
+static const int	MAX_FRAGMENT_IMAGES = 8;		// ARB fragmentMap units
+// GLSL shaderTexture samplers per stage. OpenGL binds those past the tracked
+// units (MAX_MULTITEXTURE_UNITS) directly (RB_BindGLSLShaderTexture); 16 is
+// the fragment image units GL 3.x and Vulkan (maxPerStageDescriptorSamplers)
+// guarantee.
+static const int	MAX_SHADER_TEXTURES = 16;
 static const int	MAX_VERTEX_PARMS = 8;
 static const int	MAX_FRAGMENT_PARMS = 8;
 static const int	MAX_GLSL_SHADER_PARMS = 32;
@@ -360,6 +365,11 @@ typedef struct {
 	bool				glslProgramLoaded;
 	bool				glslProgramValid;
 	int					glslProgramGeneration;
+	// A material's stage shares one linked program with every other material
+	// stage that names the same sources (draw_common.cpp, R_ValidateGLSLProgram);
+	// the stages the back end builds for itself keep their own.
+	bool				glslProgramShareable;
+	int					glslSharedProgram;		// 1 + index into the shared programs, 0 = none
 	bool				customLighting;
 
 	int					numShaderParms;
@@ -370,12 +380,12 @@ typedef struct {
 	int					shaderParmLocations[MAX_GLSL_SHADER_PARMS];
 
 	int					numShaderTextures;
-	char				shaderTextureNames[MAX_FRAGMENT_IMAGES][MAX_GLSL_SHADER_PARM_NAME];
-	int					shaderTextureLocations[MAX_FRAGMENT_IMAGES];
-	glslShaderTextureBinding_t shaderTextureBindings[MAX_FRAGMENT_IMAGES];
-	idImage* shaderTextureImages[MAX_FRAGMENT_IMAGES];
-	textureFilter_t		shaderTextureFilters[MAX_FRAGMENT_IMAGES];
-	textureRepeat_t		shaderTextureRepeats[MAX_FRAGMENT_IMAGES];
+	char				shaderTextureNames[MAX_SHADER_TEXTURES][MAX_GLSL_SHADER_PARM_NAME];
+	int					shaderTextureLocations[MAX_SHADER_TEXTURES];
+	glslShaderTextureBinding_t shaderTextureBindings[MAX_SHADER_TEXTURES];
+	idImage* shaderTextureImages[MAX_SHADER_TEXTURES];
+	textureFilter_t		shaderTextureFilters[MAX_SHADER_TEXTURES];
+	textureRepeat_t		shaderTextureRepeats[MAX_SHADER_TEXTURES];
 } newShaderStage_t;
 
 typedef struct {
