@@ -54,6 +54,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "SessionPresetCheck.h"
 #include "CVarAssignmentCapture.h"
 #include "InitializationPresentation.h"
+#include "LoadingPresentation.h"
 #include <atomic>
 #include <chrono>
 #include <mutex>
@@ -84,6 +85,9 @@ void Sys_SDL_KeepWindowResponsive( void );
 void openQ4_PrintFramePacingSnapshot( const char *reason );
 void openQ4_RecordMultiplayerFramePacing( void );
 void Session_FinishPendingSave();
+#ifndef ID_DEDICATED
+void Session_DeclareMultiplayerMenuGameCVars( void );
+#endif
 static void Com_ProfileFrameWork_f( const idCmdArgs &args );
 
 static const int OPENQ4_ENTITYDEF_MEDIA_CACHE_TOOL_MASK =
@@ -457,6 +461,10 @@ static int Common_GetRequestedPresentationCap( void ) {
 	if ( vrSystem != NULL && vrSystem->IsPacing() ) {
 		return 0;
 	}
+	// openQ4 MP-22: a multi-view timedemo measures frames as fast as they come
+	if ( idAsyncNetwork::multiViewDemo.IsTimeDemo() ) {
+		return 0;
+	}
 
 	// A window that shows nothing never presents faster than 60 Hz, uncapped
 	// included, so a hidden or minimized client does not spin (HF-07).
@@ -629,6 +637,14 @@ int openQ4_GetRequestedPresentationCap( void ) {
 	return Common_GetRequestedPresentationCap();
 }
 
+float openQ4_GetDisplayRefreshHz( void ) {
+#if defined( USE_SDL3 )
+	return Sys_SDL_GetWindowRefreshHz();
+#else
+	return 0.0f;
+#endif
+}
+
 static void Common_ThrottlePresentationFrame( void ) {
 	const int cap = Common_GetRequestedPresentationCap();
 
@@ -728,11 +744,11 @@ static void Common_ThrottlePresentationFrame( void ) {
 	commonNextPresentationFrameClock += frameClockUnits;
 }
 
-void openQ4_BeginPresentationFrame( void ) {
+static void Common_BeginPresentationFrame( bool throttle ) {
     static std::uint64_t nativeInputPresentation = 0;
     if (nativeInputPresentation != UINT64_MAX) ++nativeInputPresentation;
     NativeInput_BeginFrame(nativeInputPresentation);
-	if ( idAsyncNetwork::serverDedicated.GetInteger() == 1 ) {
+	if ( idAsyncNetwork::serverDedicated.GetInteger() == 1 || !throttle ) {
 		Common_ResetPresentationThrottle();
 	} else {
 		Common_ThrottlePresentationFrame();
@@ -740,6 +756,16 @@ void openQ4_BeginPresentationFrame( void ) {
 
 	com_frameRealTime = Sys_Milliseconds();
 	commonPresentationFrameStartClock = Common_GetPresentationClockNow();
+}
+
+void openQ4_BeginPresentationFrame( void ) {
+	Common_BeginPresentationFrame( true );
+}
+
+void openQ4_BeginPacedPresentationFrame( void ) {
+	// The loading-frame pacer already decided this frame is due; the limiter
+	// keeping its own schedule on top would sleep the load away.
+	Common_BeginPresentationFrame( false );
 }
 
 double openQ4_GetPresentationFrameStartMsec( void ) {
@@ -1136,6 +1162,7 @@ public:
 	virtual void				Printf( const char *fmt, ... ) id_attribute((format(printf,2,3)));
 	virtual void				VPrintf( const char *fmt, va_list arg );
 	virtual void				PrintFramePacingSnapshot( const char *reason );
+	virtual void				LoadingCheckpoint( void );
 	virtual void				DPrintf( const char *fmt, ... ) id_attribute((format(printf,2,3)));
 	virtual void				Warning( const char *fmt, ... ) id_attribute((format(printf,2,3)));
 	virtual void				DWarning( const char *fmt, ...) id_attribute((format(printf,2,3)));
@@ -1632,6 +1659,19 @@ idCommonLocal::PrintFramePacingSnapshot
 */
 void idCommonLocal::PrintFramePacingSnapshot( const char *reason ) {
 	openQ4_PrintFramePacingSnapshot( reason );
+}
+
+/*
+==================
+idCommonLocal::LoadingCheckpoint
+==================
+*/
+void idCommonLocal::LoadingCheckpoint( void ) {
+	if ( !Common_OnMainThread() || session == NULL ) {
+		return;
+	}
+	// The startup screen is offered first; a level load's screen otherwise.
+	session->PacifierUpdate();
 }
 
 /*
@@ -4745,13 +4785,25 @@ static void Com_NetIPv4SelfTest_f( const idCmdArgs &args ) {
 			static const byte markerPacket[] = { 0x49, 0x50, 0x76, 0x34 };
 			sender.SendPacket( destination, oversizePacket, sizeof( oversizePacket ) );
 			sender.SendPacket( destination, markerPacket, sizeof( markerPacket ) );
-			receivedSize = -1;
-			if ( receiver.GetPacketBlocking( source, exactReceived, receivedSize, sizeof( exactReceived ), 1000 ) || receivedSize != 0 ) {
-				Common_NetIPv4SelfTestFailure( passed, "oversized UDP datagram was not rejected" );
+			// The read that meets an oversized datagram discards it and goes on to the
+			// next one, so it cannot end a server's packet drain. Neither its bytes nor a
+			// truncated copy may reach the caller, and the marker behind it must arrive:
+			// in the same read, or in a second one if it was not yet queued.
+			bool oversizeDelivered = false;
+			bool markerReceived = false;
+			for ( int markerRead = 0; markerRead < 2 && !markerReceived && !oversizeDelivered; ++markerRead ) {
+				receivedSize = -1;
+				if ( !receiver.GetPacketBlocking( source, exactReceived, receivedSize, sizeof( exactReceived ), 1000 ) ) {
+					oversizeDelivered = receivedSize != 0;
+				} else if ( receivedSize != sizeof( markerPacket ) || memcmp( exactReceived, markerPacket, sizeof( markerPacket ) ) != 0 ) {
+					oversizeDelivered = true;
+				} else {
+					markerReceived = true;
+				}
 			}
-			receivedSize = 0;
-			if ( !receiver.GetPacketBlocking( source, exactReceived, receivedSize, sizeof( exactReceived ), 1000 ) ||
-					receivedSize != sizeof( markerPacket ) || memcmp( exactReceived, markerPacket, sizeof( markerPacket ) ) != 0 ) {
+			if ( oversizeDelivered ) {
+				Common_NetIPv4SelfTestFailure( passed, "oversized UDP datagram was not rejected" );
+			} else if ( !markerReceived ) {
 				Common_NetIPv4SelfTestFailure( passed, "packet after oversized UDP datagram was not preserved" );
 			}
 		}
@@ -6756,7 +6808,7 @@ namespace {
 thread_local bool initializationActive = false;
 bool initializationDrawing = false;
 idStr initializationMessage;
-openq4::InitializationPresentation initializationPacing;
+openq4::LoadingFramePacer initializationPacing;
 int initializationFrames = 0;
 double initializationLastFrame = 0, initializationMaxGap = 0, initializationDrawMsec = 0;
 // Trace-only: where loading starves presentation, and what each frame costs.
@@ -6768,17 +6820,24 @@ struct InitializationScope {
 	InitializationScope() {
 		initializationMessage.Clear();
 		initializationPacing = {};
+		initializationPacing.Configure( openQ4_GetDisplayRefreshHz(), openQ4_GetRequestedPresentationCap() );
+		initializationPacing.Reset();
 		initializationFrames = 0;
 		initializationLastFrame = initializationMaxGap = initializationDrawMsec = 0;
 		initializationStart = initializationLastHook = InitializationMilliseconds();
 		initializationMaxHookGap = initializationSubmit = 0;
 		initializationActive = true;
+		LoadingPresentation_Begin( "init" );
 	}
 	void Finish() {
 		if ( !initializationActive ) return;
 		initializationActive = false;
+		LoadingPresentation_End();
 		initializationMessage.Clear();
-		RetainedUI_EndInitialization();
+		// The view stays: until the session presents a menu or a level, its
+		// fallback loading screen draws the same view on, the animation
+		// continuous, instead of building a new one in its first frame
+		// (idSessionLocal::Draw ends it, as does the interface's shutdown).
 		if ( cvarSystem->GetCVarBool( "ui_retainedTrace" ) ) {
 			common->Printf( "INITIALIZATION_PRESENTATION frames=%d drawMsec=%.3f maxGapMsec=%.3f maxHookGapMsec=%.3f totalMsec=%.3f\n",
 				initializationFrames, initializationDrawMsec, initializationMaxGap, initializationMaxHookGap,
@@ -6807,7 +6866,7 @@ bool openQ4_UpdateInitialization( void ) {
 #endif
 	}
 	if ( initializationDrawing || initializationMessage.IsEmpty() ||
-		!initializationPacing.Due( InitializationMilliseconds(), openQ4_GetRequestedPresentationCap() ) ||
+		!initializationPacing.Due( InitializationMilliseconds() ) ||
 		!RetainedUI_CanUpdateInitialization() ) return true;
 	commonLocal.PrintLoadingMessage( initializationMessage.c_str() );
 	if ( cvarSystem->GetCVarBool( "ui_retainedTrace" ) ) {
@@ -6832,6 +6891,7 @@ void idCommonLocal::PrintLoadingMessage( const char *msg ) {
 				if ( initializationFrames++ ) initializationMaxGap = Max( initializationMaxGap, end - initializationLastFrame );
 				initializationLastFrame = end;
 				initializationDrawMsec += end - start;
+				LoadingPresentation_Presented( start, end );
 				if ( cvarSystem->GetCVarBool( "ui_retainedTrace" ) ) {
 					common->Printf( "INITIALIZATION_FRAME at=%.1f build=%.2f present=%.2f\n", end - initializationStart,
 						( initializationSubmit > start ? initializationSubmit : end ) - start,
@@ -6848,6 +6908,7 @@ void idCommonLocal::PrintLoadingMessage( const char *msg ) {
 		initializationSubmit = InitializationMilliseconds();
 		settingsFrame.Submitting();
 		renderSystem->EndFrame( NULL, NULL );
+		Sys_DestroySplash(); // the game window now has a frame to show
 		settingsFrame.Presented();
 		RetainedUI_FrameSubmitted();
 		UI_SettingsFrame( false );
@@ -6913,6 +6974,7 @@ void idCommonLocal::PrintLoadingMessage( const char *msg ) {
 	renderSystem->SetColor( idVec4( 1.0f, 1.0f, 1.0f, 1.0f ) );
 	settingsFrame.Submitting();
 	renderSystem->EndFrame( NULL, NULL );
+	Sys_DestroySplash(); // the game window now has a frame to show
 	settingsFrame.Presented();
 	RetainedUI_FrameSubmitted();
 	UI_SettingsFrame( false ); // Startup/loading may observe recovery, never perform device or file work.
@@ -7987,6 +8049,9 @@ void idCommonLocal::Init( int argc, const char **argv, const char *cmdline ) {
 			declManager->WriteDeclFile();
 		}
 
+		// Normally gone with the first presented loading frame.
+		Sys_DestroySplash();
+
 		Printf( "--- Common Initialization Complete ---\n" );
 
 		// print all warnings queued during initialization
@@ -8175,6 +8240,16 @@ void idCommonLocal::InitGame( void ) {
 	eventLoop->Init();
 
 	PrintLoadingMessage( common->GetLanguageDict()->GetString( "#str_104343" ) );
+
+#ifndef ID_DEDICATED
+	// The multiplayer menu edits settings only game_mp declares. Declare them
+	// before the configs run, so a saved value lands on the declaration rather
+	// than on a bare console cvar (Session.cpp). Session::Init skips them for a
+	// dedicated server, as this does.
+	if ( idAsyncNetwork::serverDedicated.GetInteger() != 1 ) {
+		Session_DeclareMultiplayerMenuGameCVars();
+	}
+#endif
 
 	// exec the startup scripts
 	if ( fileSystem->ReadFile( "editor.cfg", NULL ) >= 0 ) {

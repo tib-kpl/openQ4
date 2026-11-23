@@ -1,6 +1,6 @@
 # Client settings guide
 
-> This guide matches openQ4 0.14.1. Anything added since is marked **Not in 0.14.1**. See [release status](release-status.md) for what each download includes.
+> This guide matches openQ4 0.15.0. Anything new in 0.15.0 is marked **New in 0.15.0**. See [release status](release-status.md) for what each download includes.
 
 This page shows where openQ4's most useful options live, so you can set the game up without reading every guide. Open **Settings** from the main menu or the pause menu.
 
@@ -32,6 +32,7 @@ To change difficulty during a single-player game, choose **Restart Level** in th
 - [Shadow Mapping](shadow-mapping.md): shadow quality and tuning.
 - [Cel Shading](cel-shading.md): the cartoon-style look.
 - [DDS Texture Replacements](texture-replacements.md): installing texture packs.
+- [Multiplayer](multiplayer.md): Player Setup, the in-match menu and every multiplayer guide.
 - [Steam Deck](steam-deck.md): the Deck launcher and handheld controls.
 - [Languages](languages.md): menu and dialogue languages.
 

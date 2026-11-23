@@ -33,6 +33,8 @@ If you have questions concerning this license or the applicable additional terms
 #include "../imagetools/LegacyScopeMask.h"
 #include "OpenGL/FramebufferSamples.h"
 
+#include <chrono>
+
 /*
 ========================
 R_ShouldSuppressMissingImageWarning
@@ -331,6 +333,37 @@ static textureFormat_t R_DecodedImageCompression( textureUsage_t usage, cubeFile
 
 /*
 ========================
+idImage::CurrentReductionKey / ReductionInputsChanged
+
+Everything a texture setting changes about a file-backed load: the resolved
+downsize/picmip policy (the generated cache key is derived from the same
+policy), the block format R_DecodedImageCompression picks for decoded pixels,
+and the precompressed-texture switch, which chooses the file read. Two equal
+keys build the same image from the same files, so a settings change reloads
+only the images whose key moved: a bump-limit change leaves every diffuse,
+specular, light and interface image alone, and nothing touches the 2D
+namespaces and nopicmip images, whose policy is empty whatever the settings.
+========================
+*/
+extern idCVar image_usePrecompressedTextures;
+
+idImage::reductionKey_t idImage::CurrentReductionKey() const {
+	reductionKey_t key;
+	R_GetImageDownsizePolicy( GetName(), usage, allowDownSize, key.policy );
+	textureColor_t color = CFM_DEFAULT;
+	key.decodedFormat = R_DecodedImageCompression( usage, cubeFiles, allowDownSize, GetName(), color );
+	key.decodedColor = key.decodedFormat != FMT_NONE ? color : CFM_DEFAULT;
+	key.usePrecompressed = image_usePrecompressedTextures.GetInteger();
+	key.known = true;
+	return key;
+}
+
+bool idImage::ReductionInputsChanged() const {
+	return !( loadedReductionKey == CurrentReductionKey() );
+}
+
+/*
+========================
 R_ImageOpaqueSplitFormat
 
 The half-size format an opaque image can take instead of the one its usage
@@ -363,6 +396,8 @@ static bool R_ImagePixelsOpaque( const byte *pic, int width, int height ) {
 	}
 	return true;
 }
+
+static void R_DeriveImageLevels( idImageOpts &opts, unsigned int flags, textureFilter_t filter );
 
 /*
 ========================
@@ -509,6 +544,18 @@ ID_INLINE void idImage::DeriveOpts() {
 */
 	}
 
+	R_DeriveImageLevels( opts, flags, filter );
+}
+
+/*
+========================
+R_DeriveImageLevels
+
+DeriveOpts' mip count, for an image worker that derives the levels of its own
+copy of the options.
+========================
+*/
+static void R_DeriveImageLevels( idImageOpts &opts, unsigned int flags, textureFilter_t filter ) {
 	if ( opts.numLevels == 0 ) {
 		opts.numLevels = 1;
 
@@ -762,6 +809,34 @@ On exit, the idImage will have a valid OpenGL texture number that can be bound
 */
 /*
 ==============
+idImage::MakeLayeredDefault
+
+The stand-in for a volume or texture array that did not
+load, 4x4x4 black (TT_3D) or 4x4 black in four layers (TT_2D_ARRAY), so the
+GLSL sampler that asked for it binds an image of its own type.
+==============
+*/
+void idImage::MakeLayeredDefault( cubeFiles_t request ) {
+	opts.textureType = request == CF_VOLUME ? TT_3D : TT_2D_ARRAY;
+	opts.format = FMT_RGBA8;
+	opts.colorFormat = CFM_DEFAULT;
+	opts.width = 4;
+	opts.height = 4;
+	opts.depth = 4;
+	opts.numLevels = 1;
+	opts.gammaMips = false;
+	AllocImage();
+	byte clear[4 * 4 * 4];
+	memset( clear, 0, sizeof( clear ) );
+	for ( int z = 0; z < opts.depth; z++ ) {
+		SubImageUpload( 0, 0, 0, z, opts.width, opts.height, clear );
+	}
+	defaulted = true;
+	generatedCacheContent = false;
+}
+
+/*
+==============
 PredictDirectDDSPayload
 
 Mirrors ActuallyLoadImage's direct-DDS decision without its staleness check;
@@ -799,6 +874,182 @@ idImageUploadErrorScope::~idImageUploadErrorScope() {
 	}
 }
 
+/*
+========================
+Image decode route
+
+The settings reload sets a route around one image's load (ReloadOrDefer, then
+PublishDecodeJob). Main thread only; any other image loaded meanwhile ignores it.
+========================
+*/
+enum imageDecodeRouteMode_t {
+	IMAGE_DECODE_DEFER = 1,
+	IMAGE_DECODE_PUBLISH = 2
+};
+
+struct imageDecodeRoute_t {
+	imageDecodeRouteMode_t				mode = IMAGE_DECODE_DEFER;
+	const idImage *						image = NULL;
+	std::shared_ptr<imageDecodeJob_t>	job;
+	bool								deferred = false;
+	bool								published = false;
+};
+
+static imageDecodeRoute_t *imageDecodeRoute = NULL;
+
+class idScopedImageDecodeRoute {
+public:
+	explicit idScopedImageDecodeRoute( imageDecodeRoute_t *route ) : previous( imageDecodeRoute ) { imageDecodeRoute = route; }
+	~idScopedImageDecodeRoute() { imageDecodeRoute = previous; }
+private:
+	imageDecodeRoute_t *previous;
+};
+
+static bool R_SameDownsizePolicy( const imageDownsizePolicy_t &a, const imageDownsizePolicy_t &b ) {
+	return a.maxDimension == b.maxDimension && a.mipShift == b.mipShift && a.minDimension == b.minDimension;
+}
+
+static bool R_SameDecodeOpts( const idImageOpts &a, const idImageOpts &b ) {
+	return a.textureType == b.textureType && a.format == b.format && a.colorFormat == b.colorFormat
+		&& a.gammaMips == b.gammaMips;
+}
+
+/*
+========================
+R_RunImageDecodeJob
+
+The worker's half of the decode branch in ActuallyLoadImage, line for line:
+the image program from the recorded files, the reduction, the levels, the
+opaque split and the block compression. Exceptions (an error raised off the
+main thread throws) fail the job.
+========================
+*/
+bool R_RunImageDecodeJob( imageDecodeJob_t &job ) {
+	const double start = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now().time_since_epoch() ).count();
+	byte *pic = NULL;
+	bool ok = false;
+	try {
+		idScopedImageFileTape replay( &job.tape, IMAGE_TAPE_REPLAY );
+		int width = 0, height = 0;
+		ID_TIME_T stamp = FILE_NOT_FOUND_TIMESTAMP;
+		textureUsage_t usage = job.usage;
+		R_LoadImageProgramForDeclaredUsage( job.sourceName.c_str(), &pic, &width, &height, &stamp, usage );
+		if ( pic != NULL && !job.tape.missed ) {
+			imageReductionResult_t reduction{};
+			R_ResolveImageReduction( job.policy, width, height, 0, reduction );
+			int expectedWidth = width, expectedHeight = height;
+			R_ApplyImageDownsizePolicy( job.policy, expectedWidth, expectedHeight );
+			R_DownsizeLoadedImageData( job.imageName.c_str(), usage, job.allowDownSize, pic, width, height, &job.policy );
+			const bool exact = width == expectedWidth && height == expectedHeight;
+			reduction.selectedWidth = width;
+			reduction.selectedHeight = height;
+			if ( !exact ) {
+				reduction.status = IR_FAILED;
+			}
+			idImageOpts opts = job.opts;
+			opts.width = width;
+			opts.height = height;
+			opts.numLevels = 0;
+			R_DeriveImageLevels( opts, job.flags, job.filter );
+			const textureFormat_t opaqueFormat = R_ImageOpaqueSplitFormat( opts.format, opts.colorFormat, usage );
+			if ( opaqueFormat != FMT_NONE && R_ImagePixelsOpaque( pic, width, height ) ) {
+				opts.format = opaqueFormat;
+			}
+			std::unique_ptr<idBinaryImage> image( new idBinaryImage( job.generatedName.c_str() ) );
+			if ( image->Load2DFromMemory( opts.width, opts.height, pic, opts.numLevels, opts.format, opts.colorFormat,
+					opts.gammaMips, ( job.flags & IMAGEFLAG_FILTER_NEUTRAL_ALPHA ) != 0 ) ) {
+				job.image = std::move( image );
+				job.resultOpts = opts;
+				job.resultUsage = usage;
+				job.reduction = reduction;
+				job.exactReduction = exact;
+				job.sourceFileTime = stamp;
+				ok = !job.tape.missed;
+			}
+		}
+	} catch ( ... ) {
+		ok = false;
+	}
+	if ( pic != NULL ) {
+		Mem_Free( pic );
+	}
+	job.decoded = ok;
+	if ( !ok ) {
+		job.image.reset();
+	}
+	// the recorded bytes are spent either way
+	job.tape.files.clear();
+	job.tape.files.shrink_to_fit();
+	job.workerMsec = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now().time_since_epoch() ).count() - start;
+	return ok;
+}
+
+/*
+========================
+idImage::ReloadOrDefer / PublishDecodeJob
+========================
+*/
+bool idImage::ReloadOrDefer( std::shared_ptr<imageDecodeJob_t> &job ) {
+	job.reset();
+	if ( !IsFileBacked() || cubeFiles != CF_2D || usage == TD_FONT ) {
+		Reload( true );
+		return false;
+	}
+	if ( !R_ImagePolicyOperationAllowed() || !R_ImagePolicyContentMutation() ) {
+		return false;
+	}
+
+	// What a load writes before it reaches the decode, put back if it stops there.
+	const idImageOpts savedOpts = opts;
+	const textureUsage_t savedUsage = usage;
+	const bool savedDefaulted = defaulted;
+	const ID_TIME_T savedSourceFileTime = sourceFileTime;
+	const ID_TIME_T savedBinaryFileTime = binaryFileTime;
+	const reductionKey_t savedReductionKey = loadedReductionKey;
+	const imageConsumedPolicy_t savedConsumedPolicy = consumedPolicy;
+	const uint64_t savedConsumedRevision = consumedLoadRevision;
+	const bool savedGeneratedCacheContent = generatedCacheContent;
+	const uint64_t storageBefore = storageGeneration;
+
+	imageDecodeRoute_t route;
+	route.mode = IMAGE_DECODE_DEFER;
+	route.image = this;
+	{
+		idScopedImageDecodeRoute scope( &route );
+		ActuallyLoadImage( false );
+	}
+	if ( route.deferred ) {
+		opts = savedOpts;
+		usage = savedUsage;
+		defaulted = savedDefaulted;
+		sourceFileTime = savedSourceFileTime;
+		binaryFileTime = savedBinaryFileTime;
+		loadedReductionKey = savedReductionKey;
+		consumedPolicy = savedConsumedPolicy;
+		consumedLoadRevision = savedConsumedRevision;
+		generatedCacheContent = savedGeneratedCacheContent;
+		job = route.job;
+		return true;
+	}
+	// Reload( true ) purges before it loads. A load that allocated has purged
+	// the old texture itself; one that returned without storage must not leave
+	// the old texture standing behind options that no longer describe it.
+	if ( storageGeneration == storageBefore ) {
+		PurgeImage();
+	}
+	return false;
+}
+
+bool idImage::PublishDecodeJob( const std::shared_ptr<imageDecodeJob_t> &job ) {
+	imageDecodeRoute_t route;
+	route.mode = IMAGE_DECODE_PUBLISH;
+	route.image = this;
+	route.job = job;
+	idScopedImageDecodeRoute scope( &route );
+	Reload( true );
+	return route.published;
+}
+
 void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 	if ( !R_ImagePolicyOperationAllowed() ) return;
 	R_RenderThread_Sync( "image content" );
@@ -827,6 +1078,10 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 	}
 
 	imageConsumedLoad_t consumedLoad(*this);
+	// The settings this load reads; they cannot change while it runs. A
+	// prepared recovery candidate below was built before teardown, maybe under
+	// other settings, so it leaves the key unknown and the next change reloads it.
+	loadedReductionKey = CurrentReductionKey();
     // A held recovery preparation owns complete CPU candidates read and hashed
     // before teardown. Never fall back to a different VFS source after taking
     // such a candidate, including on an allocation/upload refusal.
@@ -850,6 +1105,7 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
             }
             loadedSourceName=descriptor.file.qpath;
             generatedCacheContent = source == ICS_GENERATED;
+            loadedReductionKey = reductionKey_t();
             consumedLoad.Loaded(source);
             return;
         }
@@ -866,8 +1122,19 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 	opts.colorFormat = CFM_DEFAULT;
 	opts.width = 0;
 	opts.height = 0;
+	opts.depth = 1;
 	opts.numLevels = 0;
 	opts.gammaMips = false;
+
+	// A volume or texture array request no loader above answered: none of
+	// the sources below holds one, so it gets a black stand-in of the kind
+	// asked for, and a sampler3D or sampler2DArray still binds.
+	if ( cubeFiles == CF_VOLUME || cubeFiles == CF_ARRAY ) {
+		idLib::Warning( "Image '%s' is named as a %s; no image source here supplies one",
+			GetName(), cubeFiles == CF_VOLUME ? "volume" : "texture array" );
+		MakeLayeredDefault( cubeFiles );
+		return;
+	}
 
 	bool sourceFileTimeKnown = false;
 	// read through the cvar system rather than the framework-owned idCVar
@@ -1001,7 +1268,13 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 	const char *loadSourceName = selectedLoadSourceName.c_str();
 
 	idBinaryImage im( generatedName );
-	if ( bypassGeneratedFile ) {
+	// Publishing a worker's decode: the deferral a few frames ago found no
+	// usable cache entry under this name, and nothing writes one meanwhile, so
+	// the two cache reads (1.3 ms each on a miss) are not repeated.
+	const bool publishingWorkerResult = imageDecodeRoute != NULL && imageDecodeRoute->image == this
+		&& imageDecodeRoute->mode == IMAGE_DECODE_PUBLISH && imageDecodeRoute->job != NULL && imageDecodeRoute->job->decoded
+		&& imageDecodeRoute->job->generatedName.Cmp( generatedName.c_str() ) == 0;
+	if ( bypassGeneratedFile || publishingWorkerResult ) {
 		binaryFileTime = FILE_NOT_FOUND_TIMESTAMP;
 	} else {
 		idScopedImageLoadPhase generatedPhase( imageLoadPhaseTimings.generatedMsec, imageLoadPhaseTimings.generatedCount );
@@ -1009,7 +1282,7 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 	}
 
 	// BFHACK, do not want to tweak on buildgame so catch these images here
-	if ( !bypassGeneratedFile && binaryFileTime == FILE_NOT_FOUND_TIMESTAMP ) {
+	if ( !bypassGeneratedFile && !publishingWorkerResult && binaryFileTime == FILE_NOT_FOUND_TIMESTAMP ) {
 		int c = 1;
 		while ( c-- > 0 ) {
 			if ( generatedName.Find( "guis/assets/white#__0000", false ) >= 0 ) {
@@ -1115,7 +1388,7 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 	};
 
 	bool generatedImageAccepted = acceptGeneratedImage( binaryFileTime );
-	if ( !generatedImageAccepted && !bypassGeneratedFile ) {
+	if ( !generatedImageAccepted && !bypassGeneratedFile && !publishingWorkerResult ) {
 		{
 			idScopedImageLoadPhase generatedPhase( imageLoadPhaseTimings.generatedMsec, imageLoadPhaseTimings.generatedCount );
 			binaryFileTime = im.LoadFromCompactGeneratedFileUnchecked();
@@ -1222,6 +1495,60 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 					sourceFileTime = FILE_NOT_FOUND_TIMESTAMP;
 				}
 
+				// The settings reload's worker route. A deferral records what the
+				// decode will read and stops here; a publication takes the worker's
+				// result in place of the decode when it still fits this load.
+				imageDecodeRoute_t *const route = imageDecodeRoute != NULL && imageDecodeRoute->image == this ? imageDecodeRoute : NULL;
+				bool workerResult = false;
+				if ( route != NULL && route->mode == IMAGE_DECODE_DEFER && !preferredDDSPrecompressed && usage != TD_FONT ) {
+					std::shared_ptr<imageDecodeJob_t> job = std::make_shared<imageDecodeJob_t>();
+					job->imageName = GetName();
+					job->sourceName = fallbackLoadSourceName;
+					job->generatedName = generatedName;
+					job->usage = usage;
+					job->filter = filter;
+					job->flags = flags;
+					job->allowDownSize = allowDownSize;
+					job->policy = consumedDownsize;
+					job->opts = opts;
+					{
+						idScopedImageFileTape record( &job->tape, IMAGE_TAPE_RECORD );
+						textureUsage_t probeUsage = usage;
+						ID_TIME_T probeStamp = FILE_NOT_FOUND_TIMESTAMP;
+						R_LoadImageProgramForDeclaredUsage( fallbackLoadSourceName, NULL, NULL, NULL, &probeStamp, probeUsage );
+					}
+					route->job = job;
+					route->deferred = true;
+					return;
+				}
+				if ( route != NULL && route->mode == IMAGE_DECODE_PUBLISH && route->job != NULL && route->job->decoded
+						&& route->job->image != NULL && !preferredDDSPrecompressed
+						&& route->job->sourceName.Cmp( fallbackLoadSourceName ) == 0
+						&& route->job->generatedName.Cmp( generatedName.c_str() ) == 0
+						&& route->job->usage == usage && route->job->filter == filter && route->job->flags == flags
+						&& route->job->allowDownSize == allowDownSize
+						&& R_SameDownsizePolicy( route->job->policy, consumedDownsize )
+						&& R_SameDecodeOpts( route->job->opts, opts ) ) {
+					imageDecodeJob_t &job = *route->job;
+					usage = job.resultUsage;
+					sourceFileTime = job.sourceFileTime;
+					sourceFileTimeKnown = true;
+					consumedReduction = job.reduction;
+					exactDecodedReduction = job.exactReduction;
+					consumedSource = ICS_DECODED_2D;
+					opts.width = job.resultOpts.width;
+					opts.height = job.resultOpts.height;
+					opts.numLevels = job.resultOpts.numLevels;
+					opts.format = job.resultOpts.format;
+					opts.colorFormat = job.resultOpts.colorFormat;
+					opts.gammaMips = job.resultOpts.gammaMips;
+					im.SwapContent( *job.image );
+					job.image.reset();
+					route->published = true;
+					workerResult = true;
+				}
+
+				if ( !workerResult ) {
 				// load the full specification, and perform any image program calculations
 				R_LoadImageProgramForDeclaredUsage( fallbackLoadSourceName, &pic, &width, &height, &sourceFileTime, usage );
 				if ( pic == NULL && preferredDDSImage && !preferredDDSPrecompressed ) {
@@ -1289,6 +1616,7 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 					opts.format = opaqueFormat;
 				}
 				if (!im.Load2DFromMemory( opts.width, opts.height, pic, opts.numLevels, opts.format, opts.colorFormat, opts.gammaMips, ( flags & IMAGEFLAG_FILTER_NEUTRAL_ALPHA ) != 0 )) return;
+				}
 
 			}
 		}
@@ -1431,6 +1759,22 @@ void idImage::Bind() {
 			}
 		}
 	}
+	// Volumes and arrays, for GLSL samplers only, so no
+	// fixed-function enable above ever names their targets
+	else if (opts.textureType == TT_3D) {
+		if (tmu->current3DMap != texnum) {
+			if ( R_BindTextureToUnit( texUnit, GL_TEXTURE_3D, texnum ) ) {
+				tmu->current3DMap = texnum;
+			}
+		}
+	}
+	else if (opts.textureType == TT_2D_ARRAY) {
+		if (tmu->current2DArrayMap != texnum) {
+			if ( R_BindTextureToUnit( texUnit, GL_TEXTURE_2D_ARRAY, texnum ) ) {
+				tmu->current2DArrayMap = texnum;
+			}
+		}
+	}
 
 }
 
@@ -1462,11 +1806,15 @@ void idImage::BindUntracked( int texUnit ) {
 	if ( !IsLoaded() ) {
 		ActuallyLoadImage( true );
 	}
-	// As Bind: only 2D and cube images are bound.
+	// As Bind: 2D, cube, volume and array images are bound.
 	if ( opts.textureType == TT_2D ) {
 		R_BindUntrackedTextureUnit( texUnit, GL_TEXTURE_2D, texnum );
 	} else if ( opts.textureType == TT_CUBIC ) {
 		R_BindUntrackedTextureUnit( texUnit, GL_TEXTURE_CUBE_MAP_EXT, texnum );
+	} else if ( opts.textureType == TT_3D ) {
+		R_BindUntrackedTextureUnit( texUnit, GL_TEXTURE_3D, texnum );
+	} else if ( opts.textureType == TT_2D_ARRAY ) {
+		R_BindUntrackedTextureUnit( texUnit, GL_TEXTURE_2D_ARRAY, texnum );
 	}
 }
 
@@ -1634,6 +1982,10 @@ void R_BindTextureForDirectAccess( unsigned int target, int texnum ) {
 		backEnd.glState.tmu[backEnd.glState.currenttmu].current2DMap = texnum;
 	} else if ( target == GL_TEXTURE_CUBE_MAP_EXT ) {
 		backEnd.glState.tmu[backEnd.glState.currenttmu].currentCubeMap = texnum;
+	} else if ( target == GL_TEXTURE_3D ) {
+		backEnd.glState.tmu[backEnd.glState.currenttmu].current3DMap = texnum;
+	} else if ( target == GL_TEXTURE_2D_ARRAY ) {
+		backEnd.glState.tmu[backEnd.glState.currenttmu].current2DArrayMap = texnum;
 	}
 	// other targets (e.g. multisample) are not tracked by the legacy filter
 	// and do not disturb the tracked 2D / cube bindings
@@ -2231,6 +2583,12 @@ void idImage::Print() const {
 		case TT_CUBIC:
 			common->Printf( "C" );
 			break;
+		case TT_3D:
+			common->Printf( "V" );
+			break;
+		case TT_2D_ARRAY:
+			common->Printf( "A" );
+			break;
 		default:
 			common->Printf( "<BAD TYPE:%i>", opts.textureType );
 			break;
@@ -2398,7 +2756,11 @@ void idImage::SetSamplerState( textureFilter_t tf, textureRepeat_t tr ) {
 	if ( !R_ImagePolicyContentMutation() ) return;
 	filter = tf;
 	repeat = tr;
-	R_BindTextureForDirectAccess( ( opts.textureType == TT_CUBIC ) ? GL_TEXTURE_CUBE_MAP_EXT : GL_TEXTURE_2D, texnum );
+	// a texture name binds only to the target it was created with
+	const GLenum target = opts.textureType == TT_CUBIC ? GL_TEXTURE_CUBE_MAP_EXT
+		: opts.textureType == TT_3D ? GL_TEXTURE_3D
+		: opts.textureType == TT_2D_ARRAY ? GL_TEXTURE_2D_ARRAY : GL_TEXTURE_2D;
+	R_BindTextureForDirectAccess( target, texnum );
 	SetTexParameters();
 }
 

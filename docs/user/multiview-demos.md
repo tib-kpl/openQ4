@@ -1,6 +1,6 @@
 # Demos and multi-view demos
 
-> This guide matches openQ4 0.14.1. Anything added since is marked **Not in 0.14.1**. See [release status](release-status.md) for what each download includes.
+> This guide matches openQ4 0.15.0. Anything new in 0.15.0 is marked **New in 0.15.0**. See [release status](release-status.md) for what each download includes.
 
 openQ4 records and plays back two main kinds of demo:
 
@@ -9,6 +9,9 @@ openQ4 records and plays back two main kinds of demo:
 - **Multi-view demos** (MVDs, `.mvd` files) record a whole multiplayer match on
   the server. Instead of one player's view, they hold the full match, so when
   you watch you can follow any player or fly a free camera.
+- **Your own view of a match**, recorded on any server you join, is a `.mvd`
+  file too (**after 0.15.0**). It holds what you saw, so it plays back from
+  your point of view only.
 
 Both appear in the **Demos** library, with the controls each format supports.
 
@@ -23,6 +26,13 @@ Only the controls the selected demo supports are available. A demo file in
 your own `demos/` folder (in your save path) can be deleted after you confirm;
 demos inside packages are read-only.
 
+**After 0.15.0:** the details line names the players in a multi-view demo, or
+whose view a recording of one player's view shows, and a recording made where
+there was a view shows its own picture in place of the map's levelshot (a
+320x240 `demos/<name>_thumb.png` taken three seconds in). `demoFind <text>`
+lists the demos whose name, map, mode, server, players or recorder contain the
+text.
+
 ## Watch a demo
 
 Select a demo in **Demos** and choose **Play**, or enter `playMVD match_name` in
@@ -35,7 +45,9 @@ The controls include:
 - pause and resume, and step one frame;
 - skip back or forward 10 or 30 seconds;
 - speeds of 0.25x, 0.5x, 1x, 2x and 4x;
-- **Follow next** and **Free roam** in multi-view demos;
+- **Follow next** and **Free roam** in multi-view demos, and **Players**, a
+  list of everyone recorded to follow by name (**after 0.15.0**);
+- **Step back**, a frame at a time (**after 0.15.0**);
 - **Prev Marker** and **Next Marker**, when the demo has markers;
 - **Auto-Track**, which cycles Off, Killer and Action;
 - stop and close.
@@ -87,11 +99,12 @@ These work for any demo whose format supports the action:
 | `demoSpeed <0.05-16>` | Set a playback speed beyond the menu presets. |
 | `demoSeek <seconds>` | Go to a time, counted from the start. |
 | `demoSkip <seconds>` | Move back or forward, such as `demoSkip -10`. |
-| `demoStep` | Pause and advance one frame. |
+| `demoStep [frames]` | Pause and advance one frame, or that many; a negative number steps back (**after 0.15.0**). |
 | `demoFollow [next\|prev\|free\|<slot>\|<name>]` | In a multi-view demo, follow the next or previous player, a player slot or a player by name. |
 | `demoFreeRoam` | Leave follow mode and fly freely. |
 | `demoMarker next\|prev [kind]` | Jump to the next or previous marker. |
 | `demoAutoTrack [off\|killer\|action] [any\|marine\|strogg]` | Set auto-tracking, or cycle it with no arguments. |
+| `demoPlayers` | List a multi-view demo's recorded players, to follow with `demoFollow` (**after 0.15.0**). |
 | `demoStop` | Stop the demo. |
 
 A name matches whole names first, ignoring colours and case, then the one name
@@ -192,6 +205,73 @@ file is.
 The familiar Quake 4 commands `recordNetDemo`, `stopNetDemo` and `playNetDemo`
 use this system too. Their files are `.mvd`, not the old `.netdemo` format.
 
+### Record your view on any server
+
+> **After 0.15.0.** This describes the development build; 0.15.0 records only
+> on a server you host.
+
+On a server you joined, enter:
+
+```text
+record match_name
+```
+
+and later `stopRecord`. Leave out the name to use an unused `mvd` file name.
+The file goes to `baseoq4/demos/` in your save path, like a server's
+recording, and appears in **Demos**. `recordNetDemo` and `recordMVD` do the
+same when you are not hosting; when you host, all three record the whole
+match.
+
+The recording holds what your game received from the server and your own
+moves, so it plays back exactly what you saw: your view, the players and
+effects around you, your HUD and the scoreboard. It cannot follow another
+player or fly free, and the **Follow** and **Free roam** controls are not
+offered. Pause, speed, stepping and skipping work, and seeking takes about a
+second: the recording keeps a keyframe every ten seconds (`mvd_keyframeInterval`).
+
+A recording ends by itself when the map changes or you leave the server.
+`mvdStatus` shows a recording in progress (`view=client`); `mvdInfo` describes
+a finished one, including whose view it is. `mvdRecover` saves the complete
+part of one that was cut short, as for a server's recording.
+
+### Record every match automatically
+
+> **After 0.15.0.**
+
+Set `ui_autoAction` to the things to do for every match you play:
+
+```text
+ui_autoAction "demo ss stats"
+```
+
+- `demo` records each match from the moment it goes live until the result.
+- `ss` takes a screenshot of the final scoreboard.
+- `stats` writes the result to `stats/<match>.json`: the map, mode, team
+  scores and each player's score, kills, deaths and damage.
+
+The files share one name made of the date and time, the mode, the map and your
+name, such as `20261123-161522_dm_q4dm1_player`. A recording you started
+yourself is left alone. A server can do the same for every match it runs with
+`si_autoAction "demo stats"`, which players see in its server information; see
+the [server setup guide](server-setup.md).
+
+### Time a demo
+
+`timeDemo match_name.mvd` plays a multi-view demo, or a recording of your own
+view, as a benchmark: each frame moves the match on by one simulation tic and
+frames are not capped, so the same file always shows the same frames. The
+console reports the frames, seconds, frame rate and the slowest frame;
+`timeDemoQuit` quits afterwards. A hidden or minimized window may still be held
+to the display's rate.
+
+### Export a demo as pictures
+
+`demoExport match_name.mvd 30` writes a multi-view demo, or a recording of your
+own view, as one PNG picture every thirtieth of a second of the match, in
+`exports/match_name/` in your save path (`frame00000.png` on); add `quit` to
+quit afterwards. Any video editor or encoder turns the pictures into a video.
+Sound is not exported yet.
+
 ### Add markers and notes
 
 Markers are added automatically (see [Jump to markers](#jump-to-markers)). Add
@@ -226,6 +306,7 @@ recording with no complete snapshot cannot be recovered.
 |---|---|---|---|
 | openQ4 MVD `.mvd` 1.3 | Supported | Pause, speed, step, and fast seeking from the nearest keyframe | Free camera over the whole match, player follow, markers and auto-tracking |
 | openQ4 MVD `.mvd` 1.0–1.2 | Supported, from game versions openQ4 still recognises | Pause, speed, step, and replay-based seek (replays from the start) | Free camera over the whole match, player follow and auto-tracking |
+| openQ4 `.mvd` of one player's view (after 0.15.0) | Supported | Pause, speed, step, and replay-based seek (replays from the start) | The recorder's view only |
 | openQ4 render `.demo`, including campaign demos | Supported | Pause, speed, step, level markers, and fast seeking from the nearest keyframe (older recordings replay from the start) | The recorded view only |
 | Retail Quake 4 render `.demo` | Not supported yet | None | None |
 | Retail Quake 4 `.netdemo` | Not supported yet | None | None |
@@ -321,6 +402,11 @@ The overlay shows **Seeking...** while it works.
 
 openQ4 also limits how much of a demo it reads at once, so a long match plays
 smoothly and a damaged file cannot freeze the game.
+
+When the game data checksum differs, the console names the packs that differ
+from the ones the demo was recorded with, or says that every pack matches and
+loose files or a mod changed the game data (**after 0.15.0**; older demos do
+not record their packs).
 
 `mvd_enforceContent 0` skips only the game data checksum, for troubleshooting.
 It cannot make demos recorded with different game files play correctly.

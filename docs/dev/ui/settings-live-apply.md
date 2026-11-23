@@ -1,8 +1,8 @@
 # Applying display settings without a device restart
 
-This note records the six stages of making Settings > Display apply its
+This note records the nine stages of making Settings > Display apply its
 changes to the running renderer. It is the record for the changes of
-11 November 2026 and supersedes, for the settings named here, what
+11 November 2026 (stages 1 to 6) and 21 November 2026 (stages 7 to 9) and supersedes, for the settings named here, what
 [effect execution](settings-effect-execution.md#combined-executor),
 [the resolution rows](system-resolution-rows.md) and
 [performance presets](performance-presets.md) say about one device restart
@@ -568,11 +568,317 @@ menu, a tiled screenshot larger than the window with a window view in it, VR
 on OpenGL, macOS and OpenGL ES (both keep the multisampled window), and a
 context without multisample textures.
 
+## Stage 7: reload only what a texture change reaches
+
+Until this stage any change to a texture setting (a reduction ceiling,
+`image_picmip`, the block-compression switches or
+`image_usePrecompressedTextures`) reloaded every image that was not a render
+target: the whole world, every model, the interface and its fonts, and every
+generated image, which was rebuilt from its generator for nothing. A preset
+that only lowered the normal-map ceiling paid for all of it.
+
+### Which images a change reaches
+
+Each file-backed load now records the reduction key it was built under
+(`idImage::CurrentReductionKey`, `Image_load.cpp`):
+
+- the resolved downsize and picmip policy, from the same
+  `R_GetImageDownsizePolicy` the loader and the generated cache key use;
+- the block format `R_DecodedImageCompression` gives decoded pixels, which
+  is what `image_useCompression` and `image_useNormalCompression` change;
+- `image_usePrecompressedTextures`, which chooses the file read.
+
+`idImageManager::CheckCvars` reloads, through
+`ReloadReductionChangedImages`, only the resident file-backed images whose key
+differs from the current one. Two equal keys read the same files under the
+same policy, so they build the same image. What that leaves out:
+
+- A ceiling for one layer leaves the others alone: the bump ceiling reloads
+  normal maps, the specular ceiling specular maps.
+- The interface, fonts and `nopicmip` materials have
+  an empty policy and no decoded block format whatever the settings, so only
+  the precompressed switch reaches them.
+- Generated, persistent and scratch images are built from no file. They were
+  regenerated, and a persistent target not on the mutable-name list was
+  reallocated with no texels; now they keep their content.
+- Purged and never-loaded images stay as they are and load under the new
+  settings when next bound.
+
+Two cases reload whatever the key says: a load from a held recovery
+candidate (built before a device teardown, possibly under other settings)
+leaves its key unknown, and an image Vulkan stored without its top levels to
+fit video memory is reloaded by any reduction change, since the reduction may
+have freed the room for them.
+
+The stale images reload in name order on the renderer thread. The log line
+says how many were reloaded, how long it took and how many the change did not
+reach: `Texture reduction changed: reloaded N images in T ms, U unaffected`
+(stage 8 replaced it with two lines, one when the change is queued and one
+when the last texture is reloaded).
+The level load's file prefetch (`idLevelImagePrefetch`) was tried and left
+out: right after a load the files sit in the operating system's cache, and
+its worker threads made the reload slower on the shared test machine (below).
+
+### A change during a level load is no longer lost
+
+`CheckCvars` cleared the changed flags and then returned during a level load,
+on the reasoning that the load would touch every image. It touches only the
+images it purges. Everything referenced outside the level (the interface,
+the player's models, anything kept from the previous map) kept the size and
+block format of the old settings until the next `vid_restart`.
+
+The check now leaves the flags set during a level load and while a checked
+image-policy attempt owns resource mutation (`R_ImagePolicyActive`), as the
+high-quality re-parse of stage 4 already did. The first frame after either
+compares keys: the images the load built already have the current key and are
+skipped, and the ones it kept are reloaded. When a reduction and a sampling
+cvar change together, the samplers are now reapplied to the images the
+reduction did not reload; the old path returned after the reload.
+
+### Engine checks, stage 7
+
+Hidden window, console verbs only, `game/airdefense1` under the Enhanced
+preset, the worktree build of `843d61764` plus this change. Other sessions'
+clients and builds ran on the machine throughout, so the times are
+indicative. Kit: `.tmp/live-apply/run.py <name> selective` and
+`textures`.
+
+| Step | Images reloaded | Not reached | OpenGL | Vulkan |
+| --- | --- | --- | --- | --- |
+| Normal-map ceiling 128 on | 318 | 1,624 | 1.4 s | 2.5 to 2.9 s |
+| Specular ceiling changed while specular reduction is off | 0 | 1,942 | 0 ms | 1 to 8 ms |
+| Normal-map ceiling off | 318 | 1,624 | 1.4 s | 2.9 s |
+| A 128 ceiling on every layer | 1,073 | 869 | 2.2 s | 3.0 s |
+| `image_usePrecompressedTextures` 1 again (reaches every image) | 1,942 | 0 | 4.1 s | 7.1 s |
+
+The last row is what every one of these steps cost before: each reloaded all
+1,942 file-backed images, plus every generated image.
+
+- **Normal maps alone.** With the bump ceiling, 15 of the 24 world normal
+  maps listed by name shrank and no other image changed size; turning it off
+  restored all 477 compared world images. The device generation did not move.
+- **Regression.** The `textures` scenario of stage 1 still passes on both back
+  ends: the 128 ceiling reduces 335 of 477 world textures, the precompressed
+  switch reloads once each way, and lifting the ceiling restores all 477.
+- **The prefetch.** The same normal-map step with the level load's prefetch
+  took 1.0 to 3.1 s on OpenGL over six runs (median 1.8 s), and 1.3 to 1.5 s
+  without it (median 1.4 s), so the reload does not use it.
+
+Not run: a change made during a level load (the deferral is checked in the
+source only), a texture pack, a machine whose files are not already cached,
+Vulkan with textures held below their request to fit video memory, and a
+visible window.
+
+## Stage 8: the reload spread across frames
+
+Stage 7 left the reload in the frame of the change: 1.2 to 1.4 s of no
+frames for a normal-map change in Air Defense 1, 4 to 7 s when the change
+reached every texture. The reload now runs a little each frame.
+
+### How it works
+
+- A change queues the images it reaches (`ReloadReductionChangedImages`,
+  still in name order) and reloads nothing itself. The log says
+  `Texture reduction changed: N textures to reload, U unaffected`.
+- Each frame, `CheckCvars` (at the end of the frame, where the reload always
+  ran) calls `ContinueReductionReloads` with `image_reloadFrameMsec`, default
+  4: it reloads queued images until that much time has passed, and always at
+  least one, so the queue drains at any frame rate.
+- Until its turn an image keeps its old pixels, which are complete. A frame
+  shows a mix of old and new sizes, never a missing or blank texture, and
+  nothing is purged ahead of its reload.
+- The queue holds images, not the change. Each image is checked again at its
+  turn and skipped if it is already current (a bind, a level load or a device
+  restart loaded it, or a later change brought its key back). A second change
+  before the queue drains builds a new queue from every image, and the log
+  says `Texture reduction changed again: K queued textures are checked again`.
+- The level load and a checked image-policy attempt pause the queue, as they
+  deferred the change in stage 7. `EndLevelLoad` then finishes any pending
+  change and the whole queue at once, behind the loading screen, so play
+  starts with every texture current.
+- A failed device drops the queue (its restart reloads everything);
+  `PurgeAllImages` and `Shutdown` drop it too, since it holds image pointers.
+- When the queue empties the log says how many textures were reloaded, over
+  how many frames and how long, how much of that was loading, the most one
+  frame spent, and the slowest texture:
+  `Texture reduction applied: reloaded N textures over F frames in T ms
+  (L ms of loading, at most M ms in one frame), C already current, U
+  unaffected`, then `Texture reduction: slowest texture <name>, X ms`.
+- `image_reloadFrameMsec 0` reloads the whole queue in the frame of the
+  change, as stage 7 did.
+
+### What a frame still costs
+
+The budget cannot split one texture. The slowest one sets the longest frame:
+the stock `downsize( models/mapobjects/strogg/stroggos/clouds, 1 )` image
+program takes 30 to 40 ms, and with `image_usePrecompressedTextures 0` an
+`addnormals( ..., heightmap( ... ) )` program computed from its sources takes
+0.15 to 0.7 s, a `downsize` of a large diffuse up to 1.4 s on Vulkan. Making
+those asynchronous (decode on a worker, upload at the frame) is what is left.
+
+Spreading also lengthens the whole reload, because the frames in between are
+drawn: on the busy test machine about 9 ms of frame per frame of reloading.
+
+### Engine checks, stage 8
+
+Hidden window, console verbs only, `game/airdefense1` under Enhanced, the
+worktree build of `0e1cc68ac` plus this change, both back ends. Other
+sessions' clients and builds ran throughout. Kit:
+`.tmp/live-apply/run.py <name> selective` and `textures`.
+
+| Change | Textures | Frames | Whole reload | Loading | Longest frame |
+| --- | --- | --- | --- | --- | --- |
+| Normal-map ceiling 128 on, OpenGL | 318 | 144 | 2.4 s | 1.0 s | 33 ms |
+| The same, Vulkan | 318 | 148 | 2.5 s | 1.0 s | 33 ms |
+| The same with `image_reloadFrameMsec 0`, OpenGL | 318 | 1 | 1.2 s | 1.2 s | 1,220 ms |
+| Ceiling 128 on every layer, both | 1,073 | 280 to 340 | 4.7 to 5.7 s | 1.4 to 1.9 s | 30 to 39 ms |
+| Precompressed textures off (decoded), both | 1,942 | 970 to 1,230 | 29 to 36 s | 18 to 21 s | 0.56 to 1.4 s |
+| Precompressed textures back on, both | 1,942 | 600 to 1,050 | 10 to 35 s | 4 to 11 s | 0.15 to 0.23 s |
+
+- The normal-map step reduced 15 of the 24 world normal maps by name and
+  nothing else, turning it off restored all 477 compared world images, and a
+  change that moves no policy queued nothing. The device generation never
+  moved.
+- The `textures` scenario of stage 1 passes on OpenGL with its waits
+  lengthened for the spread (each phase given 20 to 90 s): 335 of 477
+  reduced, all restored. A first run with shorter waits showed the second
+  change arriving while the first queue was still draining: the new queue
+  checked again what was left, skipped nothing it should have reloaded, and
+  the end state was the same.
+- Vulkan: the same scenario passed in the last of three runs with the long
+  waits. In one, the final ceiling-off step queued its 1,073 textures and had
+  not finished 60 s later (387 of 477 restored at the listing), with frames
+  still presenting and no warning; a timestamped repeat finished that step in
+  6.7 s and the last run in 20 s (757 frames). The swings follow the load from
+  other sessions on the machine, but the slow run is not explained.
+
+Not run: a change made during a level load (the source test pins the
+deferral and the finish in `EndLevelLoad`), a visible window, a measurement
+of the frame rate the player sees during the reload, and a machine to
+itself.
+
+## Stage 9: decoding on image workers
+
+Stage 8 left one texture's whole load inside one frame. Where that load
+decodes a source (a TGA, PNG or JPG, an image program such as
+`addnormals( ..., heightmap( ... ) )` or `downsize( ... )`) the decode, the
+resampling and the block compression run on worker threads now.
+
+### Where the time was
+
+The completion line now splits the main thread's time by load phase. In Air
+Defense 1 the GPU upload is a small part of every reload (55 ms of 1.7 s for
+the 128 ceiling, 0.35 to 0.9 s of 18 to 23 s with precompressed textures off).
+Most of the rest is the file system: lookups of the generated cache (two per
+image, about 1.3 ms each when it misses), reading the sources, and writing the
+new cache entries. With precompressed textures on, almost every texture is a
+DDS read and copied as it is, so there is little to decode; with them off,
+every texture is decoded, and that is where a worker pays.
+
+### What runs where
+
+The file system belongs to the main thread: an open updates the pure and
+cd-path bookkeeping and the level-load cache, so no worker may open a file.
+The split follows from that.
+
+1. **Deferral, main thread** (`idImage::ReloadOrDefer`). The load runs as
+   `Reload( true )` would, without purging first. A DDS or a generated cache
+   entry finishes there as before. A load that reaches the decode of a 2D
+   source stops just before it: the files the decode will read are recorded
+   into an image file tape (`idImageFileTape`, imagetools), the job takes the
+   inputs the load had resolved (source, cache name, usage, filter, flags,
+   policy, the derived format), and the image is put back exactly as it was,
+   its current texture untouched.
+2. **Decode, worker** (`R_RunImageDecodeJob`). The worker replays the tape:
+   every read the decoders and image programs make, and every dds/ replacement
+   lookup, is answered from it, and nothing touches the file system. It runs
+   the same code the inline decode runs (the program, the reduction, the mip
+   count, the opaque split, the block compression) and keeps the result.
+3. **Publication, main thread** (`idImage::PublishDecodeJob`). The image is
+   reloaded with the worker's result standing in for the decode, then written
+   to the generated cache and uploaded as before. The result is used only if
+   the load reaches the decode with the same source, cache name, usage,
+   filter, flags, policy and format; otherwise the load decodes inline. The
+   two cache lookups the deferral just found missing are not repeated.
+
+Each frame publishes finished decodes, oldest first, then starts new images,
+within `image_reloadFrameMsec` as in stage 8. `image_reloadWorkers` (default 2,
+capped at the cores less one; 0 decodes on the main thread) sets the workers.
+They start with the first deferral and stop when the queue drains, at
+shutdown and on `PurgeAllImages`, so no thread idles through play. At most
+three deferrals per worker and 256 MB of recorded bytes are in flight.
+
+What keeps it safe:
+
+- A replay that asks for a file or lookup the tape does not hold fails the
+  job, and the image loads inline. An error raised off the main thread throws,
+  which also fails the job; the inline load then raises it as before.
+- The image-program parser's name buffer is per thread now; it was a static
+  shared by every parse.
+- A worker's block compression runs in one thread rather than in bands, the
+  renderer's allocation counters skip worker allocations, workers run below the
+  main thread's priority, and each takes the main thread's floating-point
+  control word.
+- `ReloadOrDefer` restores the options, usage, cache flags, timestamps,
+  reduction key and consumed-policy record a deferred load had written, and a
+  load that ended without storage purges the image as `Reload` would.
+- Not deferred: cube maps, fonts, the fallback after a failed precompressed
+  DDS, and every load outside the settings reload (level loads are unchanged).
+
+### Engine checks, stage 9
+
+Hidden window, console verbs only, `game/airdefense1` under Enhanced, the
+worktree build of `165268a08` plus this change. Other sessions' clients and
+builds ran on the machine, and the generated-cache lookups swung between about
+1 ms and 7 ms each with their load, so the main-thread figures below are given
+next to the cache figure they include. Kit: `.tmp/live-apply/run.py <name>
+decode` (precompressed textures off, then on again), `selective`, `textures`.
+
+Precompressed textures off, 1,942 textures, OpenGL:
+
+| Workers | Deferred | Main thread | of which cache lookups | Worker decoding | Longest frame |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 0 | 20.9 s, 23.1 s, 43.9 s | 5.4 s, 4.9 s, 16.9 s | none | 0.81 s, 0.66 s, 1.31 s |
+| 1 | 1,838 to 1,841 | 12.8 s, 14.6 s | 3.6 s, 3.8 s | 3.0 s, 7.1 s | 0.68 s, 0.44 s |
+| 2 | 1,836 to 1,842 | 12.1 s to 28.3 s | 1.0 s to 16.5 s | 4.3 s to 8.2 s | 0.20 s to 0.56 s |
+
+- Leaving out the cache lookups, which the machine's load moved more than
+  anything else, the main thread spent 15.5 to 27 s without workers and 9 to
+  14 s with them.
+- **The same pixels.** Each decode run writes every decoded texture to the
+  generated cache. The 1,924 files the workers-off run wrote and the 1,924 the
+  one-worker and two-worker runs wrote are identical byte for byte, so a
+  worker's decode, resampling and compression produce exactly what the inline
+  path does.
+- Every deferred decode was published from its worker (no fallback), and
+  turning precompressed textures back on restored all 477 compared world
+  textures.
+- With precompressed textures on, the 128 ceiling deferred 38 of 1,073
+  textures; the rest are DDS reads, unchanged.
+- **Vulkan**, precompressed textures off, back to back: without workers 18.6 s
+  of main thread and a longest frame of 1.43 s; with two, 10.1 s and 148 ms,
+  1,843 of 1,844 deferred decodes published from a worker, and the 1,924
+  generated cache files identical to the workers-off run. The `selective` check
+  (normal-map ceiling) passes on both renderers, and the `textures` regression
+  passes on Vulkan with workers: 335 of 477 reduced, all restored.
+
+What a frame still costs: the longest frames are now file work, a slow
+cache lookup or a large source read on the main thread (0.2 to 0.7 s on the
+busy machine), not decoding. Reading files on a worker needs a file system
+that can open files off the main thread, which it cannot.
+
+Not run: a level load during a deferred decode (the queue pauses and the
+level load's finish waits for the workers; the source test pins it), a texture
+pack, a cold disk, a machine to itself, and a visible window.
+
 ## What these stages do not do
 
-- The image reload still blocks while textures load. It is shorter than a
-  device restart because the device, fonts, generated images, vertex caches
-  and the world's derived data stay, but it is not spread across frames.
+- File work stays on the main thread: generated-cache lookups, source reads
+  and cache writes. On a loaded machine one of them can still hold a frame
+  for 0.2 to 0.7 s. Moving them needs a file system that can open files off
+  the main thread.
+- Level loads decode on the main thread as before; only the settings reload
+  uses the workers.
 - The in-place route has no readback of image dimensions. Its evidence is the
   exact settings readback, the same device generation and a later presented
   frame, as for the combined executor's restart.
@@ -607,6 +913,28 @@ device reopened.
 
 ## Tests
 
+- `tools/tests/renderer_picmip_policy.py` (stage 9): the tape is per thread, a
+  replay never reaches the file system and fails on a read it does not hold,
+  the source readers and the dds/ lookup go through it, a timestamp-only probe
+  records the replacement DDS, the program parser's buffer is per thread, the
+  deferral stops before the decode, a publication matches every input and
+  skips the cache lookups, `ReloadOrDefer` restores the image, the worker
+  replays and catches, and the pool stops at shutdown and on a purge.
+- `tools/tests/renderer_image_recovery_loader.py` and
+  `tools/tests/generated_image_pak_content_stamp.py` follow the reduction key
+  (stage 7) and the tape helper.
+- `tools/tests/renderer_picmip_policy.py` (stage 8): the per-frame check keeps
+  running while images are queued, a change builds a fresh queue and reloads
+  nothing itself, each frame reloads at least one image within
+  `image_reloadFrameMsec` and checks every image again at its turn, a failed
+  device, `PurgeAllImages` and `Shutdown` drop the queue, and `EndLevelLoad`
+  finishes a pending change after loading the level's images.
+- `tools/tests/renderer_picmip_policy.py` (stage 7): the cvar check defers
+  during a level load and a checked attempt with the flags still set, reloads
+  through `ReloadReductionChangedImages` and never the whole catalogue, skips
+  generated, persistent, scratch and unloaded images, reloads an image whose
+  key moved or that Vulkan held below its request, and every file-backed load
+  records its key while a prepared recovery candidate leaves it unknown.
 - `tools/tests/renderer_gl_window_view_contract.py` (stage 6): the policy and
   its latch, the sample counts, the window view's conditions, seed, resolve
   and placement in the view, the copy out of a multisampled stand-in, and the

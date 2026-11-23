@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ROW = re.compile(r'^\s*\d+\s+\d+\s+([\d.]+)\s+([\d.]+)\s+(\S+)', re.M)
 VOICE = re.compile(r'^SOUND_VOICE source=(\d+) state=(\w+) routed=(\d) queued=(\d) serial=(\d+) offsetMs=([\d.-]+) sample=(\S+)', re.M)
 OUTPUT = re.compile(r'^SOUND_OUTPUT serial=(\d+) connected=(\d) centre=(\d) interrupted=(\d)', re.M)
-WORLD = re.compile(r'^SOUND_WORLD id=1 paused=(\d) time=(-?\d+)', re.M)
+WORLD = re.compile(r'^SOUND_WORLD id=1 paused=(\d) time=(-?\d+) .*?stamp=(-?\d+) now=(-?\d+)', re.M)
 
 
 def ffmpeg_exe():
@@ -124,6 +124,27 @@ def world_time(section):
     return int(m[2]) if m else None
 
 
+def scene_time(section):
+    """The game world's sound clock when the probe ran. The reported time was stamped
+    at the last mixed frame, while voice offsets are read now; a running world's
+    clock has moved on by the difference, which a long frame makes hundreds of ms."""
+    m = WORLD.search(section)
+    if not m:
+        return None
+    return int(m[2]) + (0 if m[1] == '1' else int(m[4]) - int(m[3]))
+
+
+def frame_lag(sections_by_name):
+    """The longest a probe waited after the last mixed frame. The checks give each
+    phase a few frames to react; on a machine too busy to keep a hidden client near
+    60 Hz they cannot, and this says so instead of the phase checks failing alone."""
+    lags = [int(m[4]) - int(m[3]) for body in sections_by_name.values() for m in WORLD.finditer(body)]
+    return max(lags) if lags else None
+
+
+FRAME_LAG_LIMIT_MS = 250
+
+
 def run(args, root, speakers, steps):
     game = root / 'save' / 'baseoq4'
     game.mkdir(parents=True, exist_ok=True)
@@ -144,7 +165,7 @@ def run(args, root, speakers, steps):
         'com_skipLoadingContinue': '1', 'com_maxfps': '60', 'ui_autoJoin': '0', 'ui_retained': '1',
         'sys_lang': 'english', 'g_autoExecAfterMapLoad': 'audio-output.cfg', 'g_autoExecAfterMapLoadDelayMs': '3000',
     }
-    exe = ROOT / '.install' / ('openQ4-client_x64.exe' if os.name == 'nt' else 'openQ4-client_x64')
+    exe = args.runtime_dir / ('openQ4-client_x64.exe' if os.name == 'nt' else 'openQ4-client_x64')
     command = [str(exe)]
     for key, value in cvars.items():
         command += ['+set', key, value]
@@ -156,7 +177,7 @@ def run(args, root, speakers, steps):
         startup.wShowWindow = 0
         options.update(startupinfo=startup, creationflags=subprocess.CREATE_NO_WINDOW)
     with (root / 'process.log').open('w') as out:
-        process = subprocess.run(command, cwd=ROOT / '.install', stdout=out, stderr=subprocess.STDOUT, timeout=args.timeout, **options)
+        process = subprocess.run(command, cwd=args.runtime_dir, stdout=out, stderr=subprocess.STDOUT, timeout=args.timeout, **options)
     log = (game / 'logs/openq4.log').read_text(encoding='utf-8', errors='replace')
     return process.returncode, log, command
 
@@ -191,6 +212,8 @@ def check_stereo(args, root):
     code, log, command = run(args, root, 2, steps)
     s = sections(log)
     checks = {'complete': 'AUDIO_OUTPUT_COMPLETE' in log and code == 0}
+    lag = frame_lag(s)
+    checks['frames_kept_pace'] = lag is not None and lag < FRAME_LAG_LIMIT_MS
     before, during, after = (voices(s.get(k, '')) for k in ('BEFORE', 'DURING', 'AFTER'))
     checks['before_playing'] = {'dialogue', 'effect'} <= set(playing(s.get('BEFORE', '')))
     checks['interruption_silences_output'] = output(s.get('DURING', '')).get('connected') == 0 and \
@@ -200,12 +223,12 @@ def check_stereo(args, root):
     checks['output_returned'] = output(s.get('AFTER', '')).get('connected') == 1 and \
         output(s.get('AFTER', '')).get('serial', 0) > output(s.get('BEFORE', '')).get('serial', 0) and \
         'OpenAL output changed (simulated interruption ended)' in log
-    elapsed = (world_time(s.get('AFTER', '')) or 0) - (world_time(s.get('BEFORE', '')) or 0)
+    elapsed = (scene_time(s.get('AFTER', '')) or 0) - (scene_time(s.get('BEFORE', '')) or 0)
     moved = after.get('dialogue', {}).get('offset', 0) - before.get('dialogue', {}).get('offset', 0)
     checks['resumed_at_scene_clock'] = bool(before.get('dialogue') and after.get('dialogue')) and \
         abs(moved - elapsed) < 350 and after['dialogue']['offset'] > 2000
     paused, resumed = voices(s.get('PAUSED', '')), voices(s.get('RESUMED', ''))
-    paused_elapsed = (world_time(s.get('RESUMED', '')) or 0) - (world_time(s.get('PAUSED', '')) or 0)
+    paused_elapsed = (scene_time(s.get('RESUMED', '')) or 0) - (scene_time(s.get('PAUSED', '')) or 0)
     paused_moved = resumed.get('dialogue', {}).get('offset', 0) - paused.get('dialogue', {}).get('offset', 0)
     checks['paused_line_resumes_in_place'] = bool(paused.get('dialogue') and resumed.get('dialogue')) and \
         resumed['dialogue']['state'] == 'playing' and abs(paused_moved - paused_elapsed) < 350 and resumed['dialogue']['offset'] > 2000
@@ -235,15 +258,20 @@ def check_stereo(args, root):
     if checks['rendered_audio']:
         rendered_tones(mix, windows)
     levels = [max(w) for w in windows]
-    loud = statistics.median(sorted(levels)[-max(1, len(levels) // 4):]) if levels else 0
+    # The file starts at the device's open, so a cold load leaves minutes of digital
+    # silence before the map; measure the loud level over the audible span only.
+    audible = [i for i, level in enumerate(levels) if level > 1e-4]
+    span = levels[audible[0]:audible[-1] + 1] if audible else []
+    loud = statistics.median(sorted(span)[-max(1, len(span) // 4):]) if span else 0
     quiet = [level < 0.25 * loud for level in levels]
     # 440 Hz plays, stops for the 1.5 s outage (at least four 250 ms windows), then plays again.
     gap = re.search(r'L+Q{4,}L+', ''.join('Q' if q else 'L' for q in quiet)) if loud > 0.01 else None
     checks['rendered_gap_then_resume'] = bool(gap)
-    return checks, {'log_sections': {k: {'playing': playing(v), 'voices': voices(v), 'output': output(v), 'world_time': world_time(v)}
-                                      for k, v in s.items()},
-                    'trim': trim.group(0) if trim else None, 'elapsed_ms': elapsed, 'dialogue_moved_ms': moved,
-                    'paused_elapsed_ms': paused_elapsed, 'paused_moved_ms': paused_moved, 'rendered_440_levels': levels,
+    return checks, {'log_sections': {k: {'playing': playing(v), 'voices': voices(v), 'output': output(v), 'world_time': world_time(v),
+                                          'scene_time': scene_time(v)} for k, v in s.items()},
+                    'probe_frame_lag_ms': lag, 'trim': trim.group(0) if trim else None, 'elapsed_ms': elapsed, 'dialogue_moved_ms': moved,
+                    'paused_elapsed_ms': paused_elapsed, 'paused_moved_ms': paused_moved, 'rendered_440_loud': loud,
+                    'rendered_440_levels': levels,
                     'command': command, 'returncode': code}
 
 
@@ -261,6 +289,8 @@ def check_surround(args, root):
     loaded = log.index('AUDIO_OUTPUT_SURROUND') if 'AUDIO_OUTPUT_SURROUND' in log else len(log)
     expected = {'SURROUND': 1, 'STEREO': 0, 'SURROUND_AGAIN': 1, 'HRTF': 0, 'LAYOUT': 1}
     checks = {'complete': 'AUDIO_OUTPUT_COMPLETE' in log and code == 0}
+    lag = frame_lag(s)
+    checks['frames_kept_pace'] = lag is not None and lag < FRAME_LAG_LIMIT_MS
     times = []
     for phase, routed in expected.items():
         v = voices(s.get(phase, '')).get('dialogue')
@@ -287,15 +317,16 @@ def check_surround(args, root):
     ratio = ratios[len(ratios) // 2] if ratios else 0.0
     # The wave writer restarts its file at each reset: this is the last, 5.1, layout.
     checks['rendered_centre_after_transitions'] = len(speech) == 6 and speech[2] > .02 and ratio > 1.5
-    return checks, {'log_sections': {k: {'playing': playing(v), 'voices': voices(v), 'output': output(v), 'world_time': world_time(v)}
-                                      for k, v in s.items()},
-                    'centre_ratio_median': ratio, 'rendered_tones': tones, 'command': command, 'returncode': code}
+    return checks, {'log_sections': {k: {'playing': playing(v), 'voices': voices(v), 'output': output(v), 'world_time': world_time(v),
+                                          'scene_time': scene_time(v)} for k, v in s.items()},
+                    'probe_frame_lag_ms': lag, 'centre_ratio_median': ratio, 'rendered_tones': tones, 'command': command, 'returncode': code}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--assets', type=Path, help='Read-only Quake 4 install root (the folder holding q4base)')
     parser.add_argument('--output', type=Path)
+    parser.add_argument('--runtime-dir', type=Path, default=ROOT / '.install', help='staged or extracted package to run')
     parser.add_argument('--map', default='game/airdefense1')
     parser.add_argument('--renderer', default='gl', choices=['gl', 'vk'])
     parser.add_argument('--timeout', type=int, default=600)
@@ -311,7 +342,8 @@ def main():
         parser.error('--assets and --output are required')
     if args.fixtures is not None:
         args.fixtures = args.fixtures.resolve(strict=True)
-    verify_runtime_is_current(ROOT / '.install')
+    args.runtime_dir = args.runtime_dir.resolve()
+    verify_runtime_is_current(args.runtime_dir)
     output_root = args.output.resolve()
     report = {'microphone': False, 'host_input': False, 'output': 'OpenAL wave writer', 'runs': {}}
     passed = True
@@ -324,10 +356,10 @@ def main():
         report['runs'][name] = {'checks': checks, **details}
         passed &= all(checks.values())
         print(json.dumps({name: checks}, indent=2))
-    exe = ROOT / '.install' / ('openQ4-client_x64.exe' if os.name == 'nt' else 'openQ4-client_x64')
+    exe = args.runtime_dir / ('openQ4-client_x64.exe' if os.name == 'nt' else 'openQ4-client_x64')
     report.update(passed=passed, executable_sha256=hashlib.sha256(exe.read_bytes()).hexdigest(),
-                  runtime_sha256={str(p.relative_to(ROOT / '.install')): hashlib.sha256(p.read_bytes()).hexdigest()
-                                  for p in (ROOT / '.install/baseoq4').iterdir()
+                  runtime_sha256={str(p.relative_to(args.runtime_dir)): hashlib.sha256(p.read_bytes()).hexdigest()
+                                  for p in (args.runtime_dir / 'baseoq4').iterdir()
                                   if p.is_file() and p.suffix.lower() in ('.dll', '.so', '.dylib', '.pk4')},
                   harness_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
     (output_root / 'result.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')

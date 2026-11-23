@@ -7744,7 +7744,23 @@ def validate_gl_shadow_coverage_contract() -> None:
         require_compact(body, "if ( !RB_ShadowMapResolveCasterDrawData( surf, casterGeo, ambientCache ) ) { return false; }",
                         "any missing caster fails its ownership")
         render_body = braced_body(source, f"static bool {render}(", render)
-        for casters in ("primaryCasters", "secondaryCasters", "tertiaryCasters", "quaternaryCasters"):
+        if chain == "RB_ShadowMapDrawCasterChain":
+            # 82b5a343b: the projected light's still chains (primary and
+            # secondary) are drawn together, without short-circuiting, so the
+            # whole-light cache can store them before the moving chains join;
+            # their result still decides the map, and a partial still scene is
+            # never cached.
+            require_compact(render_body,
+                            f"const bool staticOk = {chain}( primaryCasters, cascadeIndex, useHashedAlpha ) "
+                            f"& {chain}( secondaryCasters, cascadeIndex, useHashedAlpha ); "
+                            "allCastersRendered &= staticOk;",
+                            "all four caster chains participate")
+            require_compact(render_body, "if ( wholeLightTile ) { // store the still scenery before moving casters join it if ( staticOk ) {",
+                            "a partial still scene is never cached")
+            dynamic = ("tertiaryCasters", "quaternaryCasters")
+        else:
+            dynamic = ("primaryCasters", "secondaryCasters", "tertiaryCasters", "quaternaryCasters")
+        for casters in dynamic:
             require(render_body, f"allCastersRendered &= {chain}( {casters},", "all four caster chains participate")
         require(render_body, "return allCastersRendered;", "partial maps are never published or sampled")
 
@@ -8253,9 +8269,16 @@ def validate_point_cache_parity_and_receiver_cost_contract() -> None:
             "entityDef->parms.hModel->IsStaticWorldModel() &&",
             "R_LightHasRealPrelightModel( lightDef->parms );",
             "const bool materialNoSelfShadow = !prelightOwnsShadows",
-            "&& shadowShader->TestMaterialFlag( MF_NOSELFSHADOW );",
+            "&& R_InteractionMaterialNoSelfShadow( entityDef, shadowShader, shadowMapCasterPolicyActive );",
         ),
         "static world under a prelit light keeps the prelight's global ownership",
+    )
+    # 3f1bec35e (#238): the material's noSelfShadow flag still decides
+    # ownership, except for opted-in skinned models under a mapped light.
+    require_compact(
+        braced_body(interaction, "static bool R_InteractionMaterialNoSelfShadow(", "material noSelfShadow ownership"),
+        "if ( !material->TestMaterialFlag( MF_NOSELFSHADOW ) ) { return false; }",
+        "a material without noSelfShadow never takes its ownership",
     )
     require_compact(
         read("src/game/gamesys/SysCvar.cpp"),
@@ -10106,6 +10129,160 @@ def validate_resident_projected_sampling_contract() -> None:
     )
 
 
+def validate_prelight_caster_contract() -> None:
+    """The static world of an off-centre light casts from its stencil volume.
+
+    A shadow map drew each world surface whole. The stencil shadow of the
+    static world under a prelit light is the dmap volume, built from the world
+    triangles that face away from the light and cut to it. For a light whose
+    source lies outside its own box the two differ: geometry between source and
+    box shadowed the box in the map only, a surface in the box's boundary plane
+    cast in stencil only, and under a distant or parallel light the map stored
+    the faces turned towards the light. mcc_landing's light_9083 shadowed 49%
+    of a view that stencil lights, q4cmp13's suns left lit 31% that it shadows.
+
+    Such a light now casts the static world as one caster, the front caps of
+    its prelight volume in both windings, and its world surfaces stand aside
+    without sending the light to its stencil fallback.
+    """
+    light = read("src/renderer/tr_light.cpp")
+
+    outside = braced_body(light, "bool R_ShadowMapLightSourceOutsideVolume(", "source outside the volume")
+    require_order(
+        outside,
+        (
+            "if ( !parms.pointLight ) {",
+            "if ( parms.parallel ) {",
+            "return true;",
+            "idMath::Fabs( parms.lightCenter[axis] ) > idMath::Fabs( parms.lightRadius[axis] )",
+        ),
+        "off-centre point lights and every parallel light",
+    )
+
+    build = braced_body(light, "srfTriangles_t *R_ShadowMapBuildPrelightCaster(", "prelight caster builder")
+    require_order(
+        build,
+        (
+            "const int first = shadowTri->numShadowIndexesNoFrontCaps;",
+            "const int count = shadowTri->numIndexes - first;",
+            "if ( first < 0 || count < 3 || count % 3 != 0 ) {",
+            "return NULL;",
+            "shadowTri->shadowVertexes[source].xyz.w != 1.0f",
+            "R_AllocStaticTriSurfIndexes( tri, count * 2 );",
+            "tri->indexes[i + 1] = b;",
+            "tri->indexes[i + 2] = c;",
+            "tri->indexes[count + i + 1] = c;",
+            "tri->indexes[count + i + 2] = b;",
+            "R_BoundTriSurf( tri );",
+        ),
+        "front caps only, on unprojected vertexes, in both windings",
+    )
+
+    caster = braced_body(light, "srfTriangles_t *R_ShadowMapPrelightCaster(", "per-light prelight caster")
+    require_order(
+        caster,
+        (
+            "const int setting = r_shadowMapPrelightCasters.GetInteger();",
+            "if ( setting <= 0 || !r_useOptimizedShadows.GetBool()",
+            "light->parms.noShadows || light->parms.noDynamicShadows",
+            "if ( setting < 2 && !R_ShadowMapLightSourceOutsideVolume( light->parms ) ) {",
+            "R_IsUsablePrelightModel( prelightModel )",
+            "light->shadowMapPrelightCasterSource != shadowTri",
+            "R_FreeStaticTriSurf( light->shadowMapPrelightCaster );",
+            "light->shadowMapPrelightCaster = R_ShadowMapBuildPrelightCaster( shadowTri );",
+            "return light->shadowMapPrelightCaster;",
+        ),
+        "rollback setting, scope, and one caster kept per light",
+    )
+    require_order(
+        braced_body(light, "void R_RemoveUnecessaryViewLights(", "view light pruning"),
+        (
+            "R_AddOptimizedPrelightShadows( vLight );",
+            "R_ShadowMapLinkPrelightCaster( vLight );",
+            "vLight->globalShadowMapCasters = NULL;",
+        ),
+        "the caster is linked before a light without lit surfaces drops its chains",
+    )
+    require(
+        braced_body(read("src/renderer/tr_lightrun.cpp"), "void R_FreeLightDefDerivedData(", "light derived data"),
+        "R_FreeStaticTriSurf( ldef->shadowMapPrelightCaster );",
+        "the caster is freed with its light, and with it on regenerateWorld and reloadModels",
+    )
+
+    interaction = read("src/renderer/Interaction.cpp")
+    link = braced_body(interaction, "void R_ShadowMapLinkPrelightCaster(", "prelight caster link")
+    require_order(
+        link,
+        (
+            "vLight->pointLight && !vLight->parallel && !r_shadowMapPointLights.GetBool()",
+            "srfTriangles_t *casterTris = R_ShadowMapPrelightCaster( lightDef );",
+            "if ( !R_EnsureShadowMapCasterCaches( casterTris, NULL ) ) {",
+            "lightDef->shadowMapStencilFallbackSticky = true;",
+            "vLight->shadowMapStaticCasterCount++;",
+            "vLight->shadowMapCasterSignature = static_cast<int>(",
+            "R_LinkShadowMapCasterSurf( &vLight->globalShadowMapCasters, casterTris, NULL, NULL,",
+            "tr.defaultMaterial, vLight->scissorRect );",
+        ),
+        "a static GLOBAL caster in the cache identity; without its caches the light goes back to stencil",
+    )
+    require_order(
+        interaction,
+        (
+            "const bool worldCastsFromPrelight =",
+            "prelightOwnsShadows && R_ShadowMapPrelightCaster( lightDef ) != NULL;",
+            "const bool castsThroughPrelight =",
+            "worldCastsFromPrelight &&",
+            "shadowShader->Coverage() != MC_PERFORATED &&",
+            "( allowShadowMapCaster || sint->shadowStencilEligible );",
+            "if ( castsThroughPrelight ) {",
+            "linkedShadowMapCaster = true;",
+            "} else if ( allowShadowMapCaster ) {",
+            "const bool mapMissingCasterNeedsStencil =",
+            "!linkedShadowMapCaster &&",
+        ),
+        "world surfaces stand aside and count as held by the map: no stencil fallback",
+    )
+
+    # A caster drawn in world space needs the whole identity matrix.
+    require_order(
+        braced_body(read("src/renderer/tr_main.cpp"), "void R_SetViewMatrix(", "view matrix"),
+        (
+            "world->modelMatrix[2*4+2] = 1;",
+            "world->modelMatrix[3*4+3] = 1;",
+        ),
+        "the world space model matrix is a full identity",
+    )
+
+    require(
+        read("src/renderer/RenderSystem_init.cpp"),
+        'idCVar r_shadowMapPrelightCasters( "r_shadowMapPrelightCasters", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER,',
+        "the caster is on by default and can be turned off",
+    )
+    selftest = braced_body(light, "bool R_ShadowMapPrelightCasterSelfTest(", "prelight caster self-test")
+    for token in (
+        "R_ShadowMapBuildPrelightCaster( &volume );",
+        "caster->numVerts == 3 && caster->numIndexes == 6",
+        "first * second < 0.0f",
+        "volume.numShadowIndexesNoFrontCaps = 24;",
+        "verts[5].xyz.w = 0.0f;",
+        "R_ShadowMapLightSourceOutsideVolume( parms )",
+    ):
+        require(selftest, token, "the self-test covers the caps, both windings and the two refusals")
+    require(
+        read("src/renderer/ModernShadowPlanner.cpp"),
+        "if ( !R_ShadowMapPrelightCasterSelfTest() ) {",
+        "rendererShadowProjectedDiagnosticSelfTest runs the prelight caster self-test",
+    )
+
+    scan = read("tools/tests/renderer_shadow_stencil_parity_scan.py")
+    for token in ('"regenerateWorld"', '"--spawn"', '"--view"', '"distant", "nodynamic", "projected", "parallel"'):
+        require(scan, token, "the parity scan rebuilds interactions per picture and reaches every light class")
+    audit = read("docs/dev/shadowmapping-audit-2026-11-09.md")
+    for token in ("### What the stock volumes hold", "`r_shadowMapPrelightCasters`",
+                  "### A `noSelfShadow` receiver behind `noSelfShadow` world geometry"):
+        require(audit, token, "the audit records the caster, its setting and the noSelfShadow image")
+
+
 def main() -> None:
     validate_shadow_effectiveness_image_gate()
     validate_shared_interaction_shadow_runtime_contract()
@@ -10148,6 +10325,7 @@ def main() -> None:
     validate_receiver_stock_lighting_parity_contract()
     validate_scratch_cube_pool_contract()
     validate_resident_projected_sampling_contract()
+    validate_prelight_caster_contract()
     validate_ci_registration()
     print("renderer_vulkan_shadow_compatibility: ok")
 

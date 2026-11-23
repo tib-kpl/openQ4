@@ -1,13 +1,48 @@
 # openQ4 development change record
 
 **Everything recorded here up to 11 November 2026 shipped in
-[0.14.1](v0.14.1.md)**, whose notes are the player-facing summary of this
+[0.14.1](v0.14.1.md), and everything up to 21 November 2026 in
+[0.15.0](v0.15.0.md)**, whose notes are the player-facing summaries of this
 material. This file is kept as the detailed record and collects later
 development changes for the next release's curation, with no version or
 release date promised. See [release status](../../user/release-status.md) and
 the [development roadmap](../roadmap.md) for current scope.
 
 ## Highlights
+
+- **Sharper textures at lower resolution scales, and on Vulkan with NVIDIA
+  cards.** When the game draws the 3D scene below your screen's resolution
+  and upscales it, the world's textures now keep more of their detail: 16-18%
+  more at 50% scale. On NVIDIA graphics cards the Vulkan renderer used to
+  draw angled textures a little softer than OpenGL did; it now matches.
+  `image_lodbias` is a new sharpness setting of your own, off by default.
+
+- **Controllers, reworked.** Every connected controller is ready, and the one
+  you pick up takes over. Stick aim is set in degrees per second with a dead
+  zone for each stick, an optional turn boost and three response presets;
+  gyro aim has its own settings and a calibrate button; and optional aim
+  assist for sticks is off unless you turn it on (servers decide in
+  multiplayer). Votes, Ready, chat, buying and quick save have buttons, with
+  Bumper Jumper and one-handed layouts to choose from. Triggers, a
+  DualSense's trigger resistance and the controller's light join in where the
+  controller has them. A **Test Controller** panel shows what the game sees
+  from your sticks, triggers, buttons and gyro, and selecting a text field
+  with a controller brings up an on-screen keyboard with every letter the
+  game's languages use. Your current dead zone and sensitivity carry over, so
+  nothing changes until you change it. See
+  [Input Settings](../../user/input-settings.md#controllers). No physical
+  controller has been through the [hardware checklist](../controller-qualification.md)
+  yet, and the new menu text is machine-translated outside English.
+
+- **Startup and loading screens that never stutter.** Both screens now
+  animate at your display's refresh rate, in even steps, for the whole time the
+  game starts or a level loads, instead of about 25 frames a second on average
+  with pauses of up to three seconds. The game's scripts compile in about half
+  the time and fonts are drawn on every processor core, so the extra frames
+  cost nothing: startup and loads take as long as before. The level now fades
+  in the moment its loading screen ends, without the old pause, and starting
+  straight into a level no longer shows a black screen between the startup
+  screen and the loading screen.
 
 - **The Awakening pauses in its own frozen style.** While you play the
   expansion's campaign with the new interface, the pause menu, its Save,
@@ -396,7 +431,7 @@ the [development roadmap](../roadmap.md) for current scope.
 - **Shadow maps come on with the top presets.** Choosing **Quality** or **Ultra** in Settings > System now turns shadow maps on. Shadows from projected lights, such as the flashlight, stay sharp where an object touches a surface and soften with distance. Lower presets keep Quake 4's original shadows.
 - **Sharper, smoother image at lower render scales.** When the 3D scene renders below your screen's resolution, as the **Performance**, **Low Power** and **Minimum** presets do, temporal anti-aliasing now rebuilds it at full resolution instead of stretching it. Edges stay smooth and fine detail returns. It also tracks animated characters and your weapon exactly while they move, so they no longer shimmer or lose their anti-aliasing. At native resolution nothing changes unless you turn it on with `r_temporalAA 1`. See [Temporal AA](../../user/temporal-presentation.md).
 - **Physically based materials for mods.** Maps and mods can now ship PBR materials that render by default on OpenGL and Vulkan, beside the stock surfaces. Their metalness, roughness and ambient occlusion shape how every light (shadows included), the map's ambient light and its baked light grids fall on them. Glow maps shine on their own, and SSAO darkens only their bounced light. Reflection probes can follow a room's walls and be captured in the game. Stock content has no PBR materials and looks exactly as before. See the [PBR materials guide](../../user/pbr-materials.md).
-- **Smarter multiplayer bots you can give orders to.** Bots plan safer routes around jump pads, ledges and hazardous floors, recover when knocked off their route, and make running jumps across gaps. They hear gunfire and footsteps, time armour and weapon respawns, back off from fights they can't win and go hunting while they have quad damage. In team games you can give the bots on your side orders in team chat, such as `kane defend`, `everyone follow me` or `sorg hold here`, and they answer in character. Navigation and decision-making also use less processor time. See [Giving bots orders](../../user/server-setup.md#giving-bots-orders).
+- **Smarter multiplayer bots you can give orders to.** Bots plan safer routes around jump pads, ledges and hazardous floors, recover when knocked off their route, and make running jumps across gaps. They hear gunfire and footsteps, time armour and weapon respawns, back off from fights they can't win and go hunting while they have quad damage. In team games you can give the bots on your side orders in team chat, such as `kane defend`, `everyone follow me` or `sorg hold here`, and they answer in character. Navigation and decision-making also use less processor time. See [Giving bots orders](../../user/multiplayer.md#give-bots-orders).
 - Bots account for their health and armour before taking drops or jump pads, and check the ground beyond a touchdown before continuing. Running jumps check their current position and momentum against the player's collision shape, and bots avoid walking through jump pads that have no safe landing route.
 - **German menus and gameplay text are now available.** Choose **Deutsch** in Settings > Game Options > Language for translated settings, objectives, terminals, Arena Campaign, demos and multiplayer controls.
 - **Five more languages: Brazilian Portuguese, Czech, Hungarian, Turkish and Ukrainian.** Choose **Português (Brasil)**, **Čeština**, **Magyar**, **Türkçe** or **Українська** in Settings > Game Options > Language. Each translates the same menus, settings, objectives, terminals, Arena Campaign, demos and multiplayer messages as German. On its first launch openQ4 picks your system language. See the [languages guide](../../user/languages.md).
@@ -409,6 +444,9 @@ the [development roadmap](../roadmap.md) for current scope.
 
 ## Upgrade Notes
 
+- Multiplayer-only settings that earlier versions lost (field of view, HUD
+  options such as item timers or damage numbers, Create Server options) do not
+  come back by themselves: set them once more and they now stay set.
 - Servers and players must run the same build for buying: the player state now
   carries weapon mods, and the buying vote names Off, Quake 4 or The Awakening.
   Replace the engine and both game modules together.
@@ -471,11 +509,139 @@ the [development roadmap](../roadmap.md) for current scope.
 
 ## Change Log
 
+- Demo playback lists the players to follow by name, steps back a frame,
+  and `demoExport` writes a demo as pictures; the library shows who played and
+  a picture from each recording, and `demoFind` searches it.
+- `ui_autoAction "demo ss stats"` records every match you play, screenshots the
+  result and writes its stats; servers can do the same with `si_autoAction`.
+  `timeDemo name.mvd` benchmarks a multi-view demo. See
+  [Record every match automatically](../../user/multiview-demos.md#record-every-match-automatically).
+- You can record your own view of a match on any server you join: `record
+  match_name`, then `stopRecord`. The recording appears in **Demos** and plays
+  back from your point of view. See
+  [Record your view on any server](../../user/multiview-demos.md#record-your-view-on-any-server).
+- Server hosts can have the end-of-match scoreboard name the next map and
+  read out each player's awards (`g_intermissionAnnounce 1`; off by default).
+  See [Picking the next map](../../user/server-setup.md#picking-the-next-map).
+- Linux packages are also offered as `.tar.gz`, with exactly the same files as
+  the `.tar.xz`, for sites that do not take xz archives such as ModDB.
+- Server hosts can run their own master server (`tools/master/openq4_master.py`),
+  and the server browser can also read an HTTPS server list such a master
+  publishes (`net_serverListUrl`). Both are off until you set them up. See
+  [Run a master server](../../user/server-setup.md#run-a-master-server).
+- The Windows symbols download now includes the OpenGL and Vulkan renderer
+  modules and the updater, so crash reports from them can be read.
+- Servers recognise a returning player. Your game proves to each server that
+  you are the same player as before, with a key kept only on your computer and
+  different for every server; leave a casual match and return within five
+  minutes and your team and score come back (`ghost <code>` does it without an
+  identity). Bans also cover the player's identity, `status` shows it, a
+  server may keep a local ranking table (`g_ranking 1`, `rankings`), and your
+  game keeps your match history (`history`). Turn it off with Player Setup's
+  **Player Identity**. See
+  [Your identity](../../user/multiplayer.md#your-identity-and-coming-back-after-a-dropped-connection).
+- Multiplayer-only settings are kept between sessions. Field of view, the
+  HUD's damage numbers, speedometer, input display, item timers, hit sound and
+  other multiplayer options, and the Create Server bot and server options, were
+  dropped from the config whenever it was saved before a match had loaded the
+  multiplayer module, and came back at their defaults. A new profile's
+  multiplayer character is the default marine instead of the Failed Transfer
+  monster.
+- Players can vote on more of the match. `callvote quadhog 1`, `vampiric`,
+  `frenzy` and `modifier <name> 0|1` turn a modifier on or off, `callvote arena
+  rocketlauncher` (or `none`) plays a single-weapon arena, `callvote preset
+  <name>` applies a preset, and `callvote spectatorchat 1` lets spectators talk
+  to the players. The in-match **Vote** page offers each of them, and **Mute
+  Instead of Kicking** turns its player vote into a mute. Each restarts the
+  match where the rules change, and a server can forbid each with
+  `si_voteFlags` (bits 21 to 24). See [Vote](../../user/multiplayer.md#vote).
+- The Admin page's **Ban** takes a length (10 minutes to permanent) and a
+  reason, and its ban list shows each ban's reason and time left. See
+  [The in-match Admin page](../../user/server-security.md#bans-mutes-and-chat-limits).
+- Vulkan spends less GPU time on scenes with smoke, heat haze or SSAO when MSAA is
+  on: each copy of the scene depth those effects read costs about a quarter of
+  what it did (about 1 ms a frame outdoors at 8x on the reference laptop, less at
+  4x). The picture is unchanged.
+- Server hosts can ban, mute and stop a server properly. `ban` keeps an address
+  or a range of addresses out for a set time or for good, where a ban used to
+  keep nobody out. `mute`, or the players' own `callvote mute`, silences a
+  player's text chat without removing them, and chat flooding silences itself
+  for ten seconds. `serverShutdown match` tells the players, waits for the
+  match to end and then stops the server. Every such action is recorded in
+  `logs/admin.ndjson`, and `g_matchLog 1` keeps a record of every match in
+  `logs/match.ndjson`. A host can also name admins: players who log in with
+  a second password (`net_serverAdminPassword`, then `admin`) and can kick, mute and
+  give short bans from their own game, without the rcon password. See
+  [bans, mutes and chat limits](../../user/server-security.md#bans-mutes-and-chat-limits).
+- The referee password (`g_refPassword`) is no longer saved in the console
+  history or written to the server's log. If you typed it at a console in an
+  earlier build, the old line is removed from the history file the next time
+  the game starts; consider changing the password anyway.
+- Server moderation was audited and tightened. Ban and mute commands act on
+  exactly what you type (IPv6 addresses need no brackets, and a reason may
+  begin with a digit); an IPv6 player is banned, muted and counted by their
+  `/64`; a ban list the server cannot read is left untouched instead of
+  being replaced; a muted player keeps their name and clan tag; admins stay
+  logged in across map changes, and the host can list them and end their
+  logins with `admin`, `admin revoke` and `admin off`.
+- When openQ4 stops with an error on Windows, it now saves the message and
+  the startup log to `fatal.log` in the `baseoq4\logs` folder of your save
+  folder, and the error window says where. Attach that file to a report: until
+  now nothing was written unless logging had been turned on beforehand.
+- The Strogg HUD draws without offscreen passes. The moving static on its ammo,
+  health and armor gauges is one fixed panel with a scrolling texture instead of
+  ten sliding tiles, so the HUD no longer renders each gauge through three
+  offscreen targets a frame or rebuilds itself every frame after the conversion.
+  It looks and moves as before.
+- The startup and loading screens animate at the display's refresh rate (or
+  half or a third of it on high-refresh displays, at most 90 frames a second)
+  throughout startup and level loads. Loading Air Defense 1 used to present a
+  frame every 22 ms (median) with pauses of up to 2.3 s; it now presents one
+  every 16.7 ms, the longest gap about 60 ms. The game's scripts compile in
+  about half the time, font atlases are rasterised on all cores, and building
+  the impact material maps no longer searches every material for every pixel.
+  Saved games and compiled scripts are unchanged. The pause between the
+  loading screen and the level (200-380 ms in single player, about 720 ms in
+  multiplayer) is down to about 50 ms at most in single player and
+  120-240 ms in multiplayer: the game no longer empties its memory working set
+  after a load, the level's opening autosave is written in the background
+  (`com_saveGameAutosaveOnWorker`), and the level's first view is drawn once,
+  unseen, before the loading screen hands over (`com_loadingWarmFirstFrame`).
+  `com_loadingFrameTrace 1`
+  reports how smoothly each load presented; see
+  [loading presentation](../loading-presentation.md).
+- **Not in 0.14.1:** the experimental volumetric lighting
+  (`r_rendererFroxelVolumetrics 1`) is now lit by the lights in view instead
+  of a fixed glow. Each lamp, spotlight and the sun lights the haze with its
+  own colour and shape, and with shadow maps on (the Quality and Ultra
+  presets) its beams stop at whatever casts its shadows. Glass, smoke, fire and
+  other see-through effects now sit in front of the haze. It works on OpenGL
+  and Vulkan, stays off by default and changes nothing while off. New settings
+  tune its brightness, sunlight, resolution and the lights with stencil
+  shadows; `rendererVolumetricStatus` reports what it drew. See
+  [advanced screen-space lighting](../../user/advanced-screen-space-lighting.md#volumetric-lighting).
+- Changing texture quality no longer freezes the game. Lowering or raising
+  texture detail on the Display page, with a Performance Preset or from the
+  console used to reload every texture in one pause of 4 to 7 seconds in Air
+  Defense 1, menus and fonts included. Only the textures the change affects
+  reload now (318 of 1,942 for a normal-map change), a few each frame while you
+  keep playing or browsing the menu, and the interface is never reloaded by
+  it. A change made while a level loads also reaches the textures the load
+  kept, such as the interface and your own models, which used to keep the old
+  setting until the renderer restarted. `image_reloadFrameMsec 0` brings back
+  the single pause. Textures decoded from their sources (precompressed textures
+  off, or textures built from several images) are decoded and compressed on
+  two background threads, with exactly the same result; `image_reloadWorkers 0`
+  keeps that work on the main thread.
 - The player guides and the package README are rewritten in plain language
   and corrected against 0.14.1. Menu paths name the new interface's tabs,
   several wrong defaults and menu routes are fixed, anything newer than 0.14.1
   is marked **Not in 0.14.1**, and Getting Started explains how to capture a
   log file for a bug report.
+- A new [multiplayer guide](../../user/multiplayer.md) is the place to start
+  for online play: joining, bot matches, hosting, the game types, the in-match
+  menu, match rules, spectating, voting and bot orders, with a list of every
+  multiplayer guide by task. Each topic now lives in one guide.
 - The game no longer crashes when it cannot write its log file. With logging
   on (`logFile 1` or `2`), a failed write to the log, for example on a full or
   disconnected drive, made openQ4 report the failure into the same log, fail

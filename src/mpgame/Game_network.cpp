@@ -6,9 +6,9 @@
 // RAVEN BEGIN
 // bdube: client entities
 #include "client/ClientEffect.h"
-// shouchard:  ban list support
-#define BANLIST_FILENAME "banlist.txt"
 // RAVEN END
+// openQ4 MP-18: bans by address, text mutes, the chat flood window, the admin log
+#include "mp/ModerationFile.h"
 
 /*
 ===============================================================================
@@ -156,13 +156,12 @@ clientId is the ID of the connecting client - can later be mapped to a clientNum
 allowReply_t idGameLocal::ServerAllowClient( int clientId, int numClients, const char *IP, const char *guid, const char *password, const char *privatePassword, char reason[ MAX_STRING_CHARS ] ) {
 	reason[0] = '\0';
 
-// RAVEN BEGIN
-// shouchard:  ban support
-	if ( IsGuidBanned( guid ) ) {
+	// openQ4 MP-18: bans are by address. IP is the endpoint the connect came
+	// from, which proved its challenge there; the GUID is empty on every client.
+	if ( ModerationRefuseBanned( IP ) ) {
 		idStr::snPrintf( reason, MAX_STRING_CHARS, "#str_107239" );
 		return ALLOW_NO;
 	}
-// RAVEN END
 
 	if ( serverInfo.GetInt( "si_pure" ) && !mpGame.IsPureReady() ) {
 		idStr::snPrintf( reason, MAX_STRING_CHARS, "#str_107139" );
@@ -307,7 +306,7 @@ clientId is the ID of the connecting client - can later be mapped to a clientNum
 allowReply_t idGameLocal::RepeaterAllowClient( int clientId, int numClients, const char *IP, const char *guid, bool repeater, const char *password, const char *privatePassword, char reason[ MAX_STRING_CHARS ] ) {
 	reason[0] = '\0';
 
-	if ( IsGuidBanned( guid ) ) {
+	if ( ModerationRefuseBanned( IP ) ) {
 		idStr::snPrintf( reason, MAX_STRING_CHARS, "#str_107239" );
 		return ALLOW_NO;
 	}
@@ -416,7 +415,11 @@ void idGameLocal::ServerClientConnect( int clientNum, const char *guid ) {
 	// openQ4: a slot reused by a new player must not inherit the previous
 	// occupant's reliable message cooldowns
 	ResetClientReliableFlood( clientNum );
+	// openQ4 MP-18: the slot's address, and a text mute its address still carries
+	ModerationClientConnect( clientNum );
 	mpGame.ServerClientConnect( clientNum );
+	// openQ4 MP-17: a new connection, or a new map, proves its identity again
+	mpGame.IdentityClientConnect( clientNum );
 	Printf( "client %d connected.\n", clientNum );
 }
 
@@ -509,6 +512,8 @@ void idGameLocal::ServerClientBegin( int clientNum, bool isBot, const char* botN
 
 	// ddynerman: connect time
 	((idPlayer*)entities[ clientNum ])->SetConnectTime( time );
+	// openQ4 MP-17: ask for the player's identity on this server
+	mpGame.IdentityClientBegin( clientNum, isBot );
 
 	// send message to spawn the player at the clients
 	outMsg.Init( msgBuf, sizeof( msgBuf ) );
@@ -553,6 +558,12 @@ void idGameLocal::ServerClientDisconnect( int clientNum ) {
 	idBitMsg	outMsg;
 	byte		msgBuf[MAX_GAME_MESSAGE_SIZE];
 
+	// openQ4 MP-18: first, while the engine's reason for this drop still stands and the bot
+	// manager still knows the slot. The broadcast below can overflow another client's reliable
+	// queue and drop it, which writes net_serverLastDrop again.
+	if ( clientNum < MAX_CLIENTS ) {
+		ModerationClientDisconnect( clientNum );
+	}
 	botManager.OnClientDisconnect( clientNum );
 
 	if ( clientNum < MAX_CLIENTS ) {
@@ -1531,6 +1542,11 @@ void idGameLocal::ServerProcessReliableMessage( int clientNum, const idBitMsg &m
 			// This parameter is ignored - it is only used when going to client from server
 			msg.ReadString( parm, sizeof( parm ) );
 
+			// openQ4 MP-18: a muted sender, or one past the flood window, reaches nobody
+			if ( !ModerationAllowChat( clientNum, true ) ) {
+				break;
+			}
+
 			// openQ4: the display name arrived on the sender's own packet and is
 			// formatted straight into the broadcast, so a modified client could
 			// impersonate another player or the server.  Use the server's copy of
@@ -1551,6 +1567,10 @@ void idGameLocal::ServerProcessReliableMessage( int clientNum, const idBitMsg &m
 
 			int index = msg.ReadLong();
 			bool team = msg.ReadBits( 1 ) != 0;
+			// openQ4 MP-18: a voice-menu line is a chat line with a sound
+			if ( !ModerationAllowChat( clientNum, true ) ) {
+				break;
+			}
 			mpGame.ProcessVoiceChat( clientNum, team, index );
 			break;
 		}
@@ -1706,7 +1726,7 @@ void idGameLocal::ServerProcessReliableMessage( int clientNum, const idBitMsg &m
 				Warning( "Rejected unauthenticated admin ban-list request from client %d", clientNum );
 				break;
 			}
-			ServerSendBanList( clientNum );
+			// openQ4 MP-18: the listen server's host reads the list it already holds
 			break;
 		}
 // RAVEN END
@@ -1746,6 +1766,22 @@ void idGameLocal::ServerProcessReliableMessage( int clientNum, const idBitMsg &m
 				break;
 			}
 			mpMapHost.ServerReceiveRequest( clientNum, msg );
+			break;
+		}
+		case GAME_RELIABLE_MESSAGE_MODERATION: {
+			// an admin's request writes the admin log; nobody types two in half a second
+			if ( !CheckClientReliableFlood( clientNum, RELIABLE_FLOOD_MODERATION, RELIABLE_FLOOD_MODERATION_DELAY ) ) {
+				break;
+			}
+			ServerModerationRequest( clientNum, msg );
+			break;
+		}
+		case GAME_RELIABLE_MESSAGE_IDENTITY: {
+			// MP-17: a proof answers one challenge, a ghost code is typed by hand
+			if ( !CheckClientReliableFlood( clientNum, RELIABLE_FLOOD_IDENTITY, RELIABLE_FLOOD_IDENTITY_DELAY ) ) {
+				break;
+			}
+			mpGame.ServerReceiveIdentity( clientNum, msg );
 			break;
 		}
 		// openQ4 END
@@ -1864,6 +1900,16 @@ void idGameLocal::RepeaterProcessReliableMessage( int clientNum, const idBitMsg 
 
 		// openQ4: viewers neither queue nor pick maps
 		case GAME_RELIABLE_MESSAGE_MAPDB: {
+			break;
+		}
+
+		// openQ4: viewers are never admins
+		case GAME_RELIABLE_MESSAGE_MODERATION: {
+			break;
+		}
+
+		// openQ4 MP-17: viewers have no identity
+		case GAME_RELIABLE_MESSAGE_IDENTITY: {
 			break;
 		}
 
@@ -3017,7 +3063,8 @@ void idGameLocal::ClientProcessReliableMessage( int clientNum, const idBitMsg &m
 			case GAME_RELIABLE_MESSAGE_MATCH_RESULT:
 			case GAME_RELIABLE_MESSAGE_MATCH_VIEW:
 			case GAME_RELIABLE_MESSAGE_MATCH_AUTH_CHALLENGE:
-				// Both payloads are recipient-specific and must never be copied to
+			case GAME_RELIABLE_MESSAGE_IDENTITY:
+				// These payloads are recipient-specific and must never be copied to
 				// an observer/repeater channel.
 				inhibitRepeater = true;
 				break;
@@ -3165,7 +3212,7 @@ void idGameLocal::ClientProcessReliableMessage( int clientNum, const idBitMsg &m
 		}
 		case GAME_RELIABLE_MESSAGE_STARTPACKEDVOTE: {
 			voteStruct_t voteData;
-			memset( &voteData, 0, sizeof( voteData ) );
+			idMultiplayerGame::EmptyVoteStruct( voteData );
 			int clientNum = msg.ReadByte();
 			voteData.m_fieldFlags = msg.ReadLong();
 			if ( voteData.m_fieldFlags <= 0 || ( voteData.m_fieldFlags & ~VOTEFLAG_ALL ) != 0 ) {
@@ -3220,6 +3267,11 @@ void idGameLocal::ClientProcessReliableMessage( int clientNum, const idBitMsg &m
 			if ( 0 != ( voteData.m_fieldFlags & VOTEFLAG_OVERTIME ) ) {
 				voteData.m_overtime = msg.ReadShort();
 			}
+			// openQ4 MP-14/MP-16: the modifier, spectator chat, preset and arena fields
+			if ( !idMultiplayerGame::ReadVoteExtensionFields( msg, voteData ) ) {
+				Warning( "Ignoring packed vote state with a malformed modifier, preset or arena field" );
+				break;
+			}
 			if ( msg.GetRemainingReadBits() != 0 ) {
 				Warning( "Ignoring packed vote state with %d trailing bits", msg.GetRemainingReadBits() );
 				break;
@@ -3240,7 +3292,7 @@ void idGameLocal::ClientProcessReliableMessage( int clientNum, const idBitMsg &m
 			}
 			voteStruct_t voteData;
 			char mapNameBuffer[256] = { '\0' };
-			memset( &voteData, 0, sizeof( voteData ) );
+			idMultiplayerGame::EmptyVoteStruct( voteData );
 			if ( multiVote ) {
 				voteData.m_fieldFlags = msg.ReadLong();
 				if ( voteData.m_fieldFlags <= 0 || ( voteData.m_fieldFlags & ~VOTEFLAG_ALL ) != 0 ) {
@@ -3266,6 +3318,10 @@ void idGameLocal::ClientProcessReliableMessage( int clientNum, const idBitMsg &m
 				voteData.m_ruleset = msg.ReadByte();
 				voteData.m_instagib = msg.ReadByte();
 				voteData.m_overtime = msg.ReadShort();
+				if ( !idMultiplayerGame::ReadVoteExtensionFields( msg, voteData ) ) {
+					Warning( "Ignoring vote update with a malformed modifier, preset or arena field" );
+					break;
+				}
 				if ( ( voteData.m_ruleset != 0 && voteData.m_ruleset != 1 ) || ( voteData.m_instagib != 0 && voteData.m_instagib != 1 ) ) {
 					Warning( "Ignoring vote update with invalid casual vote values" );
 					break;
@@ -3337,6 +3393,17 @@ void idGameLocal::ClientProcessReliableMessage( int clientNum, const idBitMsg &m
 			if ( IsServerDemoPlaying() ) {
 				demoAutoTrack.NoteKill( attackerEntityNumber, victimEntityNumber, GetDemoFollowClient(), time );
 			}
+			// openQ4 MP-22: a recording of this player's view marks each kill it hears of
+			if ( !isServer && victim != NULL && networkSystem->ServerIsMVDRecording() ) {
+				serverMVDMarker_t marker;
+				memset( &marker, 0, sizeof( marker ) );
+				marker.kind = SERVER_MVD_MARKER_KILL;
+				marker.client = attacker != NULL && attacker != victim ? attacker->entityNumber : -1;
+				marker.instance = victim->GetInstance();
+				marker.value0 = victim->entityNumber;
+				marker.value1 = methodOfDeath;
+				networkSystem->ServerRecordMVDMarker( marker );
+			}
 		
 			mpGame.ReceiveDeathMessage( attacker, attackerScore, victim, victimScore, methodOfDeath, quadKill );
 			break;
@@ -3375,17 +3442,8 @@ void idGameLocal::ClientProcessReliableMessage( int clientNum, const idBitMsg &m
 			break;
 		}
 		case GAME_RELIABLE_MESSAGE_GETADMINBANLIST: {
-			mpBanInfo_t banInfo;
-			char name[MAX_STRING_CHARS];
-			char guid[MAX_STRING_CHARS];
-
-			FlushBanList( );
-			while ( msg.ReadString( name, MAX_STRING_CHARS ) && msg.ReadString( guid, MAX_STRING_CHARS ) ) {
-				banInfo.name = name;
-				idStr::Copynz( banInfo.guid, guid, CLIENT_GUID_LENGTH );
-				banList.Append( banInfo );
-			}
-
+			// openQ4 MP-18: no server sends its ban list any more; a remote
+			// administrator reads it with 'rcon banlist'
 			break;
 		}
 		case GAME_RELIABLE_MESSAGE_GETVOTEMAPS: {
@@ -3427,6 +3485,10 @@ void idGameLocal::ClientProcessReliableMessage( int clientNum, const idBitMsg &m
 			break;
 		case GAME_RELIABLE_MESSAGE_MATCH_AUTH_CHALLENGE:
 			mpGame.ClientReceiveRefereeAuthChallenge( msg );
+			break;
+		case GAME_RELIABLE_MESSAGE_IDENTITY:
+			// openQ4 MP-17: the server asks for this player's identity
+			mpGame.ClientReceiveIdentityChallenge( msg );
 			break;
 		// openQ4 END
 		default: {
@@ -4000,6 +4062,24 @@ void idEventQueue::Enqueue( entityNetEvent_t *event, outOfOrderBehaviour_t behav
 
 // RAVEN BEGIN
 // shouchard:  ban list stuff here
+// openQ4 MP-18: Quake 4 keyed this list to a GUID no client sends, so a ban
+// matched nobody. Bans are address ranges with an expiry and a reason
+// (mp/Moderation.h), kept as text in banlist.txt (mp/ModerationFile.h); text
+// mutes, the chat flood window and the admin log live here with them.
+
+#define MP_MOD_ADMIN_LOG_FILENAME	"logs/admin.ndjson"
+// refused connections reach the log this often for one ban, and this many times a minute in all
+static const int MP_MOD_REFUSAL_LOG_BURST = 30;
+// how often a silenced or muted sender is told why their line went nowhere
+static const int MP_MOD_NOTICE_MSEC = 10000;
+// the reason the engine's own "kick <slot>" drops a client with
+#define MP_MOD_ENGINE_KICK_REASON	"#str_07134"
+// how often one refused address is written to the admin log
+static const int MP_MOD_REFUSAL_LOG_SECONDS = 60;
+
+static mpModTime_t ModerationNow( void ) {
+	return static_cast<mpModTime_t>( time( NULL ) );
+}
 
 /*
 ================
@@ -4007,35 +4087,49 @@ idGameLocal::LoadBanList
 ================
 */
 void idGameLocal::LoadBanList() {
-
-	// open file
-	idStr token;
-	idFile *banFile = fileSystem->OpenFileRead( BANLIST_FILENAME );
-	mpBanInfo_t banInfo;
-	if ( NULL == banFile ) {
-		common->DPrintf( "idGameLocal::LoadBanList:  unable to open ban list file!\n" ); // fixme:  need something better here
+	const bool reload = banListLoaded && modBans != NULL;
+	mpModBanList_t *loaded = new mpModBanList_t;
+	idStrList kept;
+	mpModBanFileResult_t result;
+	MPModLoadBanFile( *loaded, kept, result );
+	banListLoaded = true;
+	modBanFileWarned = false;
+	if ( result.unreadable ) {
+		common->Warning( "ban list: %s was not taken: %s. It is left as it is and nothing is saved over it; correct it and run 'banlist reload'",
+			MP_MOD_BANLIST_FILENAME, result.why );
+	}
+	if ( reload && ( result.unreadable || !result.found ) ) {
+		// A reload that found nothing it could use. The bans in memory still hold: a
+		// file an editor has open, or a slip of the hand, must not lift every ban.
+		delete loaded;
+		if ( !result.found ) {
+			common->Printf( "ban list: %s is not there; the %d ban(s) in memory still hold and are written back with the next change\n",
+				MP_MOD_BANLIST_FILENAME, modBans->count );
+			banListChanged = true;
+		}
 		return;
 	}
-
-	// parse file (read three consecutive strings per banInfo (real complex ;) ) )
-	while ( banFile->ReadString( token ) > 0 ) {
-		// name
-		banInfo.name = token;
-
-		// guid
-		if ( banFile->ReadString( token ) > 0 && token.Length() >= 11 ) {
-			idStr::Copynz( banInfo.guid, token.c_str(), CLIENT_GUID_LENGTH );
-
-			banList.Append( banInfo );
-			continue;
-		}
-
-		gameLocal.Warning( "idGameLocal::LoadBanList:  Potential curruption of banlist file (%s).", BANLIST_FILENAME );
+	delete modBans;
+	modBans = loaded;
+	modBanKeptLines = kept;
+	banListChanged = result.rewrite;
+	if ( result.legacy > 0 ) {
+		common->Printf( "ban list: %d Quake 4 GUID ban(s) in %s are kept as comments; they never matched a player\n", result.legacy, MP_MOD_BANLIST_FILENAME );
 	}
-	fileSystem->CloseFile( banFile );
-
-	banListLoaded = true;
-	banListChanged = false;
+	if ( result.overflow > 0 ) {
+		common->Warning( "ban list: %d ban(s) past the first %d in %s are not enforced", result.overflow, MP_MOD_MAX_BANS, MP_MOD_BANLIST_FILENAME );
+	}
+	if ( result.kept > 0 ) {
+		common->Printf( "ban list: %d line(s) of %s were not understood and are kept as written\n", result.kept, MP_MOD_BANLIST_FILENAME );
+	}
+	if ( result.unreadable ) {
+		// what was read of it is enforced; the file itself is the operator's to mend
+		return;
+	}
+	if ( MPModBanPurgeExpired( *modBans, ModerationNow() ) > 0 ) {
+		banListChanged = true;
+	}
+	SaveBanList();
 }
 
 /*
@@ -4044,27 +4138,22 @@ idGameLocal::SaveBanList
 ================
 */
 void idGameLocal::SaveBanList() {
-	if ( !banListChanged ) {
+	if ( !banListChanged || modBans == NULL ) {
 		return;
 	}
-
-	// open file
-	idFile *banFile = fileSystem->OpenFileWrite( BANLIST_FILENAME );
-	if ( NULL == banFile ) {
-		common->DPrintf( "idGameLocal::SaveBanList:  unable to open ban list file!\n" ); // fixme:  need something better here
+	if ( MPModBanFileBlocked() ) {
+		// said once for each load that failed: the menus ask for the list every frame
+		if ( !modBanFileWarned ) {
+			modBanFileWarned = true;
+			common->Warning( "ban list: not saved. %s could not be used when it was read and is not written over; bans made now last until the server stops. Correct the file and run 'banlist reload'",
+				MP_MOD_BANLIST_FILENAME );
+		}
 		return;
 	}
-
-	for ( int i = 0; i < banList.Num(); i++ ) {
-		const mpBanInfo_t& banInfo = banList[ i ];
-		char temp[ 16 ] = { 0, };
-		banFile->WriteString( va( "%s", banInfo.name.c_str() ) );
-		idStr::Copynz( temp, banInfo.guid, CLIENT_GUID_LENGTH );
-		banFile->WriteString( temp );
-//		idStr::Copynz( temp, (const char*)banInfo.ip, 15 );
-//		banFile->WriteString( "255.255.255.255" );
+	if ( !MPModSaveBanFile( *modBans, modBanKeptLines ) ) {
+		common->Warning( "ban list: %s could not be written", MP_MOD_BANLIST_FILENAME );
+		return;
 	}
-	fileSystem->CloseFile( banFile );
 	banListChanged = false;
 }
 
@@ -4074,97 +4163,92 @@ idGameLocal::FlushBanList
 ================
 */
 void idGameLocal::FlushBanList() {
-	banList.Clear();
+	delete modBans;
+	modBans = NULL;
+	modBanKeptLines.Clear();
 	banListLoaded = false;
 	banListChanged = false;
 }
 
 /*
 ================
-idGameLocal::IsPlayerBanned
+idGameLocal::FindBan
+The ban in force that covers this address, or NULL.
 ================
 */
-bool idGameLocal::IsPlayerBanned( const char *name ) {
-	assert( name );
-
+const mpModBan_t *idGameLocal::FindBan( const mpModAddress_t &address ) {
 	if ( !banListLoaded ) {
 		LoadBanList();
 	}
-
-	// check vs. each line in the list, if we found one return true
-	for ( int i = 0; i < banList.Num(); i++ ) {
-		if ( 0 == idStr::Icmp( name, banList[ i ].name ) ) {
-			return true;
-		}
-	}
-
-	return false;
+	const int index = MPModBanFind( *modBans, address, ModerationNow() );
+	return index >= 0 ? &modBans->bans[ index ] : NULL;
 }
 
 /*
 ================
-idGameLocal::IsGuidBanned
+idGameLocal::AddBan
+Returns the ban's row, or -1 for a range that is too wide or a full list.
 ================
 */
-bool idGameLocal::IsGuidBanned( const char *guid ) {
-	assert( guid );
-
+int idGameLocal::AddBan( const mpModAddress_t &address, int prefixBits, mpModTime_t durationSeconds, const char *name, const char *reason ) {
 	if ( !banListLoaded ) {
 		LoadBanList();
 	}
-
-	// check vs. each line in the list, if we found one return true
-	for ( int i = 0; i < banList.Num(); i++ ) {
-		if ( 0 == idStr::Icmp( guid, banList[ i ].guid ) ) {
-			return true;
-		}
+	const int index = MPModBanAdd( *modBans, address, prefixBits, ModerationNow(), durationSeconds, name, reason );
+	if ( index >= 0 ) {
+		banListChanged = true;
+		SaveBanList();
 	}
-
-	return false;
+	return index;
 }
 
 /*
 ================
-idGameLocal::AddGuidToBanList
+idGameLocal::RemoveBan
 ================
 */
-void idGameLocal::AddGuidToBanList( const char *guid ) {
-	assert( guid );
-
+bool idGameLocal::RemoveBan( int index ) {
 	if ( !banListLoaded ) {
 		LoadBanList();
 	}
-
-	mpBanInfo_t banInfo;
-	char name[ 512 ];	// TODO: clean this up
-	gameLocal.GetPlayerName( gameLocal.GetClientNumByGuid( guid ), name );
-	banInfo.name = name;
-	idStr::Copynz( banInfo.guid, guid, CLIENT_GUID_LENGTH );
-//	SIMDProcessor->Memset( banInfo.ip, 0xFF, 15 );
-	banList.Append( banInfo );
+	if ( !MPModBanRemove( *modBans, index ) ) {
+		return false;
+	}
 	banListChanged = true;
+	SaveBanList();
+	return true;
 }
 
 /*
 ================
 idGameLocal::RemoveGuidFromBanList
+The menus name a ban by the text PopulateBanList gave them. That was a GUID in
+Quake 4; it is the banned range now.
 ================
 */
 void idGameLocal::RemoveGuidFromBanList( const char *guid ) {
-	assert( guid );
-
+	if ( guid == NULL ) {
+		return;
+	}
 	if ( !banListLoaded ) {
 		LoadBanList();
 	}
-
-	// check vs. each line in the list, if we find a match remove it.
-	for ( int i = 0; i < banList.Num(); i++ ) {
-		if ( 0 == idStr::Icmp( guid, banList[ i ].guid ) ) {
-			banList.RemoveIndex( i );
-			banListChanged = true;
-			return;
-		}
+	// a range, or (MP-17) "id:" and an identity
+	const int index = MPModBanFindTarget( *modBans, guid );
+	if ( index >= 0 ) {
+		ModerationLogBan( "unban", "menu", modBans->bans[ index ] );
+		RemoveBan( index );
 	}
+}
+
+/*
+================
+idGameLocal::AddGuidToBanList
+Part of the engine's game interface. No client sends a GUID, so there is
+nothing to add; bans are made by address (mp/Moderation.h).
+================
+*/
+void idGameLocal::AddGuidToBanList( const char *guid ) {
 }
 
 /*
@@ -4182,31 +4266,52 @@ void idGameLocal::RegisterClientGuid( int clientNum, const char *guid ) {
 /*
 ================
 idGameLocal::GetBanListCount
+Bans that ran out leave the list here, so a menu never shows one.
 ================
 */
 int idGameLocal::GetBanListCount() {
 	if ( !banListLoaded ) {
 		LoadBanList();
 	}
+	if ( MPModBanPurgeExpired( *modBans, ModerationNow() ) > 0 ) {
+		banListChanged = true;
+		SaveBanList();
+	}
+	return modBans->count;
+}
 
-	return banList.Num();
+/*
+================
+idGameLocal::GetBan
+================
+*/
+const mpModBan_t *idGameLocal::GetBan( int entry ) {
+	if ( !banListLoaded ) {
+		LoadBanList();
+	}
+	if ( entry < 0 || entry >= modBans->count ) {
+		return NULL;
+	}
+	return &modBans->bans[ entry ];
 }
 
 /*
 ================
 idGameLocal::GetBanListEntry
+The row as the menus read it. The result is valid until the next call.
 ================
 */
 const mpBanInfo_t* idGameLocal::GetBanListEntry( int entry ) {
-	if ( !banListLoaded ) {
-		LoadBanList();
-	}
-
-	if ( entry < 0 || entry >= banList.Num() ) {
+	static mpBanInfo_t info;
+	const mpModBan_t *ban = GetBan( entry );
+	if ( ban == NULL ) {
 		return NULL;
 	}
-
-	return &banList[ entry ];
+	idStr::Copynz( info.name, ban->name, sizeof( info.name ) );
+	MPModBanTarget( *ban, info.guid, sizeof( info.guid ) );
+	idStr::Copynz( info.reason, ban->reason, sizeof( info.reason ) );
+	info.expires = ban->expires;
+	return &info;
 }
 
 /*
@@ -4218,49 +4323,6 @@ const char *idGameLocal::GetGuidByClientNum( int clientNum ) {
 	assert( clientNum >= 0 && clientNum < numClients );
 
 	return clientGuids[ clientNum ];
-}
-
-/*
-================
-idGameLocal::GetClientNumByGuid
-================
-*/
-int idGameLocal::GetClientNumByGuid( const char * guid ) {
-	assert( guid );
-
-	for ( int i = 0; i < MAX_CLIENTS; i++ ) {
-		if ( !idStr::Icmp( networkSystem->GetClientGUID( i ), guid ) ) {
-			return i;
-		}
-	}
-	return -1;
-}
-
-// mekberg: send ban list to client
-/*
-================
-idGameLocal::ServerSendBanList
-================
-*/
-void idGameLocal::ServerSendBanList( int clientNum ) {
-	idBitMsg	outMsg;
-	byte		msgBuf[ MAX_GAME_MESSAGE_SIZE ];
-
-	outMsg.Init( msgBuf, sizeof( msgBuf ) );
-	outMsg.WriteByte( GAME_RELIABLE_MESSAGE_GETADMINBANLIST ) ;
-
-	if ( !banListLoaded ) {
-		LoadBanList();
-	}
-	
-	int i;
-	int c = banList.Num();
-	for ( i = 0; i < c; i++ ) {
-		outMsg.WriteString( banList[ i ].name.c_str() );
-		outMsg.WriteString( banList[ i ].guid, CLIENT_GUID_LENGTH );
-	}
-
-	networkSystem->ServerSendReliableMessage( clientNum, outMsg );
 }
 
 // mekberg: so we can populate ban list outside of multiplayer game
@@ -4277,12 +4339,1320 @@ void idGameLocal::PopulateBanList( idUserInterface* hud ) {
 	int bans = GetBanListCount();
 	for ( int i = 0; i < bans; i++ ) {
 		const mpBanInfo_t * banInfo = GetBanListEntry( i );
-		hud->SetStateString( va( "sa_banList_item_%d", i ), va( "%d:  %s\t%s", i+1, banInfo->name.c_str(), banInfo->guid ) );
+		hud->SetStateString( va( "sa_banList_item_%d", i ), va( "%d:  %s\t%s", i+1, banInfo->name, banInfo->guid ) );
 	}
 	hud->DeleteStateVar( va( "sa_banList_item_%d", bans ) );
 	hud->SetStateString( "sa_banList_sel_0", "-1" );
 	// used to trigger a redraw, was slow, and doesn't seem to do anything so took it out. fixes #13675
 	hud->StateChanged( gameLocal.time, false );
+}
+
+/*
+================
+idGameLocal::GetClientModAddress
+A connected client's address as the engine has it. The family is 0 for a bot
+and for the listen server's own player: neither has an address to ban.
+================
+*/
+const mpModAddress_t &idGameLocal::GetClientModAddress( int clientNum ) const {
+	static mpModAddress_t none;
+	if ( clientNum < 0 || clientNum >= MAX_CLIENTS ) {
+		return none;
+	}
+	return clientModAddress[ clientNum ];
+}
+
+/*
+================
+idGameLocal::ModerationWriteLog
+One JSON object a line, appended to logs/admin.ndjson in the save folder.
+================
+*/
+void idGameLocal::ModerationWriteLog( mpModLogLine_t &line ) {
+	// a console line that came by rcon is logged with where it came from; the
+	// engine publishes that while the command runs (net_serverRconFrom)
+	const char *rconFrom = cvarSystem->GetCVarString( "net_serverRconFrom" );
+	if ( rconFrom != NULL && rconFrom[ 0 ] != '\0' ) {
+		MPModLogString( line, "rcon", rconFrom );
+	}
+	// what a logged-in admin asked for is logged with who asked
+	if ( modActorClient >= 0 && modActorClient < MAX_CLIENTS ) {
+		MPModLogNumber( line, "admin_slot", modActorClient );
+		MPModLogString( line, "admin_name", userInfo[ modActorClient ].GetString( "ui_name" ) );
+		if ( clientModAddress[ modActorClient ].family != 0 ) {
+			char address[ MP_MOD_RANGE_TEXT_BYTES ];
+			MPModFormatAddress( clientModAddress[ modActorClient ], address, sizeof( address ) );
+			MPModLogString( line, "admin_address", address );
+		}
+	}
+	MPModLogEnd( line );
+	if ( !g_adminLog.GetBool() ) {
+		return;
+	}
+	idFile *file = fileSystem->OpenFileAppend( MP_MOD_ADMIN_LOG_FILENAME, true, "fs_savepath" );
+	if ( file == NULL ) {
+		static bool warned = false;
+		if ( !warned ) {
+			warned = true;
+			common->Warning( "admin log: %s could not be opened", MP_MOD_ADMIN_LOG_FILENAME );
+		}
+		return;
+	}
+	file->Write( line.text, line.length );
+	fileSystem->CloseFile( file );
+}
+
+/*
+================
+idGameLocal::ModerationLogClient
+================
+*/
+void idGameLocal::ModerationLogClient( const char *event, const char *by, int clientNum, const char *reason, mpModTime_t seconds ) {
+	mpModLogLine_t line;
+	MPModLogBegin( line, ModerationNow(), event );
+	MPModLogString( line, "by", by );
+	if ( clientNum >= 0 && clientNum < MAX_CLIENTS ) {
+		MPModLogNumber( line, "slot", clientNum );
+		MPModLogString( line, "name", userInfo[ clientNum ].GetString( "ui_name" ) );
+		if ( clientModAddress[ clientNum ].family != 0 ) {
+			char address[ MP_MOD_RANGE_TEXT_BYTES ];
+			MPModFormatAddress( clientModAddress[ clientNum ], address, sizeof( address ) );
+			MPModLogString( line, "address", address );
+		}
+	}
+	MPModLogString( line, "reason", reason );
+	if ( seconds > 0 ) {
+		MPModLogNumber( line, "seconds", seconds );
+	}
+	ModerationWriteLog( line );
+}
+
+/*
+================
+idGameLocal::ModerationLogBan
+================
+*/
+void idGameLocal::ModerationLogBan( const char *event, const char *by, const mpModBan_t &ban ) {
+	char range[ MP_MOD_RANGE_TEXT_BYTES ];
+	MPModFormatRange( ban.address, ban.prefixBits, range, sizeof( range ) );
+	mpModLogLine_t line;
+	MPModLogBegin( line, ModerationNow(), event );
+	MPModLogString( line, "by", by );
+	if ( MPModBanIsIdentity( ban ) ) {
+		MPModLogString( line, "identity", ban.identity );		// MP-17
+	} else {
+		MPModLogString( line, "range", range );
+	}
+	MPModLogString( line, "name", ban.name );
+	MPModLogString( line, "reason", ban.reason );
+	if ( ban.expires != 0 ) {
+		char expires[ MP_MOD_UTC_TEXT_BYTES ];
+		MPModFormatUtc( ban.expires, expires );
+		MPModLogString( line, "expires", expires );
+	}
+	ModerationWriteLog( line );
+}
+
+/*
+================
+idGameLocal::ModerationClientConnect
+A slot has a new occupant: learn its address, and carry over a text mute that
+its address earned before it reconnected.
+================
+*/
+void idGameLocal::ModerationClientConnect( int clientNum ) {
+	if ( clientNum < 0 || clientNum >= MAX_CLIENTS ) {
+		return;
+	}
+	MPModClearAddress( clientModAddress[ clientNum ] );
+	modTextMuteUntil[ clientNum ] = 0;
+	modNoticeTime[ clientNum ] = 0;
+	modMutedName[ clientNum ].Clear();
+	modMutedClan[ clientNum ].Clear();
+	MPModFloodReset( modChatFlood[ clientNum ] );
+
+	int prefixBits = 0;
+	const char *text = networkSystem->GetClientAddress( clientNum );
+	if ( text == NULL || !MPModParseAddress( text, clientModAddress[ clientNum ], prefixBits ) ) {
+		MPModClearAddress( clientModAddress[ clientNum ] );
+		return;
+	}
+	const int mute = MPModMuteFind( modMutes, clientModAddress[ clientNum ], ModerationNow() );
+	if ( mute >= 0 ) {
+		modTextMuteUntil[ clientNum ] = modMutes.mutes[ mute ].expires != 0 ? modMutes.mutes[ mute ].expires : -1;
+	}
+}
+
+/*
+================
+idGameLocal::ModerationClientDisconnect
+================
+*/
+void idGameLocal::ModerationClientDisconnect( int clientNum ) {
+	if ( clientNum < 0 || clientNum >= MAX_CLIENTS ) {
+		return;
+	}
+	// "kick <slot>" is the engine's command and reaches the game only as this
+	// disconnect. The engine publishes why it drops a client in
+	// net_serverLastDrop; a removal the game began itself was logged where it began.
+	if ( isServer && !mpGame.ServerDropInFlight( clientNum ) && !botManager.IsBot( clientNum ) &&
+		idStr::Cmp( cvarSystem->GetCVarString( "net_serverLastDrop" ), va( "%d %s", clientNum, MP_MOD_ENGINE_KICK_REASON ) ) == 0 ) {
+		ModerationLogClient( "kick", "console", clientNum, "", 0 );
+	}
+	MPModClearAddress( clientModAddress[ clientNum ] );
+	modTextMuteUntil[ clientNum ] = 0;
+	modNoticeTime[ clientNum ] = 0;
+	modMutedName[ clientNum ].Clear();
+	modMutedClan[ clientNum ].Clear();
+	MPModFloodReset( modChatFlood[ clientNum ] );
+}
+
+/*
+================
+idGameLocal::ModerationRefuseBanned
+ServerAllowClient and RepeaterAllowClient: true when the endpoint the connect
+came from is banned. A banned client tries again every few seconds, so one
+address reaches the admin log once a minute.
+================
+*/
+bool idGameLocal::ModerationRefuseBanned( const char *endpoint ) {
+	mpModAddress_t address;
+	int prefixBits = 0;
+	if ( !MPModParseAddress( endpoint, address, prefixBits ) ) {
+		return false;
+	}
+	if ( !banListLoaded ) {
+		LoadBanList();
+	}
+	const mpModTime_t now = ModerationNow();
+	const int index = MPModBanFind( *modBans, address, now );
+	if ( index < 0 ) {
+		return false;
+	}
+	// The pacing belongs to the ban, not to the last address seen: a client that
+	// alternates between two banned addresses would otherwise write a line for
+	// every packet. One line a minute for each ban, and no more than
+	// MP_MOD_REFUSAL_LOG_BURST lines a minute for the whole list.
+	mpModBan_t &ban = modBans->bans[ index ];
+	const bool banDue = ban.refusedLogged == 0 || now - ban.refusedLogged >= MP_MOD_REFUSAL_LOG_SECONDS || now < ban.refusedLogged;
+	if ( now - modRefusalWindowStart >= MP_MOD_REFUSAL_LOG_SECONDS || now < modRefusalWindowStart ) {
+		modRefusalWindowStart = now;
+		modRefusalWindowCount = 0;
+	}
+	if ( banDue && modRefusalWindowCount < MP_MOD_REFUSAL_LOG_BURST ) {
+		ban.refusedLogged = now;
+		modRefusalWindowCount++;
+		char text[ MP_MOD_RANGE_TEXT_BYTES ];
+		char range[ MP_MOD_RANGE_TEXT_BYTES ];
+		MPModFormatAddress( address, text, sizeof( text ) );
+		MPModFormatRange( ban.address, ban.prefixBits, range, sizeof( range ) );
+		common->Printf( "refused a connection from %s: banned (%s)\n", text, range );
+		mpModLogLine_t line;
+		MPModLogBegin( line, now, "refused" );
+		MPModLogString( line, "address", text );
+		MPModLogString( line, "range", range );
+		MPModLogString( line, "name", ban.name );
+		MPModLogString( line, "reason", ban.reason );
+		ModerationWriteLog( line );
+	}
+	return true;
+}
+
+/*
+================
+idGameLocal::FindIdentityBan
+openQ4 MP-17: the ban in force on this identity, or NULL.
+================
+*/
+const mpModBan_t *idGameLocal::FindIdentityBan( const char *identity ) {
+	if ( !banListLoaded ) {
+		LoadBanList();
+	}
+	const int index = MPModBanFindIdentity( *modBans, identity, ModerationNow() );
+	return index >= 0 ? &modBans->bans[ index ] : NULL;
+}
+
+/*
+================
+idGameLocal::ServerBanIdentity
+openQ4 MP-17: bans an identity and removes whoever holds it. Returns the ban's
+row, or -1 when the list refused it.
+================
+*/
+int idGameLocal::ServerBanIdentity( const char *identity, mpModTime_t durationSeconds, const char *name, const char *reason, const char *by ) {
+	if ( !banListLoaded ) {
+		LoadBanList();
+	}
+	const int index = MPModBanAddIdentity( *modBans, identity, ModerationNow(), durationSeconds, name, reason );
+	if ( index < 0 ) {
+		common->Printf( "ban: refused; an identity is sixteen hex digits, and the list holds %d bans\n", MP_MOD_MAX_BANS );
+		return -1;
+	}
+	banListChanged = true;
+	SaveBanList();
+	const mpModBan_t ban = modBans->bans[ index ];
+	char length[ 32 ];
+	MPModFormatDuration( durationSeconds, length, sizeof( length ) );
+	common->Printf( "banned %s%s (%s)%s%s\n", MP_MOD_IDENTITY_PREFIX, ban.identity, length, ban.reason[ 0 ] != '\0' ? ": " : "", ban.reason );
+	ModerationLogBan( "ban", by, ban );
+	for ( int i = 0; i < MAX_CLIENTS; i++ ) {
+		if ( i == localClientNum || idStr::Cmp( mpGame.ClientIdentity( i ), ban.identity ) != 0 ) {
+			continue;
+		}
+		ModerationLogClient( "kick", by, i, "banned", 0 );
+		mpGame.BeginServerDrop( i );
+		networkSystem->ServerDropClient( i, "#str_107239" );
+		mpGame.EndServerDrop( i );
+	}
+	return index;
+}
+
+/*
+================
+idGameLocal::ServerBanClient
+openQ4 MP-17: a connected player's ban, by the range they hold (over IPv6
+their /64) and, where they proved one, their identity, so neither a new
+address nor a new key alone brings them back. Returns the range ban's row, or
+the identity ban's for a player with no address; -1 when nothing was banned.
+================
+*/
+int idGameLocal::ServerBanClient( int clientNum, mpModTime_t durationSeconds, const char *reason, const char *by ) {
+	if ( clientNum < 0 || clientNum >= MAX_CLIENTS || clientNum == localClientNum ) {
+		return -1;
+	}
+	const idStr name = userInfo[ clientNum ].GetString( "ui_name" );
+	const idStr identity = mpGame.ClientIdentity( clientNum );
+	const mpModAddress_t address = GetClientModAddress( clientNum );
+	int index = -1;
+	// the identity first: the range ban removes the player, and their identity with them
+	if ( identity.Length() > 0 ) {
+		index = ServerBanIdentity( identity.c_str(), durationSeconds, name.c_str(), reason, by );
+	}
+	if ( address.family != 0 ) {
+		const int range = ServerBan( address, MPModPlayerPrefixBits( address ), durationSeconds, name.c_str(), reason, by );
+		index = range >= 0 ? range : index;
+	}
+	return index;
+}
+
+/*
+================
+idGameLocal::ServerBan
+Bans a range and removes every connected client inside it. Returns the ban's
+row, or -1 when the list refused it.
+================
+*/
+int idGameLocal::ServerBan( const mpModAddress_t &address, int prefixBits, mpModTime_t durationSeconds, const char *name, const char *reason, const char *by ) {
+	const int index = AddBan( address, prefixBits, durationSeconds, name, reason );
+	if ( index < 0 ) {
+		common->Printf( "ban: refused; a range may be no wider than /%d (IPv4) or /%d (IPv6), and the list holds %d bans\n",
+			MP_MOD_MIN_PREFIX_V4, MP_MOD_MIN_PREFIX_V6, MP_MOD_MAX_BANS );
+		return -1;
+	}
+	// dropping a client runs game code; work from a copy of the row
+	const mpModBan_t ban = modBans->bans[ index ];
+	char range[ MP_MOD_RANGE_TEXT_BYTES ];
+	char length[ 32 ];
+	MPModFormatRange( ban.address, ban.prefixBits, range, sizeof( range ) );
+	MPModFormatDuration( durationSeconds, length, sizeof( length ) );
+	common->Printf( "banned %s (%s)%s%s\n", range, length, ban.reason[ 0 ] != '\0' ? ": " : "", ban.reason );
+	ModerationLogBan( "ban", by, ban );
+
+	for ( int i = 0; i < MAX_CLIENTS; i++ ) {
+		if ( i == localClientNum || clientModAddress[ i ].family == 0 ||
+			!MPModAddressInRange( clientModAddress[ i ], ban.address, ban.prefixBits ) ) {
+			continue;
+		}
+		ModerationLogClient( "kick", by, i, "banned", 0 );
+		mpGame.BeginServerDrop( i );
+		networkSystem->ServerDropClient( i, "#str_107239" );
+		mpGame.EndServerDrop( i );
+	}
+	return index;
+}
+
+/*
+================
+idGameLocal::IsClientTextMuted
+================
+*/
+bool idGameLocal::IsClientTextMuted( int clientNum ) {
+	if ( clientNum < 0 || clientNum >= MAX_CLIENTS || modTextMuteUntil[ clientNum ] == 0 ) {
+		return false;
+	}
+	if ( modTextMuteUntil[ clientNum ] > 0 && modTextMuteUntil[ clientNum ] <= ModerationNow() ) {
+		modTextMuteUntil[ clientNum ] = 0;
+		return false;
+	}
+	return true;
+}
+
+/*
+================
+idGameLocal::SetClientTextMute
+A muted player's chat and voice-menu lines reach nobody. The mute is kept by
+address as well, so leaving and joining again does not lift it; it lasts until
+it runs out, it is lifted, or the server stops. False when nothing changed.
+================
+*/
+bool idGameLocal::SetClientTextMute( int clientNum, bool mute, mpModTime_t durationSeconds, const char *by ) {
+	if ( !isServer || clientNum < 0 || clientNum >= numClients || clientNum == localClientNum ||
+		entities[ clientNum ] == NULL || !entities[ clientNum ]->IsType( idPlayer::GetClassType() ) ) {
+		return false;
+	}
+	const mpModTime_t now = ModerationNow();
+	if ( mute ) {
+		modTextMuteUntil[ clientNum ] = durationSeconds > 0 ? now + durationSeconds : -1;
+		MPModMuteAdd( modMutes, clientModAddress[ clientNum ], now, durationSeconds );
+		// the name and clan tag the mute holds the player to (idGameLocal::SetUserInfo)
+		modMutedName[ clientNum ] = userInfo[ clientNum ].GetString( "ui_name" );
+		modMutedClan[ clientNum ] = userInfo[ clientNum ].GetString( "ui_clan" );
+	} else {
+		if ( !IsClientTextMuted( clientNum ) ) {
+			return false;
+		}
+		modTextMuteUntil[ clientNum ] = 0;
+		MPModMuteRemove( modMutes, clientModAddress[ clientNum ] );
+		modMutedName[ clientNum ].Clear();
+		modMutedClan[ clientNum ].Clear();
+	}
+	modNoticeTime[ clientNum ] = 0;
+	if ( !botManager.IsBot( clientNum ) ) {
+		ServerSendChatMessage( clientNum, "server", mute ? "#str_232641" : "#str_232643", "" );
+	}
+	ModerationLogClient( mute ? "mute" : "unmute", by, clientNum, "", mute ? durationSeconds : 0 );
+	return true;
+}
+
+/*
+================
+idGameLocal::ModerationAllowChat
+True when the server may pass this client's chat or voice-menu line on. A line
+that arrived from a remote client also answers to the flood window
+(g_chatFloodMessages lines in any g_chatFloodSeconds, then g_chatFloodWait
+seconds of silence). The sender is told why, at most every ten seconds.
+================
+*/
+bool idGameLocal::ModerationAllowChat( int clientNum, bool fromNetwork ) {
+	if ( clientNum < 0 || clientNum >= MAX_CLIENTS ) {
+		return true;
+	}
+	const char *notice = NULL;
+	if ( IsClientTextMuted( clientNum ) ) {
+		notice = "#str_232641";
+	} else if ( fromNetwork ) {
+		const bool wasSilenced = modChatFlood[ clientNum ].silenced;
+		if ( MPModFloodCheck( modChatFlood[ clientNum ], time, g_chatFloodMessages.GetInteger(),
+				g_chatFloodSeconds.GetInteger() * 1000, g_chatFloodWait.GetInteger() * 1000 ) > 0 ) {
+			notice = "#str_232642";
+			if ( !wasSilenced ) {
+				ModerationLogClient( "flood", "server", clientNum, "chat", g_chatFloodWait.GetInteger() );
+				modNoticeTime[ clientNum ] = 0;
+			}
+		}
+	}
+	if ( notice == NULL ) {
+		return true;
+	}
+	// a restart winds game time back: a stamp far in the future is stale
+	if ( time >= modNoticeTime[ clientNum ] || modNoticeTime[ clientNum ] - time > MP_MOD_NOTICE_MSEC ) {
+		modNoticeTime[ clientNum ] = time + MP_MOD_NOTICE_MSEC;
+		if ( !botManager.IsBot( clientNum ) ) {
+			ServerSendChatMessage( clientNum, "server", notice, "" );
+		}
+	}
+	return false;
+}
+
+// openQ4 MP-18: graceful shutdown. The server tells its players, lets the match
+// end or a time run out, says goodbye and stops: a dedicated server's process
+// quits, a server hosted from the game goes back to its menu.
+enum {
+	MOD_SHUTDOWN_NONE = 0,
+	MOD_SHUTDOWN_MATCH,			// when this match ends, or at once on a server with no human on it
+	MOD_SHUTDOWN_TIME,			// at modShutdownAt
+	MOD_SHUTDOWN_STOPPING,		// the goodbye is on its way; the stop command follows
+	MOD_SHUTDOWN_STOPPED		// the stop command is queued: nothing more may start until the server is gone
+};
+// how long the goodbye has to reach the players before the stop command runs
+static const int MP_MOD_SHUTDOWN_STOP_MSEC = 1500;
+// seconds left at which players are told again
+static const int modShutdownNotices[] = { 3600, 1800, 600, 300, 60, 30, 10 };
+
+static int ModerationNextShutdownNotice( mpModTime_t left ) {
+	for ( int i = 0; i < static_cast<int>( sizeof( modShutdownNotices ) / sizeof( modShutdownNotices[ 0 ] ) ); i++ ) {
+		if ( modShutdownNotices[ i ] < left ) {
+			return modShutdownNotices[ i ];
+		}
+	}
+	return -1;
+}
+
+/*
+================
+idGameLocal::ModerationLogShutdown
+================
+*/
+void idGameLocal::ModerationLogShutdown( const char *event, const char *by, const char *when, mpModTime_t seconds ) {
+	mpModLogLine_t line;
+	MPModLogBegin( line, ModerationNow(), event );
+	MPModLogString( line, "by", by );
+	MPModLogString( line, "when", when );
+	if ( seconds > 0 ) {
+		MPModLogNumber( line, "seconds", seconds );
+	}
+	MPModLogString( line, "reason", modShutdownReason.c_str() );
+	ModerationWriteLog( line );
+}
+
+/*
+================
+idGameLocal::ScheduleServerShutdown
+After this match (afterMatch), or in so many seconds; 0 seconds is now.
+================
+*/
+void idGameLocal::ScheduleServerShutdown( bool afterMatch, mpModTime_t seconds, const char *reason, const char *by ) {
+	modShutdownRun = cvarSystem->GetCVarInteger( "net_serverRunId" );
+	char clean[ MP_MOD_REASON_BYTES ];
+	MPModCopyText( clean, sizeof( clean ), reason );
+	modShutdownReason = clean;
+	modShutdownMode = afterMatch ? MOD_SHUTDOWN_MATCH : MOD_SHUTDOWN_TIME;
+	modShutdownAt = ModerationNow() + ( seconds > 0 ? seconds : 0 );
+	modShutdownNextNotice = afterMatch ? -1 : ModerationNextShutdownNotice( seconds );
+
+	char length[ 32 ];
+	MPModFormatDuration( seconds, length, sizeof( length ) );
+	if ( afterMatch ) {
+		ServerSendChatMessage( -1, "server", "#str_232644", "" );
+		common->Printf( "server shutdown: when this match ends\n" );
+	} else if ( seconds > 0 ) {
+		ServerSendChatMessage( -1, "server", "#str_232645", length );
+		common->Printf( "server shutdown: in %s\n", length );
+	}
+	if ( clean[ 0 ] != '\0' && ( afterMatch || seconds > 0 ) ) {
+		ServerSendChatMessage( -1, "server", clean, "" );
+	}
+	ModerationLogShutdown( "shutdown_scheduled", by, afterMatch ? "match" : "time", afterMatch ? 0 : seconds );
+}
+
+/*
+================
+idGameLocal::CancelServerShutdown
+False when no shutdown was waiting.
+================
+*/
+bool idGameLocal::CancelServerShutdown( const char *by ) {
+	if ( modShutdownMode != MOD_SHUTDOWN_MATCH && modShutdownMode != MOD_SHUTDOWN_TIME ) {
+		return false;
+	}
+	modShutdownMode = MOD_SHUTDOWN_NONE;
+	ServerSendChatMessage( -1, "server", "#str_232646", "" );
+	common->Printf( "server shutdown: called off\n" );
+	ModerationLogShutdown( "shutdown_cancelled", by, "", 0 );
+	modShutdownReason.Clear();
+	return true;
+}
+
+/*
+================
+idGameLocal::ServerShutdownMapEnded
+The map is being shut down. A server hosted from the game stops with
+"disconnect" and its process lives on: the next server it starts must not
+inherit a shutdown that has already happened.
+================
+*/
+void idGameLocal::ServerShutdownMapEnded( void ) {
+	if ( modShutdownMode == MOD_SHUTDOWN_STOPPED ) {
+		modShutdownMode = MOD_SHUTDOWN_NONE;
+		modShutdownReason.Clear();
+	}
+}
+
+/*
+================
+idGameLocal::RunServerShutdown
+Every server frame, and with matchEnded when a match is over and the next map
+is about to be chosen. True while the server is stopping: the caller must not
+start another map.
+================
+*/
+bool idGameLocal::RunServerShutdown( bool matchEnded ) {
+	if ( !isServer || modShutdownMode == MOD_SHUTDOWN_NONE ) {
+		return false;
+	}
+	// A shutdown belongs to the server it was asked of. A listen host who leaves by hand
+	// and hosts again has a new server (the engine counts them in net_serverRunId).
+	if ( modShutdownRun != cvarSystem->GetCVarInteger( "net_serverRunId" ) ) {
+		modShutdownMode = MOD_SHUTDOWN_NONE;
+		modShutdownReason.Clear();
+		return false;
+	}
+	if ( modShutdownMode == MOD_SHUTDOWN_STOPPED ) {
+		return true;
+	}
+	if ( modShutdownMode == MOD_SHUTDOWN_STOPPING ) {
+		// a restart winds game time back: a stop time far ahead is stale
+		if ( time >= modShutdownStopTime || modShutdownStopTime - time > MP_MOD_SHUTDOWN_STOP_MSEC ) {
+			// The command runs with the next command buffer, frames from now. Until the
+			// server is gone this still answers true, or the game state would choose
+			// and start the next map in between.
+			modShutdownMode = MOD_SHUTDOWN_STOPPED;
+			cmdSystem->BufferCommandText( CMD_EXEC_APPEND, cvarSystem->GetCVarInteger( "net_serverDedicated" ) != 0 ? "quit\n" : "disconnect\n" );
+		}
+		return true;
+	}
+
+	bool stop = false;
+	if ( modShutdownMode == MOD_SHUTDOWN_MATCH ) {
+		stop = matchEnded;
+		if ( !stop ) {
+			// nobody is playing a match on a server with no human on it
+			stop = true;
+			for ( int i = 0; i < numClients; i++ ) {
+				if ( entities[ i ] != NULL && entities[ i ]->IsType( idPlayer::GetClassType() ) && !botManager.IsBot( i ) ) {
+					stop = false;
+					break;
+				}
+			}
+		}
+	} else {
+		const mpModTime_t left = modShutdownAt - ModerationNow();
+		if ( left <= 0 ) {
+			stop = true;
+		} else if ( modShutdownNextNotice > 0 && left <= modShutdownNextNotice ) {
+			char length[ 32 ];
+			MPModFormatDuration( left, length, sizeof( length ) );
+			ServerSendChatMessage( -1, "server", "#str_232645", length );
+			modShutdownNextNotice = ModerationNextShutdownNotice( left );
+		}
+	}
+	if ( !stop ) {
+		return false;
+	}
+	ServerSendChatMessage( -1, "server", "#str_232647", "" );
+	common->Printf( "server shutdown: stopping\n" );
+	ModerationLogShutdown( "shutdown", "server", modShutdownMode == MOD_SHUTDOWN_MATCH ? "match" : "time", 0 );
+	modShutdownMode = MOD_SHUTDOWN_STOPPING;
+	modShutdownStopTime = time + MP_MOD_SHUTDOWN_STOP_MSEC;
+	return true;
+}
+
+/*
+================
+idGameLocal::ServerModerationRequest
+
+GAME_RELIABLE_MESSAGE_MODERATION: what a logged-in admin asks the server to do
+to a connected player. On the wire: the verb (mpModAdminVerb_t) and the slot,
+a byte each; the slot's spawn identity and a length in seconds, 32 bits each;
+then a reason. The identity is the player the admin was looking at: if that
+player left and somebody else took the slot, nothing happens to the newcomer.
+
+An admin reaches connected players only and never an address, so this takes
+no range, lifts no ban and lists nothing. Who is refused is in
+MPModAdminCheck. Everything done is in the admin log with the admin's own
+slot, name and address beside it.
+================
+*/
+static const int MP_MOD_ADMIN_REQUEST_MIN_BYTES = 1 + 1 + 4 + 4 + 1;
+
+void idGameLocal::ServerModerationRequest( int clientNum, const idBitMsg &msg ) {
+	if ( !isServer || !isMultiplayer || clientNum < 0 || clientNum >= numClients || clientNum >= MAX_CLIENTS ||
+		clientNum == localClientNum ) {
+		return;
+	}
+	const int bits = msg.GetRemainingReadBits();
+	if ( bits < MP_MOD_ADMIN_REQUEST_MIN_BYTES * 8 || bits > ( MP_MOD_ADMIN_REQUEST_MIN_BYTES + MP_MOD_REASON_BYTES ) * 8 ) {
+		return;
+	}
+	const int verb = msg.ReadByte();
+	const int targetSlot = msg.ReadByte();
+	const int identity = msg.ReadLong();
+	const int requestedSeconds = msg.ReadLong();
+	char wireReason[ MP_MOD_REASON_BYTES ];
+	msg.ReadString( wireReason, sizeof( wireReason ) );
+	if ( msg.GetRemainingReadBits() != 0 ) {
+		return;
+	}
+	char reason[ MP_MOD_REASON_BYTES ];
+	MPModCopyText( reason, sizeof( reason ), wireReason );
+
+	if ( !mpGame.IsServerAdmin( clientNum ) ) {
+		ServerSendChatMessage( clientNum, "server", "#str_232654", "" );
+		return;
+	}
+	if ( verb == MP_MOD_ADMIN_LOGOUT ) {
+		mpGame.ServerAdminLogout( clientNum );
+		common->Printf( "client %d (%s^0) is no longer an admin\n", clientNum, userInfo[ clientNum ].GetString( "ui_name" ) );
+		ModerationLogClient( "admin_logout", "server", clientNum, "", 0 );
+		ServerSendChatMessage( clientNum, "server", "#str_232652", "" );
+		return;
+	}
+
+	mpModAdminTarget_t target;
+	memset( &target, 0, sizeof( target ) );
+	if ( targetSlot >= 0 && targetSlot < numClients && targetSlot < MAX_CLIENTS && entities[ targetSlot ] != NULL &&
+		entities[ targetSlot ]->IsType( idPlayer::GetClassType() ) ) {
+		target.connected = true;
+		target.current = identity != 0 && GetSpawnId( entities[ targetSlot ] ) == identity;
+		target.host = targetSlot == localClientNum;
+		target.admin = mpGame.IsServerAdmin( targetSlot );
+		target.bot = botManager.IsBot( targetSlot );
+		// a ban or a mute is of the target's range: does it hold an admin, this one included?
+		for ( int i = 0; i < numClients && i < MAX_CLIENTS; i++ ) {
+			if ( i != targetSlot && ( i == clientNum || mpGame.IsServerAdmin( i ) ) &&
+				MPModSamePlayer( clientModAddress[ i ], clientModAddress[ targetSlot ] ) ) {
+				target.coversAdmin = true;
+				break;
+			}
+		}
+	}
+	const int maxBanMinutes = g_adminMaxBanMinutes.GetInteger();
+	const mpModAdminResult_t allowed = MPModAdminCheck( verb, clientNum, targetSlot, target, maxBanMinutes );
+	if ( allowed != MP_MOD_ADMIN_OK ) {
+		ServerSendChatMessage( clientNum, "server", allowed == MP_MOD_ADMIN_REFUSED_BANS_OFF ? "#str_232657" : "#str_232656", "" );
+		return;
+	}
+
+	mpModTime_t seconds = requestedSeconds > 0 ? requestedSeconds : 0;
+	if ( seconds > MP_MOD_MAX_DURATION_SECONDS ) {
+		seconds = MP_MOD_MAX_DURATION_SECONDS;
+	}
+	// the target may be gone by the time the reply is written
+	const idStr targetName = userInfo[ targetSlot ].GetString( "ui_name" );
+	bool done = true;
+	// the admin log names the admin for everything this request does, and for
+	// nothing after it, however the request ends (a command can raise an error)
+	struct actorScope_t {
+		int &actor;
+		actorScope_t( int &slot, int clientNum ) : actor( slot ) { actor = clientNum; }
+		~actorScope_t() { actor = -1; }
+	} actorScope( modActorClient, clientNum );
+	switch ( verb ) {
+		case MP_MOD_ADMIN_KICK: {
+			ModerationLogClient( "kick", "admin", targetSlot, reason, 0 );
+			mpGame.BeginServerDrop( targetSlot );
+			cmdSystem->BufferCommandText( CMD_EXEC_NOW, va( "kick %d\n", targetSlot ) );
+			mpGame.EndServerDrop( targetSlot );
+			break;
+		}
+		case MP_MOD_ADMIN_MUTE: {
+			done = SetClientTextMute( targetSlot, true, seconds, "admin" );
+			break;
+		}
+		case MP_MOD_ADMIN_UNMUTE: {
+			done = SetClientTextMute( targetSlot, false, 0, "admin" );
+			break;
+		}
+		case MP_MOD_ADMIN_BAN: {
+			// the range they hold and (MP-17) their identity
+			done = ServerBanClient( targetSlot, MPModAdminBanSeconds( seconds, maxBanMinutes ), reason, "admin" ) >= 0;
+			break;
+		}
+		default: {
+			done = false;
+			break;
+		}
+	}
+	common->Printf( "admin %d (%s^0): %s %s^0%s\n", clientNum, userInfo[ clientNum ].GetString( "ui_name" ),
+		MPModAdminVerbName( verb ), targetName.c_str(), done ? "" : " (nothing changed)" );
+	ServerSendChatMessage( clientNum, "server", done ? "#str_232655" : "#str_232656", done ? targetName.c_str() : "" );
+}
+
+/*
+================
+idGameLocal::ClientModerationRequest
+
+A client's half of the above. The server answers in the chat area: done,
+refused, or that this connection is not logged in as an admin.
+================
+*/
+bool idGameLocal::ClientModerationRequest( int verb, int clientNum, mpModTime_t seconds, const char *reason ) {
+	if ( !isMultiplayer || !isClient ) {
+		return false;
+	}
+	int identity = 0;
+	if ( MPModAdminVerbHasTarget( verb ) ) {
+		if ( clientNum < 0 || clientNum >= numClients || clientNum >= MAX_CLIENTS || entities[ clientNum ] == NULL ||
+			!entities[ clientNum ]->IsType( idPlayer::GetClassType() ) ) {
+			return false;
+		}
+		identity = GetSpawnId( entities[ clientNum ] );
+	} else if ( verb == MP_MOD_ADMIN_LOGOUT ) {
+		clientNum = 0;
+	} else {
+		return false;
+	}
+	if ( seconds < 0 ) {
+		seconds = 0;
+	} else if ( seconds > MP_MOD_MAX_DURATION_SECONDS ) {
+		seconds = MP_MOD_MAX_DURATION_SECONDS;
+	}
+	char clean[ MP_MOD_REASON_BYTES ];
+	MPModCopyText( clean, sizeof( clean ), reason );
+
+	idBitMsg outMsg;
+	byte msgBuf[ MP_MOD_ADMIN_REQUEST_MIN_BYTES + MP_MOD_REASON_BYTES + 1 ];
+	outMsg.Init( msgBuf, sizeof( msgBuf ) );
+	outMsg.BeginWriting();
+	outMsg.WriteByte( GAME_RELIABLE_MESSAGE_MODERATION );
+	outMsg.WriteByte( verb );
+	outMsg.WriteByte( clientNum );
+	outMsg.WriteLong( identity );
+	outMsg.WriteLong( static_cast<int>( seconds ) );
+	outMsg.WriteString( clean );
+	if ( outMsg.IsOverflowed() ) {
+		return false;
+	}
+	networkSystem->ClientSendReliableMessage( outMsg );
+	return true;
+}
+
+// A connected player's slot from a slot number or a name, or -1.
+static int ModerationFindClient( const char *text ) {
+	if ( text == NULL || text[ 0 ] == '\0' ) {
+		return -1;
+	}
+	if ( idStr::IsNumeric( text ) ) {
+		const int clientNum = atoi( text );
+		if ( clientNum < 0 || clientNum >= gameLocal.numClients || gameLocal.entities[ clientNum ] == NULL ||
+			!gameLocal.entities[ clientNum ]->IsType( idPlayer::GetClassType() ) ) {
+			return -1;
+		}
+		return clientNum;
+	}
+	const idPlayer *player = gameLocal.GetClientByName( text );
+	return player != NULL ? player->entityNumber : -1;
+}
+
+// The command's words. The console's tokenizer is a script lexer: it cuts
+// "192.0.2.0/24" and "10m" in two, reads "3rd offence" as a number and words,
+// and takes "1e0f" inside an IPv6 address for a float, losing a character. The
+// engine publishes the line as it was typed for a command registered with
+// CMD_FL_RAWTEXT (cmd_rawText), and the line is cut at spaces only
+// (MPModSplitWords). Where there is no such line (an older engine, or a line
+// with "$", whose cvar values only the tokens hold) the tokens are used, and
+// the core's joiners put back what they can.
+static const int MODERATION_MAX_ARGS = MP_MOD_MAX_WORDS;
+static int ModerationArgs( const idCmdArgs &args, mpModWords_t &words, const char *argv[ MODERATION_MAX_ARGS ] ) {
+	const char *name = args.Argv( 0 );
+	if ( ( name[ 0 ] == '/' || name[ 0 ] == '\\' ) && name[ 1 ] != '\0' ) {
+		name++;
+	}
+	const int nameLength = static_cast<int>( strlen( name ) );
+	const char *raw = cvarSystem->GetCVarString( "cmd_rawText" );
+	while ( *raw == ' ' || *raw == '\t' ) {
+		raw++;
+	}
+	if ( *raw == '/' || *raw == '\\' ) {
+		raw++;
+	}
+	if ( nameLength > 0 && idStr::Icmpn( raw, name, nameLength ) == 0 &&
+		( raw[ nameLength ] == '\0' || raw[ nameLength ] == ' ' || raw[ nameLength ] == '\t' || raw[ nameLength ] == '\n' || raw[ nameLength ] == '\r' ) &&
+		strchr( raw, '$' ) == NULL && MPModSplitWords( raw, words ) && words.count >= 1 ) {
+		for ( int i = 0; i < words.count; i++ ) {
+			argv[ i ] = words.word[ i ];
+		}
+		return words.count;
+	}
+	const int argc = Min( args.Argc(), MODERATION_MAX_ARGS );
+	for ( int i = 0; i < argc; i++ ) {
+		argv[ i ] = args.Argv( i );
+	}
+	return argc;
+}
+
+// True when the word is a slot number: digits and nothing else.
+static bool ModerationIsSlot( const char *text ) {
+	if ( text == NULL || text[ 0 ] == '\0' ) {
+		return false;
+	}
+	for ( const char *at = text; *at != '\0'; at++ ) {
+		if ( *at < '0' || *at > '9' ) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// ban, mute, unmute and gameKick typed on a client: an admin's request to the
+// server, for a connected player and nothing else (ServerModerationRequest).
+static void ModerationClientCommand( int verb, const idCmdArgs &args ) {
+	const char *command = args.Argv( 0 );
+	const bool takesTime = verb == MP_MOD_ADMIN_BAN || verb == MP_MOD_ADMIN_MUTE;
+	const bool takesReason = verb == MP_MOD_ADMIN_BAN || verb == MP_MOD_ADMIN_KICK;
+	mpModWords_t words;
+	const char *argv[ MODERATION_MAX_ARGS ];
+	const int argc = ModerationArgs( args, words, argv );
+	if ( argc < 2 ) {
+		common->Printf( "usage: %s <client slot|name>%s%s\n  the server does this for a logged-in admin: set net_clientAdminPassword, then 'admin'\n",
+			command, takesTime ? " [time]" : "", takesReason ? " [reason]" : "" );
+		return;
+	}
+	const int clientNum = ModerationFindClient( argv[ 1 ] );
+	if ( clientNum < 0 ) {
+		common->Printf( "%s: no connected player matches '%s'; an admin acts on connected players only\n", command, argv[ 1 ] );
+		return;
+	}
+	int next = 2;
+	mpModTime_t duration = 0;
+	if ( takesTime ) {
+		next += MPModJoinDurationArgs( argc, argv, next, duration );
+	}
+	idStr reason;
+	if ( takesReason ) {
+		for ( int i = next; i < argc; i++ ) {
+			if ( reason.Length() > 0 ) {
+				reason += " ";
+			}
+			reason += argv[ i ];
+		}
+	} else if ( next != argc ) {
+		common->Printf( "%s: '%s' is not %s\n", command, argv[ next ], takesTime ? "a time" : "expected" );
+		return;
+	}
+	if ( !gameLocal.ClientModerationRequest( verb, clientNum, duration, reason.c_str() ) ) {
+		common->Printf( "%s: the request could not be sent\n", command );
+	}
+}
+
+/*
+================
+idGameLocal::ClientKick_f
+"gameKick" typed on a client.
+================
+*/
+void idGameLocal::ClientKick_f( const idCmdArgs &args ) {
+	ModerationClientCommand( MP_MOD_ADMIN_KICK, args );
+}
+
+/*
+================
+idGameLocal::Admin_f
+
+"admin": log in to the server as an admin. The password is read from
+net_clientAdminPassword, never from the command line: that cvar is private, so
+setting it stays out of the console history, the log and the config file,
+where a password typed after the command would not.
+================
+*/
+void idGameLocal::Admin_f( const idCmdArgs &args ) {
+	if ( !gameLocal.isMultiplayer || ( !gameLocal.isClient && !gameLocal.isServer ) ) {
+		common->Printf( "admin: join a server first\n" );
+		return;
+	}
+	const char *word = args.Argc() > 1 ? args.Argv( 1 ) : "";
+	if ( gameLocal.isServer ) {
+		// The host's side: who is an admin, and taking the right away. The host needs no login.
+		if ( idStr::Icmp( word, "off" ) == 0 && args.Argc() == 2 ) {
+			gameLocal.mpGame.ServerAdminLoginsOff();
+			common->Printf( "admin logins are off: every admin is logged out and the password is forgotten\n" );
+			mpModLogLine_t line;
+			MPModLogBegin( line, ModerationNow(), "admin_logins_off" );
+			MPModLogString( line, "by", "console" );
+			gameLocal.ModerationWriteLog( line );
+			return;
+		}
+		if ( idStr::Icmp( word, "revoke" ) == 0 && args.Argc() == 3 ) {
+			const bool all = idStr::Icmp( args.Argv( 2 ), "all" ) == 0;
+			const int only = all ? -1 : ModerationFindClient( args.Argv( 2 ) );
+			if ( !all && only < 0 ) {
+				common->Printf( "admin: no connected player matches '%s'\n", args.Argv( 2 ) );
+				return;
+			}
+			int revoked = 0;
+			for ( int i = 0; i < gameLocal.numClients && i < MAX_CLIENTS; i++ ) {
+				if ( ( all || i == only ) && gameLocal.mpGame.ServerAdminLogout( i ) ) {
+					common->Printf( "%s^0 is no longer an admin\n", gameLocal.userInfo[ i ].GetString( "ui_name" ) );
+					gameLocal.ModerationLogClient( "admin_logout", "console", i, "revoked", 0 );
+					gameLocal.ServerSendChatMessage( i, "server", "#str_232652", "" );
+					revoked++;
+				}
+			}
+			if ( revoked == 0 ) {
+				common->Printf( all ? "admin: nobody is logged in as an admin\n" : "admin: that player is not an admin\n" );
+			}
+			return;
+		}
+		if ( args.Argc() > 2 || ( args.Argc() == 2 && idStr::Icmp( word, "list" ) != 0 ) ) {
+			common->Printf( "usage: admin                          who is logged in as an admin\n"
+				"       admin revoke <slot|name|all>   end an admin's login\n"
+				"       admin off                      end every login and forget the password\n"
+				"  players log in with the password given in net_serverAdminPassword\n" );
+			return;
+		}
+		common->Printf( "admin logins are %s\n", gameLocal.mpGame.AdminLoginAvailable() ? "on" :
+			"off: set net_serverAdminPassword (at least 8 bytes) to turn them on" );
+		int admins = 0;
+		for ( int i = 0; i < gameLocal.numClients && i < MAX_CLIENTS; i++ ) {
+			if ( gameLocal.mpGame.IsServerAdmin( i ) ) {
+				common->Printf( "%4d  %s^0\n", i, gameLocal.userInfo[ i ].GetString( "ui_name" ) );
+				admins++;
+			}
+		}
+		common->Printf( "%d admin(s)\n", admins );
+		return;
+	}
+	if ( args.Argc() == 2 && idStr::Icmp( word, "logout" ) == 0 ) {
+		if ( !gameLocal.ClientModerationRequest( MP_MOD_ADMIN_LOGOUT, 0, 0, "" ) ) {
+			common->Printf( "admin: the request could not be sent\n" );
+		}
+		return;
+	}
+	if ( args.Argc() != 1 ) {
+		// The natural slip is the password after the command. The engine keeps such a
+		// line out of the console history (idPrivateCommand::NamesAdminPassword).
+		common->Printf( "admin: the password is not typed after the command. Set it once, then log in:\n"
+			"  set net_clientAdminPassword \"...\"\n"
+			"  admin\n"
+			"The line just typed was not kept in the console history. 'admin logout' gives the right up.\n" );
+		return;
+	}
+	const char *password = cvarSystem->GetCVarString( "net_clientAdminPassword" );
+	if ( password == NULL || password[ 0 ] == '\0' ) {
+		common->Printf( "admin: set the password first: set net_clientAdminPassword \"...\" (it is kept out of the console history and the config), then run 'admin'\n" );
+		return;
+	}
+	if ( !gameLocal.mpGame.RequestAdminAuthentication( password ) ) {
+		common->Printf( "admin: the login could not be sent; wait until you are in the game, then try again\n" );
+		return;
+	}
+	common->Printf( "admin: asked the server; its answer appears with the chat\n" );
+}
+
+// These change who may play on the server, so they run where the server does:
+// its console, a listen server's host, or rcon.
+static bool ModerationServerCommand( const char *command ) {
+	if ( !gameLocal.isMultiplayer || !gameLocal.isServer ) {
+		common->Printf( "%s: only the server runs this; from a client use 'rcon %s ...'\n", command, command );
+		return false;
+	}
+	return true;
+}
+
+/*
+================
+idGameLocal::Ban_f
+================
+*/
+void idGameLocal::Ban_f( const idCmdArgs &args ) {
+	if ( gameLocal.isMultiplayer && gameLocal.isClient ) {
+		ModerationClientCommand( MP_MOD_ADMIN_BAN, args );
+		return;
+	}
+	if ( !ModerationServerCommand( "ban" ) ) {
+		return;
+	}
+	mpModWords_t words;
+	const char *argv[ MODERATION_MAX_ARGS ];
+	const int argc = ModerationArgs( args, words, argv );
+	if ( argc < 2 ) {
+		common->Printf( "usage: ban <client slot|name|address[/prefix]|id:<identity>> [time] [reason]\n"
+			"  time: 30m, 2h, 7d, 1w, a number of minutes, or perm (the default)\n"
+			"  a player is banned by the address they hold (over IPv6, their /64) and by their identity\n"
+			"  an IPv6 address may be written in brackets, and needs them before a port: [2001:db8::1]:28004\n" );
+		return;
+	}
+	// A slot number first, then an address, then a name. An address is read
+	// before a name so that no player can take a ban meant for an address by
+	// calling themselves "192.0.2.7" or "[".
+	int next = 2;
+	mpModAddress_t address;
+	MPModClearAddress( address );
+	int prefixBits = 0;
+	idStr name;
+	int clientNum = -1;
+	char text[ 128 ];
+	text[ 0 ] = '\0';
+	char identity[ MP_MOD_IDENTITY_BYTES ];
+	identity[ 0 ] = '\0';
+	if ( idStr::Icmpn( argv[ 1 ], MP_MOD_IDENTITY_PREFIX, sizeof( MP_MOD_IDENTITY_PREFIX ) - 1 ) == 0 ) {
+		// MP-17: an identity, connected or not
+		if ( !MPModParseIdentity( argv[ 1 ], identity ) ) {
+			common->Printf( "ban: '%s' is not an identity; status shows each player's sixteen hex digits\n", argv[ 1 ] );
+			return;
+		}
+	} else if ( ModerationIsSlot( argv[ 1 ] ) ) {
+		clientNum = ModerationFindClient( argv[ 1 ] );
+		if ( clientNum < 0 ) {
+			common->Printf( "ban: no player is in slot %s\n", argv[ 1 ] );
+			return;
+		}
+	} else {
+		const int used = MPModJoinAddressArgs( argc, argv, 1, text, sizeof( text ) );
+		if ( used > 0 && strpbrk( text, ".:" ) != NULL && MPModParseAddress( text, address, prefixBits ) ) {
+			next = 1 + used;
+		} else {
+			MPModClearAddress( address );
+			clientNum = ModerationFindClient( argv[ 1 ] );
+			if ( clientNum < 0 ) {
+				common->Printf( "ban: '%s' is neither a connected player nor an address\n",
+					text[ 0 ] != '\0' ? text : argv[ 1 ] );
+				return;
+			}
+		}
+	}
+	if ( clientNum >= 0 ) {
+		address = gameLocal.GetClientModAddress( clientNum );
+		if ( address.family == 0 && gameLocal.mpGame.ClientIdentity( clientNum )[ 0 ] == '\0' ) {
+			common->Printf( "ban: '%s' has no network address (a bot, or this server's own player)\n", argv[ 1 ] );
+			return;
+		}
+		// a player is banned by the range they hold: over IPv6 that is their /64
+		prefixBits = MPModPlayerPrefixBits( address );
+		name = gameLocal.userInfo[ clientNum ].GetString( "ui_name" );
+	}
+	mpModTime_t duration = 0;
+	next += MPModJoinDurationArgs( argc, argv, next, duration );
+	idStr reason;
+	for ( int i = next; i < argc; i++ ) {
+		if ( reason.Length() > 0 ) {
+			reason += " ";
+		}
+		reason += argv[ i ];
+	}
+	if ( identity[ 0 ] != '\0' ) {
+		// a connected player's name labels the ban when they hold the identity
+		for ( int i = 0; i < MAX_CLIENTS && name.Length() == 0; i++ ) {
+			if ( idStr::Cmp( gameLocal.mpGame.ClientIdentity( i ), identity ) == 0 ) {
+				name = gameLocal.userInfo[ i ].GetString( "ui_name" );
+			}
+		}
+		gameLocal.ServerBanIdentity( identity, duration, name.c_str(), reason.c_str(), "console" );
+		return;
+	}
+	if ( clientNum >= 0 ) {
+		gameLocal.ServerBanClient( clientNum, duration, reason.c_str(), "console" );
+		return;
+	}
+	gameLocal.ServerBan( address, prefixBits, duration, name.c_str(), reason.c_str(), "console" );
+}
+
+/*
+================
+idGameLocal::Unban_f
+================
+*/
+void idGameLocal::Unban_f( const idCmdArgs &args ) {
+	if ( !ModerationServerCommand( "unban" ) ) {
+		return;
+	}
+	mpModWords_t words;
+	const char *argv[ MODERATION_MAX_ARGS ];
+	const int argc = ModerationArgs( args, words, argv );
+	char text[ 128 ];
+	if ( argc < 2 || 1 + MPModJoinAddressArgs( argc, argv, 1, text, sizeof( text ) ) != argc ) {
+		common->Printf( "usage: unban <row of banlist|address[/prefix]|id:<identity>>\n" );
+		return;
+	}
+	int index = -1;
+	const int count = gameLocal.GetBanListCount();
+	if ( idStr::IsNumeric( text ) && strchr( text, '.' ) == NULL ) {
+		index = atoi( text ) - 1;
+	} else {
+		// an address and prefix, or (MP-17) "id:" and an identity
+		index = MPModBanFindTarget( *gameLocal.modBans, text );
+	}
+	const mpModBan_t *ban = index >= 0 && index < count ? gameLocal.GetBan( index ) : NULL;
+	if ( ban == NULL ) {
+		common->Printf( "unban: no ban matches '%s'; 'banlist' shows the rows\n", text );
+		return;
+	}
+	char range[ MP_MOD_RANGE_TEXT_BYTES ];
+	MPModBanTarget( *ban, range, sizeof( range ) );
+	gameLocal.ModerationLogBan( "unban", "console", *ban );
+	gameLocal.RemoveBan( index );
+	common->Printf( "unbanned %s\n", range );
+}
+
+/*
+================
+idGameLocal::BanList_f
+================
+*/
+void idGameLocal::BanList_f( const idCmdArgs &args ) {
+	if ( !ModerationServerCommand( "banlist" ) ) {
+		return;
+	}
+	if ( args.Argc() > 1 ) {
+		if ( idStr::Icmp( args.Argv( 1 ), "reload" ) != 0 ) {
+			common->Printf( "usage: banlist [reload]\n" );
+			return;
+		}
+		// read a list that was edited by hand while the server ran
+		gameLocal.SaveBanList();
+		gameLocal.LoadBanList();
+		// a ban the file gained covers whoever is connected, as one made here does
+		for ( int i = 0; i < MAX_CLIENTS; i++ ) {
+			if ( i == gameLocal.localClientNum || gameLocal.clientModAddress[ i ].family == 0 ||
+				gameLocal.FindBan( gameLocal.clientModAddress[ i ] ) == NULL ) {
+				continue;
+			}
+			gameLocal.ModerationLogClient( "kick", "console", i, "banned", 0 );
+			gameLocal.mpGame.BeginServerDrop( i );
+			networkSystem->ServerDropClient( i, "#str_107239" );
+			gameLocal.mpGame.EndServerDrop( i );
+		}
+	}
+	const int count = gameLocal.GetBanListCount();
+	const mpModTime_t now = ModerationNow();
+	for ( int i = 0; i < count; i++ ) {
+		const mpModBan_t *ban = gameLocal.GetBan( i );
+		char range[ MP_MOD_RANGE_TEXT_BYTES ];
+		char left[ 32 ];
+		MPModBanTarget( *ban, range, sizeof( range ) );
+		MPModFormatDuration( ban->expires != 0 ? ban->expires - now : 0, left, sizeof( left ) );
+		common->Printf( "%3d  %-24s %-10s %s%s%s\n", i + 1, range, left, ban->name,
+			ban->reason[ 0 ] != '\0' ? " : " : "", ban->reason );
+	}
+	common->Printf( "%d ban(s)\n", count );
+}
+
+/*
+================
+idGameLocal::Mute_f
+"mute" and "unmute": the server's text mute, by slot or name.
+================
+*/
+void idGameLocal::Mute_f( const idCmdArgs &args ) {
+	const bool mute = idStr::Icmp( args.Argv( 0 ), "unmute" ) != 0;
+	if ( gameLocal.isMultiplayer && gameLocal.isClient ) {
+		ModerationClientCommand( mute ? MP_MOD_ADMIN_MUTE : MP_MOD_ADMIN_UNMUTE, args );
+		return;
+	}
+	if ( !ModerationServerCommand( mute ? "mute" : "unmute" ) ) {
+		return;
+	}
+	mpModWords_t words;
+	const char *argv[ MODERATION_MAX_ARGS ];
+	const int argc = ModerationArgs( args, words, argv );
+	if ( argc < 2 || ( !mute && argc != 2 ) ) {
+		common->Printf( mute ? "usage: mute <client slot|name> [time]\n  time: 30m, 2h, a number of minutes; without one, until unmute or a server restart\n" :
+			"usage: unmute <client slot|name>\n" );
+		return;
+	}
+	const int clientNum = ModerationFindClient( argv[ 1 ] );
+	if ( clientNum < 0 ) {
+		common->Printf( "%s: no connected player matches '%s'\n", args.Argv( 0 ), argv[ 1 ] );
+		return;
+	}
+	mpModTime_t duration = 0;
+	if ( mute && argc > 2 && 2 + MPModJoinDurationArgs( argc, argv, 2, duration ) != argc ) {
+		idStr rest;
+		for ( int i = 2; i < argc; i++ ) {
+			rest += i > 2 ? " " : "";
+			rest += argv[ i ];
+		}
+		common->Printf( "mute: '%s' is not a time\n", rest.c_str() );
+		return;
+	}
+	if ( !gameLocal.SetClientTextMute( clientNum, mute, duration, "console" ) ) {
+		common->Printf( mute ? "mute: this server's own player cannot be muted\n" : "unmute: that player is not muted\n" );
+		return;
+	}
+	char length[ 32 ];
+	MPModFormatDuration( duration, length, sizeof( length ) );
+	common->Printf( mute ? "muted %s (%s)\n" : "unmuted %s\n", gameLocal.userInfo[ clientNum ].GetString( "ui_name" ),
+		duration > 0 ? length : "until unmute" );
+}
+
+/*
+================
+idGameLocal::Status_f
+Who is connected, from where. Identity is "-" until MP-17 gives players one.
+================
+*/
+void idGameLocal::Status_f( const idCmdArgs &args ) {
+	if ( !ModerationServerCommand( "status" ) ) {
+		return;
+	}
+	common->Printf( "map: %s  game type: %s\n", gameLocal.serverInfo.GetString( "si_map" ), gameLocal.serverInfo.GetString( "si_gametype" ) );
+	common->Printf( "slot ping  state      muted address                                  identity         name\n" );
+	int players = 0;
+	for ( int i = 0; i < gameLocal.numClients; i++ ) {
+		if ( gameLocal.entities[ i ] == NULL || !gameLocal.entities[ i ]->IsType( idPlayer::GetClassType() ) ) {
+			continue;
+		}
+		const idPlayer *player = static_cast<const idPlayer *>( gameLocal.entities[ i ] );
+		char address[ MP_MOD_RANGE_TEXT_BYTES ];
+		const char *where = address;
+		if ( botManager.IsBot( i ) ) {
+			where = "bot";
+		} else if ( i == gameLocal.localClientNum ) {
+			where = "local";
+		} else if ( gameLocal.clientModAddress[ i ].family != 0 ) {
+			MPModFormatAddress( gameLocal.clientModAddress[ i ], address, sizeof( address ) );
+		} else {
+			where = "unknown";
+		}
+		// openQ4 MP-17: the identity the player proved on this server
+		const char *identity = gameLocal.mpGame.ClientIdentity( i );
+		common->Printf( "%4d %4d  %-10s %-5s %-40s %-16s %s\n", i, networkSystem->ServerGetClientPing( i ),
+			player->spectating ? "spectator" : "playing", gameLocal.IsClientTextMuted( i ) ? "yes" : "no", where,
+			identity[ 0 ] != '\0' ? identity : "-", gameLocal.userInfo[ i ].GetString( "ui_name" ) );
+		players++;
+	}
+	common->Printf( "%d client(s)\n", players );
+}
+
+/*
+================
+idGameLocal::Shutdown_f
+"serverShutdown": stop the server without cutting a match short.
+================
+*/
+void idGameLocal::Shutdown_f( const idCmdArgs &args ) {
+	if ( !ModerationServerCommand( "serverShutdown" ) ) {
+		return;
+	}
+	mpModWords_t words;
+	const char *argv[ MODERATION_MAX_ARGS ];
+	const int argc = ModerationArgs( args, words, argv );
+	if ( argc < 2 ) {
+		common->Printf( "usage: serverShutdown <match|now|time|cancel> [reason]\n"
+			"  match: when this match ends; time: 90s, 5m, 1h or a number of minutes\n" );
+		if ( gameLocal.modShutdownMode == MOD_SHUTDOWN_MATCH ) {
+			common->Printf( "the server shuts down when this match ends\n" );
+		} else if ( gameLocal.modShutdownMode == MOD_SHUTDOWN_TIME ) {
+			char length[ 32 ];
+			const mpModTime_t left = gameLocal.modShutdownAt - ModerationNow();
+			MPModFormatDuration( left > 0 ? left : 1, length, sizeof( length ) );
+			common->Printf( "the server shuts down in %s\n", length );
+		} else if ( gameLocal.modShutdownMode == MOD_SHUTDOWN_NONE ) {
+			common->Printf( "no shutdown is waiting\n" );
+		}
+		return;
+	}
+	if ( gameLocal.modShutdownMode == MOD_SHUTDOWN_STOPPING || gameLocal.modShutdownMode == MOD_SHUTDOWN_STOPPED ) {
+		common->Printf( "serverShutdown: the server is stopping now\n" );
+		return;
+	}
+	if ( idStr::Icmp( argv[ 1 ], "cancel" ) == 0 ) {
+		if ( !gameLocal.CancelServerShutdown( "console" ) ) {
+			common->Printf( "serverShutdown: no shutdown is waiting\n" );
+		}
+		return;
+	}
+	bool afterMatch = false;
+	mpModTime_t seconds = 0;
+	int next = 2;
+	if ( idStr::Icmp( argv[ 1 ], "match" ) == 0 ) {
+		afterMatch = true;
+	} else if ( idStr::Icmp( argv[ 1 ], "now" ) != 0 ) {
+		const int used = MPModJoinDurationArgs( argc, argv, 1, seconds );
+		if ( used == 0 || seconds <= 0 ) {
+			common->Printf( "serverShutdown: '%s' is not match, now, cancel or a time\n", argv[ 1 ] );
+			return;
+		}
+		next = 1 + used;
+	}
+	idStr reason;
+	for ( int i = next; i < argc; i++ ) {
+		if ( reason.Length() > 0 ) {
+			reason += " ";
+		}
+		reason += argv[ i ];
+	}
+	gameLocal.ScheduleServerShutdown( afterMatch, seconds, reason.c_str(), "console" );
 }
 // RAVEN END
 

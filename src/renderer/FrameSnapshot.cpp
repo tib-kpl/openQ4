@@ -4,9 +4,10 @@
 #include "RendererMetrics.h"
 #include "FrameSnapshotCopy.h"
 #include "FrameSnapshotRetain.h"
-#include <unordered_map>
+#include <cstdint>
 #include <unordered_set>
 #include <new>
+#include <ctime>
 
 struct frameLightReceipt_s {
 	frameLightReceipt_s *next;
@@ -19,13 +20,94 @@ namespace {
 // play pays no clock reads or per-copy accounting.
 struct snapshotStats_t {
 	unsigned long long copiedBytes, reusedBytes, cacheBytes, geometryBytes, copies, views, frames, microseconds;
+	unsigned long long retainedVertexBytes;	// part of reusedBytes: static vertex-class bytes served across views
+	unsigned long long temporaryIndexBytes;	// frame-temporary index bytes kept out of the retained cache
+	unsigned long long omittedBytes;		// front-end-only stream bytes the snapshot did not take
+	unsigned long long threadWork;		// SnapshotThreadWork() units spent freezing views
 	int lastFrame;
 };
 snapshotStats_t snapshotStats = {};
+// Work done on the calling thread rather than wall time: cycles on Windows,
+// nanoseconds where POSIX has a thread CPU clock, otherwise 0. Time the
+// thread spends preempted by other processes does not count, so builds can
+// still be compared on a busy host; memory contention still does.
+unsigned long long SnapshotThreadWork() {
+#if defined( _WIN32 )
+	ULONG64 cycles = 0;
+	return QueryThreadCycleTime( GetCurrentThread(), &cycles ) ? static_cast<unsigned long long>( cycles ) : 0;
+#elif defined( CLOCK_THREAD_CPUTIME_ID )
+	timespec now;
+	return clock_gettime( CLOCK_THREAD_CPUTIME_ID, &now ) == 0
+		? static_cast<unsigned long long>( now.tv_sec ) * 1000000000ull + static_cast<unsigned long long>( now.tv_nsec ) : 0;
+#else
+	return 0;
+#endif
+}
+const char *SnapshotThreadWorkUnit() {
+#if defined( _WIN32 )
+	return "cycles";
+#elif defined( CLOCK_THREAD_CPUTIME_ID )
+	return "ns";
+#else
+	return "none";
+#endif
+}
 bool snapshotProfiling = false;
-idCVar r_vkSnapshotRetain( "r_vkSnapshotRetain", "1", CVAR_RENDERER | CVAR_BOOL, "retain validated immutable index copies across overlap frames" );
+idCVar r_vkSnapshotRetain( "r_vkSnapshotRetain", "2", CVAR_RENDERER | CVAR_INTEGER,
+	"retain validated immutable copies across overlap frames: 0 = per-view copies only, 1 = index streams, 2 = index streams and static vertex streams", 0, 2 );
 idFrameSnapshotRetainedIndexes retainedIndexes;
-std::vector<idFrameSnapshotRetainedIndexes::lease_t> retainedLeases[2];
+idFrameSnapshotRetainedStreams retainedStreams;
+// Either cache's versions; a submitted frame releases them at retirement.
+// Each holder's epoch changes whenever it is emptied (see Lease).
+std::vector<std::shared_ptr<const void>> retainedLeases[2];
+std::uint64_t retainedLeaseEpochs[2] = { 1, 2 };
+std::uint64_t retainedLeaseEpochCounter = 2;
+void ReleaseRetainedLeases( int slot, bool shrink = false ) {
+	retainedLeases[slot].clear();
+	if ( shrink ) retainedLeases[slot].shrink_to_fit();
+	retainedLeaseEpochs[slot] = ++retainedLeaseEpochCounter;
+}
+
+// One view's identities: geometry, caches, surfaces and entities. Reused by
+// every view; only one view is frozen at a time.
+idFrameSnapshotIdentities snapshotGeometry, snapshotCaches, snapshotSurfaces, snapshotEntities;
+bool snapshotInProgress = false;
+
+// The Vulkan consumer never reads these streams: silhouette indexes and
+// edges, face planes, dominant triangles, shadow vertexes and the mirrored
+// and duplicated vertex tables feed the front end's shadow volumes, culling
+// and tangent derivation, which ran before the snapshot. The back end derives
+// tangents only to repair GPU skinning a view deferred, and preparation has
+// already finished that for every snapshot copy. The debug tools below read
+// some of them, null-checked; a snapshot taken while one is enabled keeps
+// them all. Omitting them leaves the counts and nulls the pointers, so a
+// reader that was missed fails at once rather than reading a live stream.
+bool SnapshotKeepsFrontEndStreams() {
+	return r_showEdges.GetBool() || r_showDominantTri.GetBool() || r_showTextureVectors.GetFloat() != 0.0f;
+}
+
+// Candidates for cross-view retention are the vertex-class streams of static
+// geometry: a world area or a static model drawn through its own persistent
+// triangle record. Everything posed or deformed keeps its per-view copy:
+// - an entity with a dynamic model, joints or a non-static model class
+//   (animated meshes, effects, liquids, beams, GUI and other generated models);
+// - frame-allocated triangle records: material deforms, decals, overlays and
+//   dynamic light or shadow tris, whatever entity draws them;
+// - surfaces with a GPU-skinning sidecar, captured previous positions or a
+//   packed MD5R mesh, and every frame-temporary vertex cache.
+// The classification selects candidates only; idFrameSnapshotRetainedStreams
+// still compares the complete range before it reuses a version.
+bool StableSpace( const viewEntity_t *space ) {
+	const idRenderEntityLocal *def = space != NULL ? space->entityDef : NULL;
+	return def != NULL && def->dynamicModel == NULL && def->parms.joints == NULL
+		&& def->parms.hModel != NULL && def->parms.hModel->IsDynamicModel() == DM_STATIC;
+}
+
+bool StableGeometry( const srfTriangles_t *tri ) {
+	return !tri->deformedSurface && !tri->gpuSkinningDeferred && tri->numGpuSkinningVerts == 0
+		&& tri->gpuSkinningJointPalette == NULL && tri->previousPositions == NULL
+		&& !R_TriHasPrimBatchMesh( tri ) && !R_FrameMemoryContains( tri );
+}
 
 // The command arena owns these copies. No model/def/cache destructor runs on
 // them: they are render inputs, with all mutable streams copied below.
@@ -45,10 +127,16 @@ template<class T> T *Copy( const T *source, size_t count = 1 ) {
 
 class viewSnapshot_t {
 	idFrameSnapshotCopies streamCopies;
-	std::unordered_map<const srfTriangles_t *, srfTriangles_t *> geometry;
-	std::unordered_map<const vertCache_t *, vertCache_t *> caches;
-	std::unordered_set<const drawSurf_t *> surfaces;
-	std::unordered_set<const viewEntity_t *> entities;
+	idFrameSnapshotIdentities &geometry = snapshotGeometry;
+	idFrameSnapshotIdentities &caches = snapshotCaches;
+	idFrameSnapshotIdentities &surfaces = snapshotSurfaces;
+	idFrameSnapshotIdentities &entities = snapshotEntities;
+	const bool retainStreams = r_vkSnapshotRetain.GetInteger() >= 2;
+	const bool frontEndStreams = SnapshotKeepsFrontEndStreams();
+	const std::uint64_t leaseEpoch = retainedLeaseEpochs[frameData->slot];
+	std::vector<std::shared_ptr<const void>> &leases = retainedLeases[frameData->slot];
+	viewSnapshot_t( const viewSnapshot_t & ) = delete;
+	viewSnapshot_t &operator=( const viewSnapshot_t & ) = delete;
 	template<class T> T *CopyStream( const T *source, size_t count ) {
 		if ( source == NULL || count == 0 ) return NULL;
 		if ( count > ( idMath::INT_MAX - 16 ) / sizeof( T ) ) {
@@ -63,35 +151,81 @@ class viewSnapshot_t {
 		}
 		return static_cast<T *>( result.data );
 	}
+	// A vertex-class stream of geometry classified as static. A range this view
+	// already froze is taken from the view's lookup, so light tris sharing their
+	// ambient surface's vertices validate them once per view.
+	template<class T> T *StableStream( const T *source, size_t count, bool stable ) {
+		if ( !stable || !retainStreams ) return CopyStream( source, count );
+		if ( source == NULL || count == 0 ) return NULL;
+		if ( count > ( idMath::INT_MAX - 16 ) / sizeof( T ) ) common->FatalError( "retained stream size overflow" );
+		const size_t bytes = count * sizeof( T );
+		if ( void *known = streamCopies.Find( source, bytes ) ) {
+			if ( snapshotProfiling ) snapshotStats.reusedBytes += bytes;
+			return static_cast<T *>( known );
+		}
+		bool reused = false;
+		const void *leased = retainedStreams.Lease( source, bytes, leaseEpoch, leases, reused );
+		if ( leased == nullptr ) return CopyStream( source, count );
+		void *data = const_cast<void *>( leased );
+		streamCopies.Remember( source, bytes, data,
+			[]( size_t size ) { return R_FrameAlloc( static_cast<int>( size ) ); } );
+		if ( snapshotProfiling ) {
+			if ( reused ) { snapshotStats.reusedBytes += bytes; snapshotStats.retainedVertexBytes += bytes; }
+			else { snapshotStats.copiedBytes += bytes; snapshotStats.copies++; }
+		}
+		return static_cast<T *>( data );
+	}
 public:
-	template<class T> T *Indexes( const T *source, size_t count ) {
+	viewSnapshot_t() {
+		if ( snapshotInProgress ) common->FatalError( "render snapshot re-entered" );
+		snapshotInProgress = true;
+		geometry.Begin(); caches.Begin(); surfaces.Begin(); entities.Begin();
+	}
+	~viewSnapshot_t() { snapshotInProgress = false; }
+	// temporary: the bytes are frame-temporary (frame memory or a temporary
+	// vertex cache). Their addresses are refilled every frame, so retaining
+	// them only displaced the persistent streams: the working set exceeded the
+	// cache's entry cap and least-recently-used eviction then missed on nearly
+	// every acquisition. They take the ordinary per-view copy.
+	template<class T> T *Indexes( const T *source, size_t count, bool temporary = false ) {
 		if ( source == NULL || count == 0 ) return NULL;
 		if ( count > ( idMath::INT_MAX - 16 ) / sizeof( T ) ) common->FatalError( "retained index size overflow" );
-		if ( r_vkSnapshotRetain.GetBool() ) {
-			const auto result = retainedIndexes.Acquire( source, count * sizeof( T ) );
-			if ( result.lease ) {
-				retainedLeases[frameData->slot].push_back( result.lease );
+		const size_t bytes = count * sizeof( T );
+		const bool retain = r_vkSnapshotRetain.GetBool();
+		if ( retain && ( temporary || R_FrameMemoryContains( source ) ) ) {
+			if ( snapshotProfiling ) snapshotStats.temporaryIndexBytes += bytes;
+		} else if ( retain ) {
+			if ( void *known = streamCopies.Find( source, bytes ) ) {
+				if ( snapshotProfiling ) snapshotStats.reusedBytes += bytes;
+				return static_cast<T *>( known );
+			}
+			bool reused = false;
+			const std::uint32_t *leased = retainedIndexes.Lease( source, bytes, leaseEpoch, leases, reused );
+			if ( leased != nullptr ) {
+				void *data = const_cast<std::uint32_t *>( leased );
+				streamCopies.Remember( source, bytes, data,
+					[]( size_t size ) { return R_FrameAlloc( static_cast<int>( size ) ); } );
 				if ( snapshotProfiling ) {
-					if ( result.reused ) snapshotStats.reusedBytes += count * sizeof( T );
-					else { snapshotStats.copiedBytes += count * sizeof( T ); snapshotStats.copies++; }
+					if ( reused ) snapshotStats.reusedBytes += bytes;
+					else { snapshotStats.copiedBytes += bytes; snapshotStats.copies++; }
 				}
-				return reinterpret_cast<T *>( const_cast<std::uint32_t *>( result.lease->data() ) );
+				return static_cast<T *>( data );
 			}
 		}
 		return CopyStream( source, count );
 	}
-	vertCache_t *Cache( const vertCache_t *source, bool indexStream = false ) {
+	vertCache_t *Cache( const vertCache_t *source, bool indexStream = false, bool stable = false ) {
 		if ( source == NULL ) return NULL;
-		auto found = caches.find( source );
-		if ( found != caches.end() ) return found->second;
+		if ( void *found = caches.Find( source ) ) return static_cast<vertCache_t *>( found );
 		vertCache_t *copy = Copy( source );
-		caches.emplace( source, copy );
+		caches.Insert( source ) = copy;
 		// Vulkan consumes CPU staging bytes. Owning the bytes as well as the
 		// header permits skinning fallback to repair the submitted stream.
 		if ( source->virtMem != NULL ) {
 			const unsigned long long before = snapshotStats.copiedBytes;
 			const byte *bytes = static_cast<const byte *>( source->virtMem ) + source->offset;
-			copy->virtMem = indexStream ? Indexes( bytes, source->size ) : CopyStream( bytes, source->size );
+			copy->virtMem = indexStream ? Indexes( bytes, source->size, source->tag == TAG_TEMP )
+				: StableStream( bytes, source->size, stable && source->tag != TAG_TEMP );
 			if ( snapshotProfiling ) snapshotStats.cacheBytes += snapshotStats.copiedBytes - before;
 			copy->offset = 0;
 		}
@@ -102,7 +236,10 @@ public:
 	}
 
 	void PrepareGeometry( const srfTriangles_t *source ) {
-		if ( source == NULL || !geometry.emplace( source, nullptr ).second ) return;
+		bool inserted = false;
+		if ( source == NULL ) return;
+		geometry.Insert( source, &inserted );
+		if ( !inserted ) return;
 		// Finish every potentially mutating preparation before taking any stream
 		// copy. Two triangle records can share vertices while only one still
 		// needs tangents or a CPU skinning fallback.
@@ -125,27 +262,52 @@ public:
 		PrepareGeometry( source->topAmbientSurface );
 	}
 
-	srfTriangles_t *Geometry( const srfTriangles_t *source ) {
+	// stableSpace: the drawing entity is static. A light tri or a deform source
+	// passes it on to the ambient surface it references.
+	srfTriangles_t *Geometry( const srfTriangles_t *source, bool stableSpace = false ) {
 		if ( source == NULL ) return NULL;
-		auto found = geometry.find( source );
-		if ( found != geometry.end() && found->second != NULL ) return found->second;
+		if ( void *found = geometry.Find( source ) ) return static_cast<srfTriangles_t *>( found );
 		srfTriangles_t *copy = Copy( source );
-		geometry[source] = copy;
+		geometry.Insert( source ) = copy;
+		const bool stable = stableSpace && retainStreams && StableGeometry( source );
 		const unsigned long long beforeStreams = snapshotStats.copiedBytes;
-		copy->verts = CopyStream( source->verts, source->numVerts );
+		copy->verts = StableStream( source->verts, source->numVerts, stable );
 		copy->indexes = Indexes( source->indexes, source->numIndexes );
-		copy->silIndexes = Indexes( source->silIndexes, source->numIndexes );
-		copy->silEdges = CopyStream( source->silEdges, source->numSilEdges );
-		copy->shadowVertexes = CopyStream( source->shadowVertexes, source->numVerts );
-		copy->facePlanes = CopyStream( source->facePlanes, source->numIndexes / 3 );
-		copy->dominantTris = CopyStream( source->dominantTris, source->numVerts );
-		copy->mirroredVerts = CopyStream( source->mirroredVerts, source->numMirroredVerts );
-		copy->dupVerts = CopyStream( source->dupVerts, source->numDupVerts * 2 );
+		// A copy still deferring its skinning would be repaired on the render
+		// thread, which derives tangents from these tables. Preparation
+		// finishes that first, so this only guards a geometry it never saw.
+		if ( frontEndStreams || source->gpuSkinningDeferred ) {
+			copy->silIndexes = Indexes( source->silIndexes, source->numIndexes );
+			copy->silEdges = StableStream( source->silEdges, source->numSilEdges, stable );
+			copy->shadowVertexes = StableStream( source->shadowVertexes, source->numVerts, stable );
+			copy->facePlanes = StableStream( source->facePlanes, source->numIndexes / 3, stable );
+			copy->dominantTris = StableStream( source->dominantTris, source->numVerts, stable );
+			copy->mirroredVerts = StableStream( source->mirroredVerts, source->numMirroredVerts, stable );
+			copy->dupVerts = StableStream( source->dupVerts, source->numDupVerts * 2, stable );
+		} else {
+			if ( snapshotProfiling ) {
+				auto bytes = []( const void *stream, size_t size ) { return stream != NULL ? static_cast<unsigned long long>( size ) : 0ull; };
+				snapshotStats.omittedBytes += bytes( source->silIndexes, source->numIndexes * sizeof( glIndex_t ) )
+					+ bytes( source->silEdges, source->numSilEdges * sizeof( silEdge_t ) )
+					+ bytes( source->shadowVertexes, source->numVerts * sizeof( shadowCache_t ) )
+					+ bytes( source->facePlanes, ( source->numIndexes / 3 ) * sizeof( idPlane ) )
+					+ bytes( source->dominantTris, source->numVerts * sizeof( dominantTri_t ) )
+					+ bytes( source->mirroredVerts, source->numMirroredVerts * sizeof( int ) )
+					+ bytes( source->dupVerts, source->numDupVerts * 2 * sizeof( int ) );
+			}
+			copy->silIndexes = NULL;
+			copy->silEdges = NULL;
+			copy->shadowVertexes = NULL;
+			copy->facePlanes = NULL;
+			copy->dominantTris = NULL;
+			copy->mirroredVerts = NULL;
+			copy->dupVerts = NULL;
+		}
 		if ( snapshotProfiling ) snapshotStats.geometryBytes += snapshotStats.copiedBytes - beforeStreams;
-		copy->ambientCache = Cache( source->ambientCache );
+		copy->ambientCache = Cache( source->ambientCache, false, stable );
 		copy->indexCache = Cache( source->indexCache, true );
-		copy->shadowCache = Cache( source->shadowCache );
-		copy->lightingCache = Cache( source->lightingCache );
+		copy->shadowCache = Cache( source->shadowCache, false, stable );
+		copy->lightingCache = Cache( source->lightingCache, false, stable );
 		copy->gpuSkinningBindPoseVerts = CopyStream( source->gpuSkinningBindPoseVerts, source->numGpuSkinningVerts );
 		copy->gpuSkinningVerts = CopyStream( source->gpuSkinningVerts, source->numGpuSkinningVerts );
 		copy->gpuSkinningJointPalette = CopyStream( source->gpuSkinningJointPalette, source->numGpuSkinningJoints * GPU_SKINNING_JOINT_FLOATS );
@@ -155,14 +317,17 @@ public:
 		copy->skinToModelTransforms = CopyStream( source->skinToModelTransforms, source->numSkinToModelTransforms * 16 );
 		copy->skinToModelTransformsAlloc = NULL;
 #endif
-		copy->ambientSurface = Geometry( source->ambientSurface );
-		copy->topAmbientSurface = Geometry( source->topAmbientSurface );
+		copy->ambientSurface = Geometry( source->ambientSurface, stableSpace );
+		copy->topAmbientSurface = Geometry( source->topAmbientSurface, stableSpace );
 		copy->nextDeferredFree = NULL;
 		return copy;
 	}
 
 	void Entity( const viewEntity_t *source ) {
-		if ( source == NULL || !entities.insert( source ).second || source->entityDef == NULL ) return;
+		bool inserted = false;
+		if ( source == NULL ) return;
+		entities.Insert( source, &inserted );
+		if ( !inserted || source->entityDef == NULL ) return;
 		viewEntity_t *view = const_cast<viewEntity_t *>( source );
 		const idRenderEntityLocal *def = source->entityDef;
 		view->entityDef = new ( R_FrameAlloc( sizeof( *def ) ) ) idRenderEntityLocal( *def );
@@ -179,16 +344,20 @@ public:
 			}
 			return;
 		}
-		if ( source == NULL || !surfaces.insert( source ).second ) return;
+		bool inserted = false;
+		if ( source == NULL ) return;
+		surfaces.Insert( source, &inserted );
+		if ( !inserted ) return;
 		drawSurf_t *surf = const_cast<drawSurf_t *>( source );
+		const bool stableSpace = retainStreams && StableSpace( surf->space );
 		Entity( surf->space );
 		// Interaction/volume surfaces do not initialize the embedded deform
 		// record. Only finalized ambient draws may carry a source to rebase.
 		const srfTriangles_t *deformSource = finalized && surf->classicDeform.initialized && surf->classicDeform.valid
-			? Geometry( surf->classicDeform.sourceGeometry.geometry ) : NULL;
-		surf->geo = Geometry( surf->geo );
+			? Geometry( surf->classicDeform.sourceGeometry.geometry, stableSpace ) : NULL;
+		surf->geo = Geometry( surf->geo, stableSpace );
 		if ( finalized ) R_ClassicDeformDomain_RebaseFrameCopy( surf->classicDeform, deformSource, surf->geo );
-		surf->pbrLightGeo = Geometry( surf->pbrLightGeo );
+		surf->pbrLightGeo = Geometry( surf->pbrLightGeo, stableSpace );
 		surf->dynamicTexCoords = Cache( surf->dynamicTexCoords );
 		surf->decalColorCache = Cache( surf->decalColorCache );
 		surf->previousPositionCache = Cache( surf->previousPositionCache );
@@ -258,9 +427,11 @@ static void R_SnapshotRenderViewInternal( viewDef_t *view ) {
 void R_SnapshotRenderView( viewDef_t *view ) {
 	if ( !R_RenderThread_OverlapRequested() || view == NULL || view->frameSnapshot ) return;
 	const unsigned long long begin = snapshotProfiling ? R_RendererMetrics_CpuClock() : 0;
+	const unsigned long long beginWork = snapshotProfiling ? SnapshotThreadWork() : 0;
 	R_SnapshotRenderViewInternal( view );
 	if ( snapshotProfiling ) {
 		snapshotStats.microseconds += R_RendererMetrics_CpuClock() - begin;
+		snapshotStats.threadWork += SnapshotThreadWork() - beginWork;
 		snapshotStats.views++;
 		if ( snapshotStats.lastFrame != tr.frameCount ) {
 			snapshotStats.lastFrame = tr.frameCount;
@@ -277,16 +448,24 @@ void R_FrameSnapshotStats_f( const idCmdArgs &args ) {
 		snapshotProfiling = true;
 		return;
 	}
-	common->Printf( "Frame snapshot stats %s: frames=%llu views=%llu copies=%llu bytes=%llu geometryBytes=%llu cacheBytes=%llu cpuUs=%llu reusedBytes=%llu\n",
+	common->Printf( "Frame snapshot stats %s: frames=%llu views=%llu copies=%llu bytes=%llu geometryBytes=%llu cacheBytes=%llu cpuUs=%llu threadWork=%llu threadWorkUnit=%s reusedBytes=%llu"
+		" retainedVertexBytes=%llu temporaryIndexBytes=%llu omittedBytes=%llu indexEntries=%llu indexResidentBytes=%llu vertexEntries=%llu vertexResidentBytes=%llu leases=%llu\n",
 		args.Argc() > 1 ? args.Argv( 1 ) : "total", snapshotStats.frames, snapshotStats.views,
 		snapshotStats.copies, snapshotStats.copiedBytes, snapshotStats.geometryBytes,
-		snapshotStats.cacheBytes, snapshotStats.microseconds, snapshotStats.reusedBytes );
+		snapshotStats.cacheBytes, snapshotStats.microseconds, snapshotStats.threadWork, SnapshotThreadWorkUnit(), snapshotStats.reusedBytes,
+		snapshotStats.retainedVertexBytes, snapshotStats.temporaryIndexBytes, snapshotStats.omittedBytes,
+		static_cast<unsigned long long>( retainedIndexes.Size() ), static_cast<unsigned long long>( retainedIndexes.ResidentBytes() ),
+		static_cast<unsigned long long>( retainedStreams.Size() ), static_cast<unsigned long long>( retainedStreams.ResidentBytes() ),
+		static_cast<unsigned long long>( retainedLeases[0].size() + retainedLeases[1].size() ) );
 	snapshotProfiling = false;
 }
 
 void R_RetireRenderSnapshots( frameData_t *frame ) {
-	retainedLeases[frame->slot].clear();
-	if ( !r_vkSnapshotRetain.GetBool() ) retainedIndexes.Clear();
+	ReleaseRetainedLeases( frame->slot );
+	// Lowering the selection drops the cached versions; submitted leases stay.
+	const int retain = r_vkSnapshotRetain.GetInteger();
+	if ( retain < 1 ) retainedIndexes.Clear();
+	if ( retain < 2 ) retainedStreams.Clear();
 	for ( frameLightReceipt_s *receipt = frame->lightReceipts; receipt; receipt = receipt->next ) {
 		idRenderLightLocal *source = receipt->source;
 		const idRenderLightLocal *snapshot = receipt->snapshot;
@@ -310,9 +489,14 @@ void R_RetireRenderSnapshots( frameData_t *frame ) {
 	frame->lightReceipts = NULL;
 }
 
-void R_ClearRetainedSnapshotIndexes() {
-	for ( auto &leases : retainedLeases ) { leases.clear(); leases.shrink_to_fit(); }
+// Frame shutdown, and every teardown that frees or purges what the cached
+// versions were keyed by (vertex-cache purge on a video restart, world free):
+// those entries could only age out under pressure. Submitted leases stay.
+void R_ClearRetainedSnapshotStreams() {
+	for ( int slot = 0; slot < 2; ++slot ) ReleaseRetainedLeases( slot, true );
 	retainedIndexes.Clear();
+	retainedStreams.Clear();
+	snapshotGeometry.Release(); snapshotCaches.Release(); snapshotSurfaces.Release(); snapshotEntities.Release();
 }
 
 // Device uploads and light-grid residency changes run after joining the prior
@@ -454,8 +638,75 @@ void R_FrameOwnershipSelfTest_f( const idCmdArgs &args ) {
 		&& space.entityDef->parms.joints != &joint
 		&& viewLight.lightDef != &light && viewLight.lightDef->parms.lightRadius.x == 17
 		&& viewLight.globalInteractions == &surf && volume.geo == submitted;
+	// Static geometry keeps one validated version across views while its bytes
+	// are unchanged. A rewrite must reach neither that version nor a later
+	// view's bytes: the later view takes its own copy of the new contents.
+	bool retainedPassed = true;
+	if ( r_vkSnapshotRetain.GetInteger() >= 2 ) {
+		// Stack fixtures reuse their addresses between runs of this command, and
+		// the cache remembers a rewritten range. Start and end without them;
+		// versions leased to a submitted frame are unaffected.
+		retainedStreams.Clear();
+		idDrawVert staticVerts[2] = {};
+		staticVerts[0].xyz.Set( 21, 22, 23 );
+		byte staticCacheBytes[sizeof( staticVerts )];
+		memcpy( staticCacheBytes, staticVerts, sizeof( staticVerts ) );
+		vertCache_t staticCache = {};
+		staticCache.virtMem = staticCacheBytes;
+		staticCache.size = sizeof( staticVerts );
+		staticCache.tag = TAG_USED;
+		glIndex_t staticIndexes[3] = { 0, 1, 0 };
+		srfTriangles_t staticGeometry = {};
+		staticGeometry.verts = staticVerts;
+		staticGeometry.numVerts = 2;
+		staticGeometry.indexes = staticIndexes;
+		staticGeometry.numIndexes = 3;
+		staticGeometry.ambientCache = &staticCache;
+		idRenderEntityLocal staticEntity;
+		staticEntity.parms.hModel = renderModelManager->DefaultModel();
+		drawSurf_t staticSurfs[4] = {};
+		viewEntity_t staticSpaces[4] = {};
+		auto freeze = [&]( int index ) {
+			staticSpaces[index].entityDef = &staticEntity;
+			staticSurfs[index].geo = &staticGeometry;
+			staticSurfs[index].space = &staticSpaces[index];
+			drawSurf_t *list[1] = { &staticSurfs[index] };
+			viewDef_t staticView = {};
+			staticView.drawSurfs = list;
+			staticView.numDrawSurfs = 1;
+			staticView.viewEntitys = &staticSpaces[index];
+			R_SnapshotRenderViewInternal( &staticView );
+			return staticSurfs[index].geo;
+		};
+		const srfTriangles_t *first = freeze( 0 );
+		const srfTriangles_t *second = freeze( 1 );
+		staticVerts[0].xyz.Zero();
+		memset( staticCacheBytes, 0, sizeof( staticCacheBytes ) );
+		const srfTriangles_t *rewritten = freeze( 2 );
+		// The same static entity drawing frame-temporary (deformed) geometry.
+		srfTriangles_t *deformed = static_cast<srfTriangles_t *>( R_ClearedFrameAlloc( sizeof( srfTriangles_t ) ) );
+		deformed->verts = staticVerts;
+		deformed->numVerts = 2;
+		staticSpaces[3].entityDef = &staticEntity;
+		retainedPassed = staticEntity.parms.hModel != NULL && StableSpace( &staticSpaces[3] )
+			&& StableGeometry( &staticGeometry ) && !StableGeometry( deformed )
+			&& first != &staticGeometry && second != first
+			&& first->verts != staticVerts && second->verts == first->verts
+			&& first->ambientCache != second->ambientCache
+			&& first->ambientCache->virtMem == second->ambientCache->virtMem
+			&& first->ambientCache->virtMem != staticCacheBytes
+			&& first->verts[0].xyz.x == 21
+			&& static_cast<const idDrawVert *>( first->ambientCache->virtMem )[0].xyz.x == 21
+			&& rewritten->verts != first->verts && rewritten->verts != staticVerts
+			&& rewritten->verts[0].xyz.x == 0
+			&& rewritten->ambientCache->virtMem != first->ambientCache->virtMem
+			&& static_cast<const idDrawVert *>( rewritten->ambientCache->virtMem )[0].xyz.x == 0;
+		retainedStreams.Clear();
+	}
 	// These fixtures are stack-owned, and are never eligible for light receipts.
 	frameData->lightReceipts = savedReceipts;
 	common->Printf( "Renderer frame ownership self-test %s: geometry, cache bytes, stream aliases, later-view isolation, palettes, previous positions and defs\n", passed ? "passed" : "FAILED" );
-	if ( !passed ) common->Error( "Renderer frame ownership self-test failed" );
+	common->Printf( "Renderer frame ownership self-test %s: static vertex streams shared across views, rewrites isolated, deformed geometry excluded (r_vkSnapshotRetain %d)\n",
+		!retainedPassed ? "FAILED" : r_vkSnapshotRetain.GetInteger() >= 2 ? "passed" : "skipped", r_vkSnapshotRetain.GetInteger() );
+	if ( !passed || !retainedPassed ) common->Error( "Renderer frame ownership self-test failed" );
 }

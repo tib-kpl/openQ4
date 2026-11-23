@@ -755,6 +755,131 @@ auto-tracking with 15 single-reversal controls; `mvd_recovery_contract.py`
 now also requires recovery to rebuild both directories from the surviving
 records (2,365 cut points, six controls).
 
+## Client-view recordings (MP-22), 23 November 2026
+
+A player who is not hosting records their own view in the MVD container.
+Quake 4's game module still carries Raven's client net-demo state:
+`idGameLocal::WriteNetworkInfo` and `ReadNetworkInfo` save and restore a
+client's snapshot states, its PVS words, the players, the snapshots not yet
+acknowledged (respawning every entity from its stored state) and the
+multiplayer start state. The engine records around that.
+
+**Format.** The header requires `MVD_FEATURE_CLIENT_VIEW` (bit 6) with
+`RECORD_CRC` and `LENGTH_DELIMITED` and none of the server view's features, so
+an openQ4 reader older than this refuses the file at its header; format stays
+1.3 and a server recording's header is unchanged. The optional features are
+the clean end and user info: no timeline index, markers or keyframes. Every
+live record opens with the recording's own clock, `(frame, time)`: real time
+since the start added to the client's frame and time when recording began. The
+client's own game frame steps back whenever a snapshot resynchronizes it, and
+a recording's timeline may only move forward.
+
+| Record | Type | Payload after the clock |
+|---|---|---|
+| Network state | 3, version 2 | slot (u8); last snapshot's sequence, frame and time; the client's frame and time; the commands in flight from that snapshot's frame (count, then frame, client, length and `WriteUserCmdDelta` bytes each); then the game's client network info |
+| Client snapshot | 30, required | the client's frame after reading it, then the whole unreliable snapshot message from the engine header on |
+| Applied snapshot | 31, required | the sequence `SERVER_RELIABLE_MESSAGE_APPLYSNAPSHOT` named |
+| Game reliable | 32, required | the message as the game reads it, after the engine's identifier (at most 8 KiB) |
+| Recorder's command | 33, optional | frame, then `WriteUserCmdDelta` bytes |
+| User info | 12 | as in a server recording: slot and dictionary (also an emptied one when a player leaves) |
+
+The end record counts client snapshots as snapshots and applied snapshots and
+game reliables as reliables.
+
+**Recording.** `record`, `recordNetDemo` and `recordMVD` record a client view
+when no local server is running and the client is in game. The hooks sit
+where `idAsyncClient` hands data to the game: the snapshot after it was read,
+the applied snapshot after it was applied, a game reliable before the game
+reads it, user info after it is set, and the player's own command as it is
+generated. A game-init message (a map change) or a disconnect finishes the
+file. The game's demo state is never set on the recording client. A client on
+a pure server cannot see loose files through the file system, its own demos
+included, so a free recording name is also checked in the save folder on disk
+(`MVD_PathExists`); before this a second recording under the same name could
+have replaced the first.
+
+**Validation.** Before the game reads a byte, `ValidateClientNetworkState`
+walks the whole start state: every length, every entity number, and every
+stored state's entity definition (the 20-bit spawn id, then the definition
+number in `BitsForInteger( entityDefs ) + 1` bits, which must name a
+definition this game has, as `ReadNetworkInfo` raises a fatal error
+otherwise); the recorder must be among the players; the multiplayer part goes
+through the server form's checks. The recorder validates its own start state
+before writing it. The library summary and the playback index check every
+client record's size and clock, and each view refuses the other's snapshot
+and reliable records.
+
+**Playback.** The game runs as a client in `DEMO_PLAYING` with no server
+demo, as the recorder's slot (`idAsyncClient::GetLocalClientNum` asks the
+player). Records are processed in file order as the playback clock passes
+their stamps: snapshots through `ClientReadSnapshot` (then the other clients'
+relayed commands into the command table, as the client did), applied
+snapshots through `ClientApplySnapshot`, reliables through
+`ClientProcessReliableMessage`, the recorder's commands into its table row.
+Each frame repeats the client's prediction from the last snapshot's frame to
+the recorder's frame at that point (the client frame stored with the snapshot
+plus the time since its stamp), duplicating missing commands as
+`DuplicateUsercmds` does, at most 64 frames a frame. Seeking replays from the
+start; follow, free roam and auto-tracking are refused, and the library and
+deck offer neither.
+
+**Keyframes (second round, same day).** A client recording writes a keyframe
+after a snapshot every `mvd_keyframeInterval` seconds, in its own optional
+record type 34 with a server keyframe's layout: counts, then the map state, the
+client network state (as the start record's), and a four-byte version word as
+the third block, which a keyframe block may not leave empty. The playback index
+notes them; a seek restores the nearest one through the same
+`ApplyPlaybackNetworkState` path as the start, which now takes the game clock
+from the restored state's client time, and replays the rest.
+
+**Recovery, timedemo and packs.** `mvdRecover` counts a client recording's
+snapshots and reliables and copies its keyframes without a directory.
+`timeDemo <name>.mvd` (and `timeDemoQuit`) plays any MVD with one simulation
+tic a frame, uncapped (`Common_GetRequestedPresentationCap`), and prints
+`MVD_TIMEDEMO frames= seconds= fps= slowest= match= complete=`; it times the
+same frames every run, so FPS work can compare builds on a recording. Every
+recording's metadata now lists its packs (`FS_ListLoadedPacks`:
+`<dir>/<pack>:<checksum>`); a content refusal compares them with the loaded
+ones and names a changed, missing or extra pack, or says that every pack
+matches.
+
+**Autoaction.** `ui_autoAction` (a player) and `si_autoAction` (a server, in
+its server info) take the words `demo`, `ss` and `stats`
+(`src/mpgame/mp/AutoAction.h`, with `MPBuildMatchBasename`:
+`YYYYMMDD-HHMMSS_<mode>_<map>[_<player>]`). The player's side starts on the
+local game's live edge (`rvGameState::GameStateChanged`, never during demo
+playback) by buffering `record "<name>"`, quoted because the tokenizer splits
+the name at its dash; the server's starts in `NewState(GAMEON)` with
+`ServerStartMVDRecording` unless the match is managed. Both leave a recording
+someone else started alone, a host whose server records records once, and two
+seconds into the review take the screenshot, write `stats/<name>.json` and stop
+the demo.
+
+**Deck, export and library (third round, same day).** The deck's **Players**
+button opens a framed list of up to 16 recorded players (`demo_player<n>_*`
+GUI state, `demoFollowRow`), and `demoPlayers` lists them at the console.
+`StepFrames` takes a negative count, so **Step back** and `demoStep -1` seek
+one tic back through the keyframe before it. `demoExport <demo>.mvd [fps]
+[quit]` plays like a timedemo with 1000/fps of the match a frame and buffers a
+`screenshot "exports/<demo>/frame%05d.png"` each frame, which runs at the head
+of the next frame's command buffer before playback moves on, so each picture is
+the frame shown; sound is not written (the sound world's AVI hooks are empty
+and the OpenAL backend has no loopback renderer). A client recording now has
+markers: the client's game runs `PublishMVDMarkers` (phase, round, pause,
+score, flag and powerup changes it can see) and marks each kill from the death
+message, and the recorder stamps them on its own clock. Every finished
+recording ends with an optional summary record (type 23: the names seen while
+recording); the library shows them, or whose view a client recording is, and
+`demoFind` searches name, map, mode, server, players and recorder. A recording
+made where there is a view takes a 320x240 `demos/<name>_thumb.png` three
+seconds in (`screenshot <file> <width> <height>`), which the library shows and
+deletes with the demo.
+
+**Open.** Recording across a map change, sound in exports, and the prediction's
+lead: playback predicts to the recorder's frame as the clock reconstructs it,
+which matches the recorded view to within the frame-time jitter of the
+original client.
+
 ## Campaign render demos (v11), 7 November 2026
 
 Roadmap Q4-09 owns this work. Before v11 a render demo ended at the first map

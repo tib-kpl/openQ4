@@ -67,10 +67,22 @@ idCVar				idAsyncNetwork::serverMaxClientRate( "net_serverMaxClientRate", "12800
 idCVar				idAsyncNetwork::clientMaxRate( "net_clientMaxRate", "128000", CVAR_SYSTEM | CVAR_INTEGER | CVAR_ARCHIVE | CVAR_NOCHEAT, "maximum rate requested by client from server in bytes/sec" );
 idCVar				idAsyncNetwork::serverMaxUsercmdRelay( "net_serverMaxUsercmdRelay", "5", CVAR_SYSTEM | CVAR_INTEGER | CVAR_NOCHEAT, "maximum number of usercmds from other clients the server relays to a client", 1, MAX_USERCMD_RELAY, idCmdSystem::ArgCompletion_Integer<1,MAX_USERCMD_RELAY> );
 idCVar				idAsyncNetwork::serverZombieTimeout( "net_serverZombieTimeout", "5", CVAR_SYSTEM | CVAR_INTEGER | CVAR_NOCHEAT, "disconnected client timeout in seconds" );
+idCVar				idAsyncNetwork::serverMaxClientsPerAddress( "net_serverMaxClientsPerAddress", "0", CVAR_SYSTEM | CVAR_INTEGER | CVAR_ARCHIVE | CVAR_NOCHEAT, "most clients one address may hold on this server; 0 for no limit", 0, MAX_ASYNC_CLIENTS );
+idCVar				idAsyncNetwork::serverRunId( "net_serverRunId", "0", CVAR_SYSTEM | CVAR_NOCHEAT | CVAR_ROM | CVAR_INTEGER, "counts the servers this process has started; the game module uses it to tell a new server from a new map" );
+idCVar				idAsyncNetwork::serverRconFrom( "net_serverRconFrom", "", CVAR_SYSTEM | CVAR_NOCHEAT | CVAR_ROM, "the address the remote console command now running came from, and empty otherwise; the game module's admin log reads it" );
+idCVar				idAsyncNetwork::serverLastDrop( "net_serverLastDrop", "", CVAR_SYSTEM | CVAR_NOCHEAT | CVAR_ROM, "the client the server last removed and why, as '<slot> <reason>'; the game module's admin log reads it" );
 idCVar				idAsyncNetwork::serverClientTimeout( "net_serverClientTimeout", "40", CVAR_SYSTEM | CVAR_INTEGER | CVAR_NOCHEAT, "client time out in seconds" );
 idCVar				idAsyncNetwork::clientServerTimeout( "net_clientServerTimeout", "40", CVAR_SYSTEM | CVAR_INTEGER | CVAR_NOCHEAT, "server time out in seconds" );
 idCVar				idAsyncNetwork::serverDrawClient( "net_serverDrawClient", "-1", CVAR_SYSTEM | CVAR_INTEGER, "number of client for which to draw view on server" );
 idCVar				idAsyncNetwork::serverRemoteConsolePassword( "net_serverRemoteConsolePassword", "", CVAR_SYSTEM | CVAR_NOCHEAT | CVAR_PRIVATE | CVAR_CASE_SENSITIVE, "private remote console password (rcon2 requires at least 12 bytes)" );
+// openQ4 (MP-18): the admin password is the game module's to check, and is declared here so
+// it is private from the moment the engine starts: a game cvar is unknown, and so not yet
+// private, while the other game module is loaded (the main menu runs the single-player one).
+idCVar				idAsyncNetwork::serverAdminPassword( "net_serverAdminPassword", "", CVAR_SYSTEM | CVAR_NOCHEAT | CVAR_PRIVATE | CVAR_CASE_SENSITIVE, "private password trusted players log in with as admins ('admin'); read when a map starts and then cleared, none leaves admin logins off" );
+// The referee password (competitive matches) is older and keeps its game-cvar name; the game module
+// declares it as well, and reads and clears it. Declared here for the same reason: private from startup.
+idCVar				idAsyncNetwork::serverRefereePassword( "g_refPassword", "", CVAR_SYSTEM | CVAR_NOCHEAT | CVAR_PRIVATE | CVAR_CASE_SENSITIVE, "private one-shot server-only referee credential; converted to a verifier and cleared at session start" );
+idCVar				idAsyncNetwork::clientAdminPassword( "net_clientAdminPassword", "", CVAR_SYSTEM | CVAR_NOCHEAT | CVAR_PRIVATE | CVAR_CASE_SENSITIVE, "private admin password the 'admin' command logs in to a server with; it is never sent" );
 idCVar				idAsyncNetwork::serverAllowLegacyRcon( "net_serverAllowLegacyRcon", "0", CVAR_SYSTEM | CVAR_BOOL | CVAR_NOCHEAT, "allow the insecure legacy plaintext rcon protocol" );
 idCVar				idAsyncNetwork::clientPrediction( "net_clientPrediction", "16", CVAR_SYSTEM | CVAR_INTEGER | CVAR_NOCHEAT, "additional client side prediction in milliseconds (legacy value 16 follows one exact base tic)" );
 idCVar				idAsyncNetwork::clientMaxPrediction( "net_clientMaxPrediction", "1000", CVAR_SYSTEM | CVAR_INTEGER | CVAR_NOCHEAT, "maximum number of milliseconds a client can predict ahead of server." );
@@ -193,8 +205,9 @@ void idAsyncNetwork::Init( void ) {
 	cmdSystem->AddCommand( "reconnect", Reconnect_f, CMD_FL_SYSTEM, "reconnect to the last server we tried to connect to" );
 	cmdSystem->AddCommand( "serverInfo", GetServerInfo_f, CMD_FL_SYSTEM, "shows server info" );
 	cmdSystem->AddCommand( "LANScan", GetLANServers_f, CMD_FL_SYSTEM, "scans LAN for servers" );
+	cmdSystem->AddCommand( "NETScan", GetNETServers_f, CMD_FL_SYSTEM, "asks the master server in net_master0, and the list in net_serverListUrl, for Internet servers" );
 	cmdSystem->AddCommand( "listServers", ListServers_f, CMD_FL_SYSTEM, "lists scanned servers" );
-	cmdSystem->AddCommand( "rcon", RemoteConsole_f, CMD_FL_SYSTEM, "sends an authenticated remote console command to the server" );
+	cmdSystem->AddCommand( "rcon", RemoteConsole_f, CMD_FL_SYSTEM | CMD_FL_RAWTEXT, "sends an authenticated remote console command to the server" );
 	cmdSystem->AddCommand( "heartbeat", Heartbeat_f, CMD_FL_SYSTEM, "send a heartbeat to the the master servers" );
 	cmdSystem->AddCommand( "kick", Kick_f, CMD_FL_SYSTEM, "kick a client by connection number" );
 	cmdSystem->AddCommand( "checkNewVersion", CheckNewVersion_f, CMD_FL_SYSTEM, "check if a new version of the game is available" );
@@ -299,6 +312,8 @@ void idAsyncNetwork::RunFrame( void ) {
 	// Dedicated-style paths can keep blocking until the next game frame because they are not
 	// trying to present repeated-state render frames in between async ticks.
 	const bool allowBlocking = ( idAsyncNetwork::serverDedicated.GetInteger() != 0 );
+	// openQ4 MP-22: a recording's thumbnail, at the point console commands run
+	multiViewDemo.ServiceThumbnail();
 	if ( multiViewDemo.IsPlaying() ) {
 		multiViewDemo.RunPlaybackFrame();
 		return;
@@ -774,6 +789,18 @@ void idAsyncNetwork::GetLANServers_f( const idCmdArgs &args ) {
 
 /*
 ==================
+idAsyncNetwork::GetNETServers_f
+
+openQ4 MP-19: what the browser's Get New List does on the Internet source;
+listServers shows the result.
+==================
+*/
+void idAsyncNetwork::GetNETServers_f( const idCmdArgs &args ) {
+	client.GetNETServers();
+}
+
+/*
+==================
 idAsyncNetwork::ListServers_f
 ==================
 */
@@ -787,6 +814,28 @@ idAsyncNetwork::RemoteConsole_f
 ==================
 */
 void idAsyncNetwork::RemoteConsole_f( const idCmdArgs &args ) {
+	// openQ4: send what was typed after "rcon", not the tokens joined again. The tokenizer cuts
+	// "192.0.2.0/24" and "10m" apart and can lose a character of an IPv6 address, and the server
+	// would tokenize the damaged text a second time. A line with "$" keeps the tokens, which hold
+	// the cvar values it asked for.
+	const char *raw = cvarSystem->GetCVarString( "cmd_rawText" );
+	while ( *raw == ' ' || *raw == '\t' ) {
+		raw++;
+	}
+	if ( *raw == '/' || *raw == '\\' ) {
+		raw++;
+	}
+	if ( idStr::Icmpn( raw, "rcon", 4 ) == 0 && ( raw[ 4 ] == ' ' || raw[ 4 ] == '\t' ) && strchr( raw, '$' ) == NULL ) {
+		raw += 4;
+		while ( *raw == ' ' || *raw == '\t' ) {
+			raw++;
+		}
+		idStr line = raw;
+		line.StripTrailingWhitespace();
+		client.RemoteConsole( line.c_str() );
+		line.SecureClear();
+		return;
+	}
 	client.RemoteConsole( args.Args() );
 }
 

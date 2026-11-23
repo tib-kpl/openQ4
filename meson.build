@@ -1,7 +1,7 @@
 project(
   'openQ4',
   ['c', 'cpp'],
-  version: '0.14.1',
+  version: '0.15.0',
   meson_version: '>=1.6.0',
   default_options: ['c_std=c11', 'cpp_std=c++20', 'b_vscrt=static_from_buildtype'],
 )
@@ -377,12 +377,22 @@ if get_option('build_native_tests')
   test('openq4-bc6h-codec', openq4_bc6h_codec_test, timeout: 120)
 
   # Render demo block container: the codec, the stream of blocks cut at any
-  # byte or damaged anywhere, and the timeline its headers alone give
+  # byte or damaged anywhere, and the timeline its headers alone give.
+  # Most of its time is the 2264 truncations, each replaying the recording
+  # from its start. In a debug build that costs 40-90 s with libstdc++ (the
+  # Linux runners, ASan+UBSan included) but 540-760 s with libc++, whose
+  # unoptimised vector code runs per element: it was the last test running
+  # on every macOS runner. The test compiles the codec sources itself, so
+  # optimising this one target speeds it up without touching the engine's
+  # debug build; assertions stay on. MSVC keeps the debug build's flags,
+  # whose runtime checks refuse /O2, and runs it in about 80 s anyway. The
+  # bound is a hang guard for every host.
   openq4_demo_block_codec_test = executable(
     'openq4-demo-block-codec-test', files('tools/tests/native/DemoBlockCodecTest.cpp'),
     include_directories: root_include_dir, install: false,
+    override_options: meson.get_compiler('cpp').get_id() == 'msvc' ? [] : ['optimization=2'],
   )
-  test('openq4-demo-block-codec', openq4_demo_block_codec_test, timeout: 300)
+  test('openq4-demo-block-codec', openq4_demo_block_codec_test, timeout: 1200)
 
   openq4_save_dict_under_test = custom_target(
     'openq4-save-dict-under-test', input: files('src/game/gamesys/SaveGame.cpp', 'src/mpgame/gamesys/SaveGame.cpp'),
@@ -810,6 +820,31 @@ if get_option('build_native_tests')
     include_directories: root_include_dir, install: false,
   )
   test('openq4-presentation-look', presentation_look_test, timeout: 30)
+  controller_look_test = executable(
+    'openq4-controller-look-test', files('tools/tests/native/ControllerLookTest.cpp'),
+    include_directories: root_include_dir, install: false,
+  )
+  test('openq4-controller-look', controller_look_test, timeout: 30)
+  on_screen_keyboard_test = executable(
+    'openq4-on-screen-keyboard-test', files('tools/tests/native/OnScreenKeyboardTest.cpp'),
+    include_directories: root_include_dir, install: false,
+  )
+  test('openq4-on-screen-keyboard', on_screen_keyboard_test, timeout: 30)
+  controller_roster_test = executable(
+    'openq4-controller-roster-test', files('tools/tests/native/ControllerRosterTest.cpp'),
+    include_directories: root_include_dir, install: false,
+  )
+  test('openq4-controller-roster', controller_roster_test, timeout: 30)
+  controller_gyro_test = executable(
+    'openq4-controller-gyro-test', files('tools/tests/native/ControllerGyroTest.cpp'),
+    include_directories: root_include_dir, install: false,
+  )
+  test('openq4-controller-gyro', controller_gyro_test, timeout: 30)
+  controller_aim_assist_test = executable(
+    'openq4-controller-aim-assist-test', files('tools/tests/native/ControllerAimAssistTest.cpp'),
+    include_directories: root_include_dir, install: false,
+  )
+  test('openq4-controller-aim-assist', controller_aim_assist_test, timeout: 30)
   presentation_pacing_test = executable(
     'openq4-presentation-pacing-test', files('tools/tests/native/PresentationPacingTest.cpp'),
     include_directories: root_include_dir, install: false,
@@ -830,7 +865,7 @@ if get_option('build_native_tests')
   test('openq4-render-frame-ownership', py,
     args: [files('tools/tests/renderer_frame_ownership.py')], timeout: 90)
   test('openq4-render-snapshot-copy', py,
-    args: [files('tools/tests/renderer_snapshot_copy.py')], timeout: 90)
+    args: [files('tools/tests/renderer_snapshot_copy.py')], timeout: 240)
   test('openq4-render-overlap-benchmark', py,
     args: [files('tools/tests/renderer_overlap_benchmark_test.py')], timeout: 30)
   test('openq4-render-frame-identity', py,
@@ -1538,9 +1573,10 @@ if build_engine or get_option('build_native_tests')
     test('openq4-ui-input-disposition', py,
       args: [meson.project_source_root() / 'tools/tests/sdl3_input_disposition.py',
         '--compiler', ui_test_cpp.cmd_array()[-1], '--no-mutations'], timeout: 120)
+    # 47 s on Linux ARM64, 98-180+ s on the loaded macOS Intel runner.
     test('openq4-ui-settings-effect-journal', py,
       args: [meson.project_source_root() / 'tools/tests/ui_settings_effect_journal.py',
-        '--compiler', ui_test_cpp.cmd_array()[-1], '--no-mutations'], timeout: 180)
+        '--compiler', ui_test_cpp.cmd_array()[-1], '--no-mutations'], timeout: 480)
     openq4_ui_performance_presets_test = executable(
       'openq4-ui-performance-presets-test',
       files('tools/tests/native/UiPerformancePresetTest.cpp', 'src/framework/PerformancePreset.cpp'),
@@ -1686,7 +1722,9 @@ if build_engine or get_option('build_native_tests')
     # The two full page matrices cost 43-57 s on the fastest hosted runner and
     # 100-175 s on the slowest (macOS Intel, Windows) and under ASan+UBSan, at
     # an unchanged case count, so their bound is a hang guard for every host.
-    retained_screens_groups = {'menus': 120, 'pause': 120, 'strogg-pause': 120, 'loading-hud': 120, 'pages': 300, 'strogg-pages': 120, 'mp-pages': 300, 'mp-card': 120,
+    # 'menus' grew to 48-58 s on the fast runners with November's menu work and
+    # overran 120 s on macOS Intel, so it shares the page matrices' bound.
+    retained_screens_groups = {'menus': 300, 'pause': 120, 'strogg-pause': 120, 'loading-hud': 120, 'pages': 300, 'strogg-pages': 120, 'mp-pages': 300, 'mp-card': 120,
       'mp-vote-match': 120, 'mp-admin': 120, 'mp-settings-welcome': 120, 'pointer-reach': 120, 'optics': 240}
     foreach group, timeout : retained_screens_groups
       test('openq4-ui-retained-screens-' + group, openq4_ui_retained_screens_test,
@@ -1712,6 +1750,9 @@ if build_engine or get_option('build_native_tests')
     # The retained CONTROLS settings page (UI-01).
     test('openq4-ui-retained-controls', openq4_ui_retained_screens_test,
       args: ['--controls', meson.project_source_root() / 'content/baseoq4/pak0/guis/menu/settings/controls.rui'], timeout: 120)
+    # The on-screen keyboard (PAD-05).
+    test('openq4-ui-on-screen-keyboard', openq4_ui_retained_screens_test,
+      args: ['--keyboard', meson.project_source_root() / 'content/baseoq4/pak0/guis/menu/keyboard.rui'], timeout: 120)
     # The retained GAME OPTIONS settings page (UI-01).
     test('openq4-ui-retained-game', openq4_ui_retained_screens_test,
       args: ['--game', meson.project_source_root() / 'content/baseoq4/pak0/guis/menu/settings/game.rui'], timeout: 120)
@@ -1814,10 +1855,19 @@ if build_engine or get_option('build_native_tests')
       include_directories: root_include_dir,
       dependencies: [openq4_retained_dep, rmlui_project.get_variable('rmlui_dep'), jsoncpp_project.get_variable('jsoncpp_dep')],
       install: false)
+    # Each SYSTEM page test runs once per shipped language. The layout code is
+    # the same on every platform, and English with the tests' 1.4x glyph
+    # expansion already stresses it, so the other languages form the
+    # 'locales' suite: about half of every lane's native test time. One Linux
+    # x64 lane per workflow runs it; the rest pass --skip-test-suite locales.
     system_page_locales = ['english', 'spanish', 'polish', 'russian', 'french', 'italian', 'german']
+    system_page_locale_suite = {}
+    foreach locale : system_page_locales
+      system_page_locale_suite += {locale: locale == 'english' ? [] : ['locales']}
+    endforeach
     foreach locale : system_page_locales
       test('openq4-ui-system-text-scale-' + locale, openq4_ui_system_text_scale_test,
-        args: [files('content/baseoq4/pak0/guis/menu/settings/system.rui'), meson.current_source_dir() / 'content/baseoq4/pak0/strings', locale], timeout: 900)
+        args: [files('content/baseoq4/pak0/guis/menu/settings/system.rui'), meson.current_source_dir() / 'content/baseoq4/pak0/strings', locale], timeout: 900, suite: system_page_locale_suite[locale])
     endforeach
     openq4_ui_system_interface_settings_test = executable('openq4-ui-system-interface-settings-test',
       files('tools/tests/native/UiSystemInterfaceSettingsTest.cpp', 'src/framework/PerformancePreset.cpp'),
@@ -1826,7 +1876,7 @@ if build_engine or get_option('build_native_tests')
       install: false)
     foreach locale : system_page_locales
       test('openq4-ui-system-interface-settings-' + locale, openq4_ui_system_interface_settings_test,
-        args: [files('content/baseoq4/pak0/guis/menu/settings/system.rui'), meson.current_source_dir() / 'content/baseoq4/pak0/strings', locale], timeout: 600)
+        args: [files('content/baseoq4/pak0/guis/menu/settings/system.rui'), meson.current_source_dir() / 'content/baseoq4/pak0/strings', locale], timeout: 600, suite: system_page_locale_suite[locale])
     endforeach
     openq4_ui_system_render_options_test = executable('openq4-ui-system-render-options-test',
       files('tools/tests/native/UiSystemRenderOptionsTest.cpp', 'src/framework/PerformancePreset.cpp'),
@@ -1835,7 +1885,7 @@ if build_engine or get_option('build_native_tests')
       install: false)
     foreach locale : system_page_locales
       test('openq4-ui-system-render-options-' + locale, openq4_ui_system_render_options_test,
-        args: [files('content/baseoq4/pak0/guis/menu/settings/system.rui'), meson.current_source_dir() / 'content/baseoq4/pak0/strings', locale], timeout: 600)
+        args: [files('content/baseoq4/pak0/guis/menu/settings/system.rui'), meson.current_source_dir() / 'content/baseoq4/pak0/strings', locale], timeout: 600, suite: system_page_locale_suite[locale])
     endforeach
     openq4_ui_system_display_controls_test = executable('openq4-ui-system-display-controls-test',
       files('tools/tests/native/UiSystemDisplayControlsTest.cpp', 'src/framework/PerformancePreset.cpp'),
@@ -1844,7 +1894,7 @@ if build_engine or get_option('build_native_tests')
       install: false)
     foreach locale : system_page_locales
       test('openq4-ui-system-display-controls-' + locale, openq4_ui_system_display_controls_test,
-        args: [files('content/baseoq4/pak0/guis/menu/settings/system.rui'), meson.current_source_dir() / 'content/baseoq4/pak0/strings', locale], timeout: 600)
+        args: [files('content/baseoq4/pak0/guis/menu/settings/system.rui'), meson.current_source_dir() / 'content/baseoq4/pak0/strings', locale], timeout: 600, suite: system_page_locale_suite[locale])
     endforeach
     openq4_ui_system_display_catalog_test = executable('openq4-ui-system-display-catalog-test',
       files('tools/tests/native/UiSystemDisplayCatalogTest.cpp', 'src/framework/PerformancePreset.cpp'),
@@ -1853,7 +1903,7 @@ if build_engine or get_option('build_native_tests')
       install: false)
     foreach locale : system_page_locales
       test('openq4-ui-system-display-catalog-' + locale, openq4_ui_system_display_catalog_test,
-        args: [files('content/baseoq4/pak0/guis/menu/settings/system.rui'), meson.current_source_dir() / 'content/baseoq4/pak0/strings', locale], timeout: 900)
+        args: [files('content/baseoq4/pak0/guis/menu/settings/system.rui'), meson.current_source_dir() / 'content/baseoq4/pak0/strings', locale], timeout: 900, suite: system_page_locale_suite[locale])
     endforeach
     openq4_ui_system_dimensions_test = executable('openq4-ui-system-dimensions-test',
       files('tools/tests/native/UiSystemDimensionsTest.cpp', 'src/framework/PerformancePreset.cpp'),
@@ -1862,7 +1912,7 @@ if build_engine or get_option('build_native_tests')
       install: false)
     foreach locale : system_page_locales
       test('openq4-ui-system-dimensions-' + locale, openq4_ui_system_dimensions_test,
-        args: [files('content/baseoq4/pak0/guis/menu/settings/system.rui'), meson.current_source_dir() / 'content/baseoq4/pak0/strings', locale], timeout: 600)
+        args: [files('content/baseoq4/pak0/guis/menu/settings/system.rui'), meson.current_source_dir() / 'content/baseoq4/pak0/strings', locale], timeout: 600, suite: system_page_locale_suite[locale])
     endforeach
     openq4_ui_model_scene_test = executable('openq4-ui-model-scene-test',
       files('tools/tests/native/UiModelSceneTest.cpp'),

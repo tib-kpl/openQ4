@@ -1502,6 +1502,8 @@ idRenderWorldLocal::FreeWorld
 */
 void idRenderWorldLocal::FreeWorld() {
 	R_RenderThread_Sync( "world" );
+	// the overlap snapshot's retained versions describe this world's geometry
+	R_ClearRetainedSnapshotStreams();
 	int i;
 
 	// drop every memoized draw-surf area before the defs and portal areas the
@@ -1617,6 +1619,8 @@ idRenderModel *idRenderWorldLocal::ParseModel( Lexer *src ) {
 // jmarshall end
 
 	for ( i = 0 ; i < numSurfaces ; i++ ) {
+		// An area's model can hold hundreds of surfaces.
+		common->LoadingCheckpoint();
 		src->ExpectTokenString( "{" );
 
 		src->ExpectAnyToken( &token );
@@ -2453,6 +2457,8 @@ bool idRenderWorldLocal::InitFromMap( const char *name ) {
 
 	// parse the file
 	while ( 1 ) {
+		// The loading screen keeps presenting between the world's models.
+		common->LoadingCheckpoint();
 		if ( !src->ReadToken( &token ) ) {
 			break;
 		}

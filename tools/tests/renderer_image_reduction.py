@@ -49,7 +49,7 @@ struct idBinaryImageData:bimageImage_t{
  void Alloc(int n){Free();dataSize=n;data=(byte*)Mem_Alloc(n);owns=true;}
  void SetExternalData(byte*p,int n){Free();data=p;dataSize=n;}
 };
-struct idBinaryImage{bimageFile_t fileData{};idList<idBinaryImageData>images;byte*loadedFileData=nullptr;int loadedFileBytes=0;imageFileContent_t fileContent{};void ObserveFileContent(const imageFileContent_t& v){fileContent=v;}
+struct idBinaryImage{bimageFile_t fileData{};idList<idBinaryImageData>images;byte*loadedFileData=nullptr;int fileDepth=1;int loadedFileBytes=0;imageFileContent_t fileContent{};void ObserveFileContent(const imageFileContent_t& v){fileContent=v;}
  ~idBinaryImage(){Clear();}void Clear();
  bool Load2DFromMemory(int,int,const byte*,int,textureFormat_t&,textureColor_t&,bool,bool);
  bool LoadCubeFromMemory(int,const byte*[6],int,textureFormat_t&,bool);
@@ -77,6 +77,7 @@ struct FileSystem{idFile file;bool missing=false;int open=0;idFile*OpenFileRead(
 FileSystem*fileSystem=&fs;
 struct Caps{bool textureCompressionAvailable=true,bptcTextureCompressionAvailable=true;}caps;
 const Caps&ImageTools_GetCompressionCaps(){return caps;}
+static bool R_ImageFileTapeReplaying(){return false;}
 // BC6H without BPTC decodes to RGBA16F (Image_files.cpp); these fixtures carry no BC6H
 static bool R_LoadBC6HAsHalfFloat(idBinaryImage&,const byte*,const int*,int,int,int,bool){TEST(false);return false;}
 static imageDownsizePolicy_t livePolicy{};static int policyReads=0;

@@ -72,8 +72,24 @@ typedef enum {
 typedef enum {
 	CF_2D,			// not a cube map
 	CF_NATIVE,		// _px, _nx, _py, etc, directly sent to GL
-	CF_CAMERA		// _forward, _back, etc, rotated and flipped as needed before sending to GL
+	CF_CAMERA,		// _forward, _back, etc, rotated and flipped as needed before sending to GL
+	// Not cube maps. A material asks for a volume (`volumeMap`) or a 2D
+	// texture array (`arrayMap`) for a GLSL program's sampler3D or
+	// sampler2DArray. The stock image sources supply neither: a request no
+	// loader answers gets a black stand-in of its type (MakeLayeredDefault),
+	// so the loader's `cubeFiles != CF_2D` cube paths never see these.
+	CF_VOLUME,
+	CF_ARRAY
 } cubeFiles_t;
+
+ID_INLINE bool R_CubeFilesIsCube( cubeFiles_t cubeFiles ) {
+	return cubeFiles == CF_NATIVE || cubeFiles == CF_CAMERA;
+}
+
+// Whether this renderer can hold `format` in a TT_3D
+// image. OpenGL gives GL_TEXTURE_3D only BPTC among the block formats (RGTC
+// and S3TC are 2D block formats there); Vulkan asks the device.
+bool R_ImageFormatAllowedInVolume( textureFormat_t format );
 
 static const unsigned int IMAGEFLAG_NOMIPS = BIT( 0 );
 static const unsigned int IMAGEFLAG_FILTER_NEUTRAL_ALPHA = BIT( 1 );
@@ -151,6 +167,11 @@ imageFilterState_t R_GetDefaultImageFilterState();
 
 #include "ImageOpts.h"
 #include "../imagetools/BinaryImage.h"
+#include "../imagetools/ImageTools.h"
+#include <atomic>
+#include <memory>
+
+struct imageDecodeJob_t;
 
 #define	MAX_IMAGE_NAME	256
 
@@ -185,6 +206,10 @@ public:
 	// Should be called at least once
 	void		SetSamplerState(textureFilter_t tf, textureRepeat_t tr);
 	void		RefreshSamplerState();
+	// Quarter-mip LOD bias steps this image's sampler carries: image_lodbias
+	// plus the bias of a temporally upscaled scene (REN-04). Mipmapped material
+	// textures only, never the interface, fonts or render targets.
+	int			SamplerLodBiasStep() const;
 
 	// used by callback functions to specify the actual data
 	// data goes from the bottom to the top line of the image, as OpenGL expects it
@@ -230,6 +255,24 @@ public:
 	// from the image's source. A pure lock reloads such images (see
 	// idImageManager::ReloadGeneratedCacheImages).
 	bool		HoldsGeneratedCacheContent() const { return generatedCacheContent && IsLoaded(); }
+	// The reduction settings (downsize/picmip policy, decoded block format and
+	// the precompressed-texture switch) this image would be built under now
+	// differ from the ones its last load was built under. Unknown counts as
+	// changed. idImageManager::CheckCvars reloads only these images.
+	bool		ReductionInputsChanged() const;
+
+	// The settings reload's worker route (idImageManager::ContinueReductionReloads).
+	// ReloadOrDefer reloads the image as Reload( true ) would, except that a load
+	// which reaches the decode of a 2D source stops there: the image keeps its
+	// current texture untouched, the files the decode reads are recorded into a
+	// job for an image worker, and the call returns true. PublishDecodeJob then
+	// reloads the image with the worker's result standing in for that decode.
+	// A result that no longer fits the load (other settings, another source)
+	// is ignored and the load decodes inline, so the outcome is always the one
+	// Reload( true ) gives.
+	bool		ReloadOrDefer( std::shared_ptr<imageDecodeJob_t> &job );
+	// true when the worker's result was used, false when the load decoded inline
+	bool		PublishDecodeJob( const std::shared_ptr<imageDecodeJob_t> &job );
 
 	void		SetReferencedOutsideLevelLoad() { referencedOutsideLevelLoad = true; }
 	bool		IsReferencedOutsideLevelLoad() const { return referencedOutsideLevelLoad; }
@@ -240,6 +283,7 @@ public:
 	void		AddUseCount( int count ) { useCount += count; }
 	int			GetUseCount() const { return useCount; }
 	void		ActuallyLoadImage(bool fromBackEnd);
+	void		MakeLayeredDefault( cubeFiles_t request );
 	// The DDS file ActuallyLoadImage will read whole, when it reads one, so a
 	// level load can fetch it ahead. A wrong guess costs only that read.
 	bool		PredictDirectDDSPayload(idStr& path) const;
@@ -305,6 +349,13 @@ public:
 	// Explicit diagnostic readback of mip zero. Only single-sample RGBA8 2D
 	// images are accepted; rows are bottom-up, with no filtering or color transfer.
 	bool		ReadPixelsRGBA8( idList<byte> &pixels );
+	// One level of a TT_3D or TT_2D_ARRAY image as the GPU holds it,
+	// unconverted: every slice or layer in order, rows in upload order, texels
+	// as they were uploaded, whole 4x4 blocks for a block format; for
+	// comparing a texture with its source.
+	// With decodeRGBA8, a block-format level comes back decoded by the driver
+	// to RGBA8 instead (OpenGL only), to check a CPU decode against.
+	bool		ReadLevelBytes( int level, idList<byte> &bytes, bool decodeRGBA8 = false );
 	uint64_t	GetStorageGeneration() const { return storageGeneration; }
 
 	// _policyName is the logical image name the downsize policy is classified
@@ -358,6 +409,22 @@ private:
 	uint64_t consumedLoadRevision = 0;
 	const uint64_t		imagePolicyIdentity;
 	bool				generatedCacheContent = false;	// set by the last ActuallyLoadImage that uploaded content
+	// What ActuallyLoadImage built the image under; see ReductionInputsChanged.
+	struct reductionKey_t {
+		imageDownsizePolicy_t	policy;
+		int						decodedFormat = 0;	// R_DecodedImageCompression's answer
+		int						decodedColor = 0;
+		int						usePrecompressed = 0;
+		bool					known = false;
+		bool operator==( const reductionKey_t &other ) const {
+			return known && other.known && policy.maxDimension == other.policy.maxDimension
+				&& policy.mipShift == other.policy.mipShift && policy.minDimension == other.policy.minDimension
+				&& decodedFormat == other.decodedFormat && decodedColor == other.decodedColor
+				&& usePrecompressed == other.usePrecompressed;
+		}
+	};
+	reductionKey_t		CurrentReductionKey() const;
+	reductionKey_t		loadedReductionKey;
 
 
 };
@@ -427,6 +494,48 @@ bool	R_WritePNG(const char* filename, const byte* data, int width, int height, i
 bool	R_WriteImageFile(const char* filename, const byte* data, int width, int height, bool flipVertical = false, const char* basePath = "fs_savepath");
 
 
+/*
+================================================
+imageDecodeJob_t
+
+One 2D source decode for an image worker: the inputs the load had resolved
+when it reached the decode, the recorded file reads, and what the decode,
+downsize, mip derivation and block compression produced. Nothing here points at
+the idImage; the main thread matches the result to the load again when it
+publishes it.
+================================================
+*/
+struct imageDecodeJob_t {
+	// set on the main thread when the load is deferred
+	idStr					imageName;
+	idStr					sourceName;
+	idStr					generatedName;
+	textureUsage_t			usage = TD_DEFAULT;
+	textureFilter_t			filter = TF_DEFAULT;
+	unsigned int			flags = 0;
+	bool					allowDownSize = true;
+	imageDownsizePolicy_t	policy;
+	idImageOpts				opts;				// derived before the decode
+	idImageFileTape			tape;
+
+	// set by the worker; read by the main thread once state is DONE
+	enum { QUEUED = 0, RUNNING = 1, DONE = 2 };
+	std::atomic<int>		state{ QUEUED };
+	bool					decoded = false;
+	textureUsage_t			resultUsage = TD_DEFAULT;	// an image program may infer TD_BUMP
+	ID_TIME_T				sourceFileTime = FILE_NOT_FOUND_TIMESTAMP;
+	imageReductionResult_t	reduction;
+	bool					exactReduction = false;
+	idImageOpts				resultOpts;
+	std::unique_ptr<idBinaryImage> image;
+	double					workerMsec = 0.0;
+};
+
+// Runs on an image worker: decodes job.sourceName from the job's tape, applies
+// the policy, derives the levels and compresses. False when the replay missed,
+// the source did not decode or anything threw; the main thread then loads the
+// image inline.
+bool R_RunImageDecodeJob( imageDecodeJob_t &job );
 
 class idImageManager {
 public:
@@ -484,11 +593,32 @@ public:
 	bool				ReloadGeneratedCacheImages();
 	void ClearCheckedImagePolicyChanges(); // Only after an exact checked restart.
 
-	// reloads every image when a texture reduction cvar changed this frame
+	// reloads the images a texture reduction cvar change reaches, and
+	// reapplies samplers when a sampling cvar changed
 	void				CheckCvars();
+	// Queues the resident images a reduction change reaches; CheckCvars then
+	// reloads them within image_reloadFrameMsec a frame. Returns the count.
+	int					ReloadReductionChangedImages();
+	// Reloads queued images until the queue is empty or, when budgetMsec is
+	// above zero, that much time has passed (at least one image either way).
+	// True while images are still queued.
+	bool				ContinueReductionReloads( double budgetMsec );
+	// queued images plus those an image worker is decoding
+	int					PendingReductionReloads() const;
 
 	// swallows the born-modified state of those cvars during startup
 	void				PrimeCvars();
+
+	// Texture LOD bias while the scene is temporally upscaled (REN-04), in
+	// quarter-mip steps (zero or negative). The front end requests a step each
+	// frame; CheckCvars adds image_lodbias and reapplies the default samplers
+	// when the sum changes, under the same level-load and image-policy
+	// deferral as a sampling cvar.
+	void				RequestUpscaleLodBiasStep( int step ) { requestedLodBiasStep = step; }
+	int					RequestedUpscaleLodBiasStep() const { return requestedLodBiasStep; }
+	// the step default samplers carry now: image_lodbias plus the upscaling bias
+	int					AppliedLodBiasStep() const { return appliedLodBiasStep; }
+	int					LodBiasChanges() const { return lodBiasChanges; }
 
 	// unbind all textures from all texture units
 	void				UnbindAll();
@@ -551,6 +681,33 @@ public:
 	idHashIndex			imageHash;
 
 	bool				insideLevelLoad;			// don't actually load images now
+
+	// The images a reduction change still has to reload, in name order, and
+	// the totals the completion line reports. Cleared at shutdown and by
+	// PurgeAllImages, whose reload rebuilds everything.
+	struct reductionReloadStats_t {
+		double	startMsec = 0.0;
+		double	workMsec = 0.0;
+		double	longestFrameMsec = 0.0;
+		int		frames = 0;
+		int		reloaded = 0;
+		int		skipped = 0;
+		int		unaffected = 0;
+		int		deferred = 0;			// handed to an image worker
+		int		workerDecoded = 0;		// decoded by a worker
+		int		workerPublished = 0;	// published from a worker's result
+		double	workerMsec = 0.0;
+		double	longestWorkerMsec = 0.0;
+	};
+	idList<idImage*>	reductionReloads;
+	int					reductionReloadNext = 0;
+	reductionReloadStats_t reductionReloadStats;
+	void				ClearReductionReloads();
+	void				ApplyPendingImageCvars( bool finishReloads );
+	int					requestedLodBiasStep = 0;
+	int					appliedLodBiasStep = 0;
+	int					lodBiasChanges = 0;
+	int					WantedLodBiasStep() const;
 	bool				preloadingMapImages;		// unless this is set
 };
 

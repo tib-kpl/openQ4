@@ -72,6 +72,7 @@ const int GAME_INIT_ID_MAP_LOAD		= -2;
 #include "MsgChannel.h"
 #include "AsyncServer.h"
 #include "ServerScan.h"
+#include "ServerListFallback.h"
 #include "PredictionMargin.h"
 #include "AsyncClient.h"
 #include "MultiViewDemo.h"
@@ -194,10 +195,17 @@ public:
 	static idCVar			clientMaxRate;					// maximum rate from server requested by client
 	static idCVar			serverMaxUsercmdRelay;			// maximum number of usercmds relayed to other clients
 	static idCVar			serverZombieTimeout;			// time out in seconds for zombie clients
+	static idCVar			serverMaxClientsPerAddress;		// most clients one address may hold; 0 for no limit
+	static idCVar			serverRunId;					// how many servers this process has started
+	static idCVar			serverRconFrom;					// where the rcon command now running came from
+	static idCVar			serverLastDrop;					// "<slot> <reason>" of the client the server last removed
 	static idCVar			serverClientTimeout;			// time out in seconds for connected clients
 	static idCVar			clientServerTimeout;			// time out in seconds for server
 	static idCVar			serverDrawClient;				// the server draws the view of this client
 	static idCVar			serverRemoteConsolePassword;	// remote console password
+	static idCVar			serverAdminPassword;			// the game's admin password, read at map start and cleared
+	static idCVar			serverRefereePassword;			// g_refPassword: the game's referee password, declared here to be private from startup
+	static idCVar			clientAdminPassword;			// the admin password this client logs in with
 	static idCVar			serverAllowLegacyRcon;			// explicit plaintext compatibility opt-in
 	static idCVar			clientPrediction;				// how many additional milliseconds the clients runs ahead
 	static idCVar			clientMaxPrediction;			// max milliseconds into the future a client can run prediction
@@ -235,6 +243,7 @@ private:
 	static void				Reconnect_f( const idCmdArgs &args );
 	static void				GetServerInfo_f( const idCmdArgs &args );
 	static void				GetLANServers_f( const idCmdArgs &args );
+	static void				GetNETServers_f( const idCmdArgs &args );	// openQ4 MP-19: the browser's Get New List, from the console
 	static void				ListServers_f( const idCmdArgs &args );
 	static void				RemoteConsole_f( const idCmdArgs &args );
 	static void				Heartbeat_f( const idCmdArgs &args );

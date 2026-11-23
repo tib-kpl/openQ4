@@ -1,17 +1,18 @@
 # Server setup guide
 
-> This guide matches openQ4 0.14.1. Anything added since is marked **Not in 0.14.1**. See [release status](release-status.md) for what each download includes.
+> This guide matches openQ4 0.15.0. Anything new in 0.15.0 is marked **New in 0.15.0**. See [release status](release-status.md) for what each download includes.
+
+> Part of the [multiplayer guide](multiplayer.md), which covers joining, game types and match rules and lists every multiplayer guide.
 
 This guide is for anyone hosting openQ4 multiplayer games, either from the
 game's menus while you play or as a dedicated server that runs on its own.
 Multiplayer is **experimental**: expect rough edges and changes between
 versions.
 
-Everyone on a server must run openQ4, and the same version as the server.
-Retail Quake 4 1.4.2 clients and servers (network protocol 2.85) cannot join
-openQ4 games, and openQ4 cannot join theirs; openQ4 refuses them with an
-explanation instead of leaving anyone waiting. See
-[Retail Quake 4 clients and servers](server-security.md#retail-quake-4-clients-and-servers).
+Everyone on a server must run openQ4, and the same version as the server;
+retail Quake 4 clients cannot join. See
+[Before you play](multiplayer.md#before-you-play) in the multiplayer guide,
+which also covers joining, game types and what players can do in a match.
 
 ## Hosting from the game
 
@@ -26,21 +27,21 @@ of them and kept the rest behind **Advanced Server Options**.
   **Warmup**, **Ready Up**, and what follows a match: **Map Rotation**
   (**Same Map**, **In Order**, **Shuffled** or your **Map Cycle Script**) and
   **Map Requests**, which lets players queue a map with `mymap`. See
-  [Maps, rotation and the map queue](#maps-rotation-and-the-map-queue). **Not in 0.14.1**
+  [Maps, rotation and the map queue](#maps-rotation-and-the-map-queue). **New in 0.15.0**
 - **Rules** holds how the match plays: the **Ruleset** and its grappling hook,
   the team settings (**Auto Balance**, **Shuffle Teams**, **Team Damage** and
   **Timeouts per Team**, which dim outside team modes), **Weapon Stay**,
   **Buying**, the **Overtime Period (Seconds)**, the **Mercy Lead**, **Item
   Timers** (who sees respawn timers), **Highlight Limit** and **Allow Forced
   Models** (what players may show each other), **Allow Spectators** and the
-  **Spectator Lock**. **Not in 0.14.1**
-- **Modifiers** (**Not in 0.14.1**) changes how any game type plays:
+  **Spectator Lock**. **New in 0.15.0**
+- **Modifiers** (**New in 0.15.0**) changes how any game type plays:
   a **Preset**, **Instagib**, **Quad Hog**, **Vampiric Damage**, **Weapons
   Frenzy**, a **Weapon Arena**, the **Powerups** switch, weapon respawn and
   the self-damage, knockback and fall-damage scales. See
   [Modifiers and presets](#modifiers-and-presets).
 - **Server** holds the server's name, who can join and how it runs, below.
-- **Buying** (**Not in 0.14.1**), on the **Rules** tab, replaces the weapon,
+- **Buying** (**New in 0.15.0**), on the **Rules** tab, replaces the weapon,
   armour and ammunition pickups with a buy menu: **Off**, **Quake 4**'s rules or
   **The Awakening**'s, with its prices, weapon mods and FC Armor Regen. See
   [Buying in multiplayer](buying.md).
@@ -55,14 +56,14 @@ On the **Server** tab:
   takes its place. Type server commands there, such as `spawnServer mp/q4dm2`,
   `kick` and `quit`, and close the window to stop the server. To play on it
   from the same computer, start openQ4 again and join from the server browser.
-- **Idle Timeout** (**Not in 0.14.1**) moves a player who sends no input for
+- **Idle Timeout** (**New in 0.15.0**) moves a player who sends no input for
   one, two, five or ten minutes to the spectators (`g_inactivity`).
 - The passwords, **Allow Voting**, **Voice Chat**, **Pure Server**, **Max
   Rate** and **View Local Server Ban List** are here too.
 
 ## Instagib
 
-**Not in 0.14.1.** Instagib works with any game type: Deathmatch, Team Deathmatch, Capture the
+**New in 0.15.0.** Instagib works with any game type: Deathmatch, Team Deathmatch, Capture the
 Flag, Duel, Clan Arena, Freeze Tag and the rest, and with the
 [Classic ruleset](classic-ruleset.md).
 
@@ -84,7 +85,7 @@ the match with the new setting straight away.
 
 ## Modifiers and presets
 
-**Not in 0.14.1.** A modifier changes the rules of whatever game type you are
+**New in 0.15.0.** A modifier changes the rules of whatever game type you are
 playing. Turn them on from Create Server's **Modifiers** tab, with the
 settings below, or with the `modifier` command on a
 running server. The match name shows what is on, for example "Quad Hog
@@ -296,19 +297,9 @@ below. openQ4 does not route games through a proxy: the legacy `net_socks*` CVar
 
 Players on your local network use the server's local address; internet
 players use your public address or a host name. Add the port when the server
-is not on `28004`. Without a port, `28004` is used, and `:0` means the same.
-
-```text
-connect 192.168.1.50:28004
-connect play.example.net:28004
-connect [2001:db8::1]:28004
-connect [fe80::1%12]:28004
-```
-
-Put an IPv6 address in square brackets when a port follows it. A local
-`fe80::` address also needs its interface number after `%`. A host name with
-both IPv4 and IPv6 addresses connects over IPv4; use the bracketed IPv6
-address to force IPv6.
+is not on `28004`. Put an IPv6 address in square brackets when a port follows
+it, for example `connect [2001:db8::1]:28004`. Every address form is under
+[Connect by address](multiplayer-networking.md#connect-by-address).
 
 ## Server settings
 
@@ -325,44 +316,106 @@ address to force IPv6.
 | `si_roundLimit` | Rounds a team must win in a round-based match (**Round Limit**) |
 | `si_mercyLimit` | End a team match early once one team leads by this many points; `0` turns it off (**Mercy Lead**) |
 | `si_overtime` | Length of each overtime period in seconds; `0` uses Quake 4's sudden death (**Overtime**) |
-| `si_ruleset` | `1` plays the [Classic ruleset](classic-ruleset.md), inspired by Quake 2; `0` is Quake 4's (**Ruleset**). It takes effect when the map next loads or restarts (`serverMapRestart`). **Not in 0.14.1** |
-| `si_classicGrapple` | Under the Classic ruleset, where the grappling hook works: `0` nowhere, `1` flag modes (default), `2` every mode (**Grappling Hook**). **Not in 0.14.1** |
+| `si_ruleset` | `1` plays the [Classic ruleset](classic-ruleset.md), inspired by Quake 2; `0` is Quake 4's (**Ruleset**). It takes effect when the map next loads or restarts (`serverMapRestart`). **New in 0.15.0** |
+| `si_classicGrapple` | Under the Classic ruleset, where the grappling hook works: `0` nowhere, `1` flag modes (default), `2` every mode (**Grappling Hook**). **New in 0.15.0** |
 | `si_warmup` | Whether matches start with a warmup |
-| `si_isBuyingEnabled`, `si_buyingRules` | Buying on (`1`) and its rules: `0` Quake 4, `1` The Awakening (**Not in 0.14.1**; see [Buying](buying.md)) |
-| `si_instagib` | `1` plays any game type as [Instagib](#instagib): railguns only, and one hit kills (**Not in 0.14.1**) |
-| `si_quadHog`, `si_vampiric`, `si_weaponsFrenzy`, `si_weaponArena`, `si_powerups` | The other [modifiers](#modifiers-and-presets) (**Not in 0.14.1**) |
-| `si_selfDamage`, `si_knockback`, `si_fallDamage`, `si_weaponRespawn` | Damage and push percentages and the weapon respawn time; see [Modifiers and presets](#modifiers-and-presets) (**Not in 0.14.1**) |
-| `si_preset` | The [preset](#presets) in force, set by the `preset` command (**Not in 0.14.1**) |
+| `si_isBuyingEnabled`, `si_buyingRules` | Buying on (`1`) and its rules: `0` Quake 4, `1` The Awakening (**New in 0.15.0**; see [Buying](buying.md)) |
+| `si_instagib` | `1` plays any game type as [Instagib](#instagib): railguns only, and one hit kills (**New in 0.15.0**) |
+| `si_quadHog`, `si_vampiric`, `si_weaponsFrenzy`, `si_weaponArena`, `si_powerups` | The other [modifiers](#modifiers-and-presets) (**New in 0.15.0**) |
+| `si_selfDamage`, `si_knockback`, `si_fallDamage`, `si_weaponRespawn` | Damage and push percentages and the weapon respawn time; see [Modifiers and presets](#modifiers-and-presets) (**New in 0.15.0**) |
+| `si_preset` | The [preset](#presets) in force, set by the `preset` command (**New in 0.15.0**) |
 | `si_usePass`, `g_password` | `si_usePass 1` admits only players who give the password set in `g_password` |
 | `si_mapCycle` | The rotation's maps, in order, separated by semicolons; see [Maps, rotation and the map queue](#maps-rotation-and-the-map-queue) |
-| `g_mapRotation` | What follows a match: `0` the same map, `1` the rotation (default), `2` a shuffled rotation, `3` the `g_mapCycle` script (**Not in 0.14.1**) |
-| `g_mapQueue` | `1` lets players queue maps with `mymap` (default); `0` turns the queue off (**Not in 0.14.1**) |
-| `g_mapPick` | `1` offers three maps to pick from when a match ends (**Not in 0.14.1**) |
-| `g_mapDatabase` | The file that adjusts the map database, `mapdb.txt` by default (**Not in 0.14.1**) |
-| `g_mapCycle` | Map cycle script. In 0.14.1 it runs whenever `si_mapCycle` is empty; after 0.14.1 only with `g_mapRotation 3` |
+| `g_mapRotation` | What follows a match: `0` the same map, `1` the rotation (default), `2` a shuffled rotation, `3` the `g_mapCycle` script (**New in 0.15.0**) |
+| `g_mapQueue` | `1` lets players queue maps with `mymap` (default); `0` turns the queue off (**New in 0.15.0**) |
+| `g_mapPick` | `1` offers three maps to pick from when a match ends (**New in 0.15.0**) |
+| `si_autoAction` | What the server does for every match it runs: `demo` records a multi-view demo, `stats` writes `stats/<match>.json`, e.g. `si_autoAction "demo stats"`. Players see it in the server information. A managed match records itself. **After 0.15.0** |
+| `g_intermissionAnnounce` | `1` names the next map while the final scoreboard is up and reads out each player's end-of-match awards; see [Picking the next map](#picking-the-next-map). Off by default. **After 0.15.0** |
+| `g_mapDatabase` | The file that adjusts the map database, `mapdb.txt` by default (**New in 0.15.0**) |
+| `g_mapCycle` | Map cycle script. In 0.14.1 it runs whenever `si_mapCycle` is empty; from 0.15.0 only with `g_mapRotation 3` |
 | `si_allowVoting`, `si_voteFlags` | `si_allowVoting 1` lets players call votes; `si_voteFlags` is a bit mask of the votes you forbid (type `si_voteFlags` for the bits) |
-| `g_votePercent` | Percentage of the players eligible when a vote starts that must vote yes for it to pass (default 51, a plain majority). **Not in 0.14.1** |
-| `g_voteLimit` | Most votes one player may call on a map; `0` for no limit. **Not in 0.14.1** |
-| `si_spectatorVote` | `1` lets spectators call and cast votes. A player who is out for the round or on the scoreboard is not a spectator and can always vote. **Not in 0.14.1** |
-| `si_timeouts`, `si_timeoutLength` | Team timeouts each side may call in a team match (`0` for none) and how long one lasts, in seconds. See [Timeouts on casual servers](competitive-matches.md#timeouts-on-casual-servers). **Not in 0.14.1** |
-| `si_spectatorLock` | During live play, `1` keeps spectators, and anyone who connects, from joining the game until it ends and `2` keeps players from leaving it too. **Not in 0.14.1** |
-| `g_inactivity` | Seconds a playing human may send no input before being moved to spectators (or dropped when `si_spectators` is off); `0` turns it off. **Not in 0.14.1** |
-| `g_pauseOnDisconnect` | Seconds a live team match pauses when a playing human loses their connection, so they can reconnect; `0` turns it off. One pause a side a match; it ends when the player is back, and a kick or an idle drop does not start one. **Not in 0.14.1** |
-| `g_precachePlayerModels` | `1` (default) loads every player model with a multiplayer map, so a player or bot arriving with a model nobody has used yet does not hitch the match; `0` loads only your own and the defaults, for a machine short of memory. Set on each machine; it is not a server rule. **Not in 0.14.1** |
+| `g_votePercent` | Percentage of the players eligible when a vote starts that must vote yes for it to pass (default 51, a plain majority). **New in 0.15.0** |
+| `g_voteLimit` | Most votes one player may call on a map; `0` for no limit. **New in 0.15.0** |
+| `si_spectatorVote` | `1` lets spectators call and cast votes. A player who is out for the round or on the scoreboard is not a spectator and can always vote. **New in 0.15.0** |
+| `si_timeouts`, `si_timeoutLength` | Team timeouts each side may call in a team match (`0` for none) and how long one lasts, in seconds. See [Timeouts](multiplayer.md#timeouts). **New in 0.15.0** |
+| `si_spectatorLock` | During live play, `1` keeps spectators, and anyone who connects, from joining the game until it ends and `2` keeps players from leaving it too. **New in 0.15.0** |
+| `g_inactivity` | Seconds a playing human may send no input before being moved to spectators (or dropped when `si_spectators` is off); `0` turns it off. **New in 0.15.0** |
+| `g_pauseOnDisconnect` | Seconds a live team match pauses when a playing human loses their connection, so they can reconnect; `0` turns it off. One pause a side a match; it ends when the player is back, and a kick or an idle drop does not start one. **New in 0.15.0** |
+| `g_matchLog` | `1` keeps a record of every match the server runs (joins, kills, scores, standings) in `logs/match.ndjson`; see [the match log](server-security.md#bans-mutes-and-chat-limits). **After 0.15.0** |
+| `g_precachePlayerModels` | `1` (default) loads every player model with a multiplayer map, so a player or bot arriving with a model nobody has used yet does not hitch the match; `0` loads only your own and the defaults, for a machine short of memory. Set on each machine; it is not a server rule. **New in 0.15.0** |
 
 Bot settings are listed under [Bots](#bots).
 
 ### What players may see and show
 
-**Not in 0.14.1.** `si_itemTimers` chooses who sees item respawn timers (`0` nobody, `1` spectators, `2` everyone),
+**New in 0.15.0.** `si_itemTimers` chooses who sees item respawn timers (`0` nobody, `1` spectators, `2` everyone),
 `si_maxBrightskin` caps brightskins, rimlights and outlines, and `si_forcedModels 0` turns forced player models off.
 On **Create Server → Rules** they are **Item Timers**, **Highlight Limit** (Off, Low, Medium or High, which is
 no limit) and **Allow Forced Models**.
 See [Multiplayer Client Options](multiplayer-client-options.md#for-server-operators).
 
+## Identities, returning players and rankings
+
+> **After 0.15.0.** This describes the development build.
+
+Players' games prove an identity to your server when they join (see
+[Your identity](multiplayer.md#your-identity-and-coming-back-after-a-dropped-connection)).
+Your server keeps its own random id in `identity_server.txt` in its save
+folder; keep that file to keep your players' identities across restarts and
+moves.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `g_identity` | `1` | Ask each player whose game offers one for their identity. `status` shows it and `ban id:<identity>` bans it |
+| `g_reconnectRestore` | `300` | Seconds a player who leaves a casual match keeps their team and score for their return, by identity or by the six-letter ghost code the server told them. `0` forgets them at once |
+| `g_ranking` | `0` | Keep a local ranking table in `ranking.txt`: an Elo rating for each identity and game type, updated when a casual match ends |
+
+**Rankings.** With `g_ranking 1`, the end of every casual match rates the
+players who proved an identity: in team modes each against the other team's
+average, in free-for-all modes every player against every other by score. A
+player's first twenty rated matches count more (K 48, then 32). Tourney and
+matches with fewer than two rated players (one a side in team modes) are not
+rated. `rankings [game type]` lists the table, best first. The file is written
+whole each time; a file this build cannot read is left as it is and not
+updated.
+
+## Run a master server
+
+> **After 0.15.0.** The program is in the source tree; openQ4 does not run one
+> for you yet.
+
+A master server is how players' browsers find Internet servers. openQ4
+servers announce themselves to the masters in `net_master0` to `net_master4`
+when a map starts and every five minutes, unless `net_LANServer 1`.
+`tools/master/openq4_master.py` is a master you can run yourself, with nothing
+but Python 3.10 or later:
+
+```
+python openq4_master.py --port 27650 --json /var/www/openq4/servers.json
+```
+
+- It lists a server only once the server answers the master's own challenge,
+  so nobody can list an address that is not theirs, and drops one that has not
+  announced itself for fifteen minutes.
+- It answers both the old list request and the newer one, so players on IPv6
+  find IPv6 servers.
+- With `--json` it writes the list to a file every minute. Publish that file
+  over HTTPS and players can set `net_serverListUrl` to it: their browser then
+  lists your servers even when no master answers.
+- `--allow-private` lists servers on private and loopback addresses, for a LAN
+  or a test. By default only public addresses are listed.
+
+Point your servers at it with `net_master1 <host>:27650` (they announce to
+every master set), and players at it with `net_master0 <host>:27650` (the
+browser asks only the first).
+
+To check it from a game, set `net_master0` to it and type `NETScan` in the
+console (the browser's **Get New List** on the Internet source), then
+`listServers` a few seconds later: your server should be in the list.
+
 ## Maps, rotation and the map queue
 
-**Not in 0.14.1.** openQ4 keeps one list of the multiplayer maps your server
+**New in 0.15.0.** openQ4 keeps one list of the multiplayer maps your server
 can play: the map database. It finds every installed map by itself, so a map
 pack you add needs no listing. The rotation, map votes, the in-game Vote and
 Admin pages, the map queue and the pick at the end of a match all read it.
@@ -492,11 +545,23 @@ map, which is the rotation's own, is played. Give players time with
 The pick is not offered when a map is queued, in Tourney, or when fewer than
 two maps can be offered.
 
+**After 0.15.0:** with `g_intermissionAnnounce 1`, the scoreboard that ends a
+casual match also names the next map in chat, so players know where they are
+going before the map changes, and then reads out each player's awards from the
+match (the stats screen's Perfect, Rail Master and the rest), one every two
+seconds. A pick, when one is offered, names its own maps instead. Managed
+matches and the Arena campaign keep their own flow.
+
 Managed matches and series choose their maps and set their own rules; see
 the [competitive matches guide](competitive-matches.md). While one runs, the
 queue and the pick are off and a map's `set` lines are not applied.
 
 ## Console commands
+
+The identity commands (after 0.15.0): `identity` (your identity on this
+server), `identityReset confirm`, `ghost <code>`, `history` (on a player's
+game) and `rankings [game type]` (on the server).
+
 
 | Command | What it does |
 |---|---|
@@ -504,23 +569,26 @@ queue and the pick are off and a map's `set` lines are not applied.
 | `disconnect` | Shuts the server down |
 | `serverMapRestart` | Restarts the current map |
 | `serverNextMap` | Moves to the next map |
-| `mapdb` | Lists the map database: `mapdb list`, `rotation`, `queue`, `next`, `settings`, `check`, `reload` (**Not in 0.14.1**) |
-| `mymap` | Queues a map for the next change, for the player who types it: `mymap <map>`, `mymap`, `mymap clear` (**Not in 0.14.1**) |
-| `mappick` | Chooses a map of the end-of-match pick: `mappick <1-3>` (**Not in 0.14.1**) |
+| `mapdb` | Lists the map database: `mapdb list`, `rotation`, `queue`, `next`, `settings`, `check`, `reload` (**New in 0.15.0**) |
+| `mymap` | Queues a map for the next change, for the player who types it: `mymap <map>`, `mymap`, `mymap clear` (**New in 0.15.0**) |
+| `mappick` | Chooses a map of the end-of-match pick: `mappick <1-3>` (**New in 0.15.0**) |
 | `kick` | Kicks a player by slot number |
 | `gameKick` | Kicks a player by name |
+| `status`, `ban`, `unban`, `banlist`, `mute`, `unmute` | See who is connected, ban an address and mute a player; see [Bans, mutes and chat limits](server-security.md#bans-mutes-and-chat-limits). **After 0.15.0** |
+| `admin` | Typed by a trusted player: logs them in with the server's admin password so they can kick, mute and ban from their own console. On the server: lists the admins; `admin revoke <slot\|name\|all>` ends a login and `admin off` turns admin logins off. See [Admins](server-security.md#admins). **After 0.15.0** |
+| `serverShutdown <match\|now\|time\|cancel>` | Stops the server after telling the players, at the end of the match or after a time; see [Stopping the server](server-security.md#stopping-the-server). **After 0.15.0** |
 | `addbot` | Adds one bot, optionally by name and skill |
 | `removebot` | Removes one bot, optionally by name |
 | `kickbots` | Removes every bot |
 | `botlist` | Lists the bots and their characters |
-| `callvote <vote> [value]`, `cv` | Calls a vote; `vote yes` or `vote no` casts yours. The votes are listed under [Voting on casual servers](competitive-matches.md#voting-on-casual-servers). **Not in 0.14.1** |
-| `timeout [marine\|strogg]` | Calls a team timeout; players call one for their own side, the dedicated console names the side. **Not in 0.14.1** |
-| `timein`, `unpause` | Ends the running timeout or pause early. **Not in 0.14.1** |
-| `pause` | Pauses the match with no timeout charged (host, referee or dedicated console); `timein` resumes. **Not in 0.14.1** |
-| `modifier <name> <0\|1>` | Turns `instagib`, `quadhog`, `vampiric` or `frenzy` on or off and restarts the match; alone, it lists them (**Not in 0.14.1**) |
-| `weaponArena <weapon\|none>` | Starts or ends a [weapon arena](#modifiers-and-presets) and restarts the match (**Not in 0.14.1**) |
-| `preset <name>` | Applies a [preset](#presets) and restarts the match (**Not in 0.14.1**) |
-| `listPresets` | Lists the built-in presets and your own (**Not in 0.14.1**) |
+| `callvote <vote> [value]`, `cv` | Calls a vote; `vote yes` or `vote no` casts yours. The votes are listed under [Vote](multiplayer.md#vote). **New in 0.15.0** |
+| `timeout [marine\|strogg]` | Calls a team timeout; players call one for their own side, the dedicated console names the side. **New in 0.15.0** |
+| `timein`, `unpause` | Ends the running timeout or pause early. **New in 0.15.0** |
+| `pause` | Pauses the match with no timeout charged (host, referee or dedicated console); `timein` resumes. **New in 0.15.0** |
+| `modifier <name> <0\|1>` | Turns `instagib`, `quadhog`, `vampiric` or `frenzy` on or off and restarts the match; alone, it lists them (**New in 0.15.0**) |
+| `weaponArena <weapon\|none>` | Starts or ends a [weapon arena](#modifiers-and-presets) and restarts the match (**New in 0.15.0**) |
+| `preset <name>` | Applies a [preset](#presets) and restarts the match (**New in 0.15.0**) |
+| `listPresets` | Lists the built-in presets and your own (**New in 0.15.0**) |
 
 ## Bots
 
@@ -546,33 +614,15 @@ longer lines, and Quake 4's typing icon shows above it until it sends.
 | `bot_characters` | `1` gives bots named characters with their own play style and voice; `0` uses anonymous bots on the plain skill curve |
 | `bot_chat` | Bot chat: `0` silent, `1` normal, `2` chatty |
 | `bot_chatCPM` | Bot typing speed in visible characters per minute (default `900`) |
-| `bot_grapple` | `1` (default) lets bots use the [Classic ruleset](classic-ruleset.md)'s grappling hook wherever the server allows it; `0` keeps them off it. **Not in 0.14.1** |
+| `bot_grapple` | `1` (default) lets bots use the [Classic ruleset](classic-ruleset.md)'s grappling hook wherever the server allows it; `0` keeps them off it. **New in 0.15.0** |
 
 Bot settings are saved with your configuration, so a value you pick in the
 menu or set once in your server config is still there next time. For the full
 command list, the character file format and how to add your own characters,
 see [Multiplayer bots](../dev/mp-bots.md).
 
-### Giving bots orders
-
-In a team game you can tell the bots on your side what to do in team chat.
-Start with a bot's name, or `everyone` for all of them, and follow it with the
-order:
-
-| Type | The bot |
-| --- | --- |
-| `kane follow me` | stays with you and fights beside you |
-| `everyone defend` | holds your team's base in Capture the Flag |
-| `sorg hold here` | holds the area where you are standing |
-| `kane attack` | goes for the enemy flag, or escorts whoever has it |
-| `everyone dismissed` | goes back to playing on its own |
-
-`escort me`, `cover me`, `guard`, `get the flag` and `free` work too, and you
-can name several bots at once: `sorg and bagby defend`. The bots answer in team
-chat so you know the order landed. An order lasts until you give another one or
-dismiss them, and it ends if the bot changes team or the map changes. A bot
-carrying the flag still takes it home, and a badly hurt bot still grabs health
-on the way.
+In team games, players give the bots on their side orders in team chat, such
+as `everyone defend`; see [Give bots orders](multiplayer.md#give-bots-orders).
 
 ## Competitive matches (preview)
 
@@ -585,6 +635,8 @@ for what works today.
 
 ## More information
 
+- [Multiplayer guide](multiplayer.md): joining, game types, match rules,
+  voting, spectating and every other multiplayer guide.
 - [Server and remote-console security](server-security.md): rcon passwords,
   the in-match Admin page, pure servers and mods.
 - [Multiplayer networking](multiplayer-networking.md): connection behaviour,

@@ -2004,6 +2004,252 @@ What remains in effects, about 7.5% of the combat scene: sprite and line
 evaluation (envelope table lookups, positions, `sinf`/`cosf`), the per-model
 vertex-cache release in `rvBSE::Render`, and per-frame owner updates.
 
+## 17. What GPU particles could save (FPS-08), 21 November 2026
+
+The question was whether moving BSE particles to the GPU would pay. Stock
+effects are small for a GPU (the combat wave keeps about 3,100 live
+particles, section 16), so the gain can only be CPU time. This section
+measures its upper bound: the CPU cost of drawing every effect.
+
+**Why only part of BSE could move.** A particle's position is a closed form
+of its age (`rvParticle::EvaluatePosition`: start position, velocity,
+acceleration, friction and offset envelopes), with no state carried between
+frames. Sprites, lines and oriented quads could therefore be written once at
+spawn and positioned by a vertex shader. Physics particles could not: they
+trace the world and render models (`game->Translation` with
+`CONTENTS_SOLID | CONTENTS_RENDERMODEL`), start impact effects and bounce, and
+a depth-buffer collision would see only what is on screen. Light, decal,
+model, debris, electricity and linked-trail segments also stay on the CPU.
+
+**Method.** The combat wave of section 15 (`game/airdefense1`, Quality,
+1280x720, hidden window, `benchmarkViewSweep`) alternated `bse_render 0` and
+`1` in 24 windows in ABBA order. Each window waited 400 ms and then captured
+60 frames with `profileFrameWork`. `bse_render 0` makes `rvBSE::Render`
+return before building any geometry and stops effect decals. Effect lights are
+presented during servicing (`rvSegment::Handle`), so they stay on and the
+difference is the drawing work alone. Each on window was compared with its
+neighbouring off windows on the median frame work (total less wait). One
+further run attached the sampler (section 15's method, with the same
+`listCvars`/`listCmds` markers) to split the difference. Other sessions held
+the machine at about 95% CPU throughout, so the absolute milliseconds are
+inflated; the shares are the steadier result.
+
+| Run | Off-window median work (ms) | Drawing effects, paired median (ms) | Range over pairs (ms) |
+| --- | ---: | ---: | --- |
+| OpenGL 1 (8 pairs, 90-frame windows) | 12.97 | +3.77 | +0.90 to +6.94 |
+| OpenGL 2 | 12.40 | +2.97 | -0.21 to +7.32 |
+| OpenGL 3 | 9.93 | +1.93 | -4.03 to +11.98 |
+| Vulkan 1 | 7.21 | +2.50 | -1.32 to +4.60 |
+| Vulkan 2 | 10.14 | +2.60 | -0.83 to +5.23 |
+
+Drawing effects costs about 2-4 ms of main-thread work per frame in this
+scene, 20-30% of it. Nearly all of it is in the draw phase; the session phase
+moves by under 0.2 ms.
+
+**Where it goes** (OpenGL, sampled; each cost over the game tic less BSE
+servicing, which `bse_render` does not change):
+
+| Work | Off | On | Share of the difference |
+| --- | ---: | ---: | ---: |
+| Main thread (tic, scene and backend) | 5.781 | 6.812 | 100% |
+| Front end, `R_AddEffectSurfaces` | 0.094 | 0.718 | 61% |
+| CPU particle geometry, `rvBSEManagerLocal::RenderEffect` | 0.002 | 0.472 | 46% |
+| of it: sprites / lines / envelope evaluation / vertex-cache release | | | 20 / 7 / 8 / 3% |
+| Backend, `RB_ExecuteBackEndCommands` | 3.312 | 3.818 | 49% |
+| of it: the soft-particle stage | 0.001 | 0.447 | 43% |
+| OpenGL driver (all callers) | 2.804 | 3.178 | 36% |
+
+Inside the soft-particle stage, 38% is the draws themselves, 30% the
+once-per-view depth copy (`backEnd.currentDepthCopied` already limits it to
+one), and 21% driver state. Vertex upload (`R_CreateAmbientCache`), BSE
+servicing and decals do not move. The front-end and backend rows overlap
+the driver row, so the shares do not add up to 100%.
+
+**What GPU particles would remove.** The CPU geometry row: about 46% of the
+drawing cost, roughly 1-1.3 ms per frame here, and less in quieter scenes
+(hub2 services most of its effects off screen, section 16). Particles would
+still be drawn and still need scene depth, so the backend half stays. Fewer,
+instanced draws could reduce it, but so could batching the soft-particle
+draws in the existing path. A full GPU simulation like DOOM (2016)'s, with
+depth-buffer collision and its own particle lighting, would also change how
+stock effects behave and look, which the stock-asset goal rules out. A
+vertex-shader path for simple sprite and line segments is the only form worth
+a prototype, judged against this bound. The Vulkan split was not sampled.
+
+Runtime: the staged `.install` of 21 November 15:09 (client
+`8b150828cba27f9d05a5d50c971d8a57e4ce44a05a3b664af37cfc6d35233088`,
+renderer-gl `442ea68d...`, renderer-vk `acc6f425...`), built from `main` at
+30f05fa50 or later; `src/bse` and `tr_light.cpp` are unchanged from there to
+7045268b4. The scenario and scripts are in `.tmp/gpu-particles/`
+(`combat_bse_render.cfg`, `ab.py`, `phases_render.py`); the raw runs were not
+kept.
+
+## 18. The retained HUD's composition (FPS-06), 22 November 2026
+
+Section 6 attributed storage2's equal-settings difference to the retained HUD: 17
+two-dimensional views and 34 render-target commands a frame against the classic HUD's 7
+and 17. This section finds what composed them, removes it, and records what was and was
+not measured.
+
+**What it was.** A trace of every composition target the retained renderer allocates
+(`AllocateSlot` in `src/ui/retained/Runtime.cpp`) showed six a frame in storage2, all from
+one element, twice: the static grain on the Strogg gauges. Storage 2 comes after the
+player's conversion, so its HUD is the Strogg one, which is why the Marine scenes of the
+suite never showed the cost. The grain was authored as a sheet of ten translated tiles
+(two columns by five rows of the installed `s_static` texture) under each gauge's fill
+mask. A moving textured sheet under a mask can be neither cached nor drawn directly, so
+each visible gauge took the general path every frame: a target for the tiles, a scratch
+copy, a target for the mask, the mask applied and the result composited, which is five
+target switches, three clears and five flushed 2D batches per gauge. The moving transform
+also kept the whole Strogg HUD document from replaying its settled frame, so RmlUi
+traversed and resubmitted it every frame.
+
+**The change.** The grain is now authored as the EKG already was: one stationary quad
+over the gauge whose repeating texture coordinates scroll (`image-offset-x` 0 to 1 and
+`image-offset-y` 0 to -4 over the same two seconds; `tools/ui/remastered_hud_status.py`,
+which regenerates `remastered_strogg.rui` and `remastered_strogg_awakening.rui`). A single
+additive image that covers its mask is textured straight through the mask's cells with
+no target, and a scrolling texture coordinate advances inside a replayed frame. No engine
+code changed.
+
+**Counts.** Hidden-window launches at the 0.13.2 settings on OpenGL, `r_rendererMetrics 2`,
+most frequent per-frame value in a 2.5 s window:
+
+| Scene | 2D views / target commands, retained HUD | classic HUD (`ui_retained 0`) |
+|---|---:|---:|
+| indoor_storage2, before | 17 / 34 | 7 / 17 |
+| indoor_storage2 | 7 / 18 | 7 / 17 |
+| indoor_hub2 | 7 / 18 | 7 / 17 |
+| outdoor_airdefense1 | 7 / 18 | 7 / 17 |
+| outdoor_convoy1 | 7 / 18 | 7 / 17 |
+| combat_airdefense1 | 7 / 18 | 7 / 17 |
+| effects_airdefense1 | 7 / 18 | 7 / 17 |
+| vehicle_walker | 7 / 18 | 7 / 17 |
+
+The retained HUD now adds no 2D view in any suite scene. Its one extra target command is
+the root's own bind of the window before it draws; no batch is pending there, so it
+flushes no view.
+
+**The HUD's own main-thread time.** `ui_retainedProfile 30` in storage2 with the grain
+moving, three hidden-window launches of each runtime (the same engine build; only the two
+documents differ):
+
+| | before | after |
+|---|---:|---:|
+| Retained HUD submission, median per frame | 0.37, 0.84, 0.94 ms | 0.19, 0.30, 0.33 ms |
+| The Strogg HUD document alone, mean per frame | 0.38, 0.82, 1.07 ms | 0.21, 0.23, 0.25 ms |
+| HUD documents replayed from their settled frame | 2.8-3.0 of 4 | 3.9-4.0 of 4 |
+
+These are self-timed sections of the main thread, taken while other work shared the
+machine, so the spread between launches is contention; the ordering held in every pair.
+They cover the retained front end only. The backend's share of the ten extra views and
+sixteen target commands, and the GPU's on Vulkan, are on top of it and were not measured.
+
+**Pictures.** With reduced motion holding the grain at its rest position and the game
+stopped (`g_stopTime 1`, `ui_retainedReplay 0`), the ammo gauge, whose only moving part is
+the grain, was compared over 61,600 pixels at 2538x1312 without MSAA. The old and new
+documents differ in 15,170 of them, 12,974 by one level of 255 and none by more than
+seven: the single quad sits a fraction of a pixel from where RmlUi snapped each tile.
+OpenGL and Vulkan draw identical pixels for each document. With motion on, two shots a few
+frames apart show the grain moving 5 px left and 18-19 px down in 46-56 ms on the new
+document and 5-6 px left and 19-22 px down in 53-69 ms on the old one: the same four rows
+down and one column left every two seconds.
+
+**Set aside: cutting the mask to each tile in the engine.** The first attempt kept the
+tiles and taught the direct path to texture, for each tile, the mask cells inside it, cut
+along the tile's edges. It removed the targets (7 views and 18 target commands, pictures
+within one level of the general path on both backends) but cut and resubmitted about
+10,000 vertices every frame, and the HUD's own time rose from 0.6-0.9 ms to 1.0-1.7 ms.
+With the grain re-authored nothing in the HUD needs it, so it was not kept. The Strogg
+pause menu's level block still tiles the same grain under a mask; it is a menu, outside
+this category's frame-rate scenes, and can take the same re-authoring.
+
+**Not measured.** Frame times. The suite's fullscreen launches need the machine and its
+display to themselves, and neither was available: other sessions were building and
+running clients throughout, and a hidden-window GPU ladder attempted alongside them
+moved by more than a millisecond between identical windows. FPS-06's closure test (within
+3% average and 10% p99 of 0.13.2 on every suite scene on both backends) is therefore still
+open for storage2. The Vulkan soft-particle depth capture is section 19.
+
+Runtimes: a worktree build of `main` at 590f2a20e (`debugoptimized`, `b_ndebug=true`,
+client `137d167db54f59af...` with the documents as committed there and
+`bb8e051175a7ed0f...` with the regenerated ones; the client embeds its pack's hash, so
+the two differ by that alone). Scripts and raw runs: `.tmp/fps06/` (`phases.py`,
+`pictures2.py`, `final.sh`, `final/`).
+
+## 19. The Vulkan depth capture (FPS-06), 22 November 2026
+
+Section 3.3 put 1.3 ms of the Vulkan backend's airdefense1 share on the soft-particle
+depth capture, four times OpenGL's cost for the same effect. This section finds where
+that time went and removes most of it.
+
+**Where it went.** Two timing phases around the first depth capture of a frame
+(`feedbackDepthResolve` and `feedbackDepthCopy` in `r_vkGpuPhaseProfile`) split it: at
+the 0.13.2 settings (8 samples) the multisample resolve took 0.60 ms and the flipping copy
+into `_currentDepth` 0.04 ms. A trace of the callers found two captures a frame in the
+outdoor scenes, both for soft particles and both needed: one in the portal-sky view and
+one in the main view, each against its own depth. Two captures of 0.64 ms are the 1.3 ms.
+
+The resolve itself was not the cost. After the resolve pass, `VK_Exec_DepthResolveBarrier`
+moved the multisampled depth target to the sampled layout, and the capture then moved it
+straight back to the attachment layout to resume rendering; nothing sampled it in between.
+On the reference GPU a multisampled depth image leaving its attachment layout costs a pass
+over every sample.
+
+**The change.** A depth capture (`VK_Exec_CopyRender`) now leaves a multisampled source
+in its attachment layout: the barrier after the resolve synchronizes it without changing
+the layout. The resolve, its sample-zero mode, the scratch image and the copy are
+unchanged, so the captured depth is the same. `r_vkDepthCaptureLayoutReference 1` restores
+the two transitions for comparison. Every depth capture takes the path: soft particles,
+the heat haze's depth test, depth-reading post materials and the SSAO and cel-ink world
+depth copies.
+
+**Cost.** Hidden-window launches on Vulkan, 300 profiled frames per window while the view
+turns once, mean GPU time; `reference` is `r_vkDepthCaptureLayoutReference 1` in the same
+launch, and the two windows of each setting agreed within 0.03 ms on the resolve:
+
+| Scene, 0.13.2 settings (8 samples) | captures a frame | resolve, reference | resolve, now | portal-sky view | main view's post-fog pass |
+|---|---:|---:|---:|---:|---:|
+| outdoor_airdefense1 | 2 | 0.60 ms | 0.12 ms | 1.25 to 0.67-0.71 ms | 0.79 to 0.24-0.25 ms |
+| combat_airdefense1 | 2 | 0.60 ms | 0.12 ms | 1.25 to 0.64 ms | 0.98-1.05 to 0.30 ms |
+| effects_airdefense1 | 2 | 0.60 ms | 0.12 ms | 1.25 to 0.64 ms | 0.98 to 0.34 ms |
+| outdoor_convoy1 | 2 | not captured | 0.13 ms | 0.77 ms now | 0.40-0.45 ms now |
+| vehicle_walker | 2 | 0.63 ms | 0.15 ms | 1.66 to 1.13-1.20 ms | 0.85 to 0.29-0.31 ms |
+| indoor_hub2 | 1 | 0.58 ms | 0.14 ms | none | 0.89-1.01 to 0.31 ms |
+| indoor_storage2 | 1 | 0.84-0.85 ms | 0.18-0.21 ms | none | 0.64-0.77 to 0.24-0.38 ms |
+
+Each capture is 0.44 to 0.65 ms cheaper, so a frame with a portal sky saves about 1 ms of
+GPU time and an indoor frame about 0.5 ms. In airdefense1 the two views together went from
+5.0 ms to 4.2-4.3 ms. The capture that was 1.3 ms a frame is now about 0.33 ms (two
+resolves of 0.12 ms and two copies of 0.04 ms).
+
+At today's Ultra preset (4 samples), which takes three depth captures a frame in the
+airdefense1 scenes (SSAO's world depth among them), the resolve fell from 0.31 ms to
+0.08 ms, the main view from 4.53-4.55 ms to 4.16-4.17 ms in outdoor_airdefense1 and the
+portal-sky view from 0.88 ms to 0.62 ms. So the change reaches every multisampled preset,
+not only the 0.13.2 comparison.
+
+**Pictures and validation.** With the game stopped, shots with the change and with the
+reference in one launch are identical in outdoor_airdefense1, effects_airdefense1,
+indoor_hub2 and vehicle_walker outside the HUD's scrolling EKG (zero differing pixels of
+3.3 million; the EKG box differs equally between two shots of the same setting). The
+Vulkan validation layer reported nothing in those scenes or in indoor_storage2.
+
+**Also priced.** A third phase, `feedbackColor`, times the frame's first colour copy out of
+the active target: 0.15-0.23 ms at 8 samples and 0.12-0.13 ms at 4 where a scene takes
+one. It is a resolve of the colour target and shows no comparable waste.
+
+**Not measured.** Frame times: these are GPU phase timings from hidden windows on a
+machine other sessions were using, which the per-phase means tolerated (windows of one
+setting repeat within 0.03 ms) but which say nothing about fullscreen frame rate. OpenGL's
+cost for the same capture was not re-measured here. FPS-06's closure test against 0.13.2
+remains open.
+
+Runtime: a worktree build of `main` at 1848bdde8 plus this change (`debugoptimized`,
+`b_ndebug=true`; client `3bbc1a30b7432647...`, renderer-vk `758a6a723ea91992...`).
+Scripts and raw runs: `.tmp/fps06/` (`vkphase.py`, `vkpic.py`, `vksurvey.sh`, `vksurvey/`,
+`vkpic1/`, `vkpic2/`).
+
 ## Appendix: artifacts
 
 Everything below lives in the repository's ignored `.tmp/` tree on the measurement machine;

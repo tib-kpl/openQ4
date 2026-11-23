@@ -23,7 +23,7 @@ def source():
  s=s.replace('void Clear(){this->clear();}','void Clear(){this->clear();}void Swap(idList& o){this->swap(o);}')
  a=s.index('struct idBinaryImage{');b=s.index('struct idStr{',a)
  s=s[:a]+r"""
-struct idBinaryImage{bimageFile_t fileData{};idList<idBinaryImageData>images;byte*loadedFileData=nullptr;int loadedFileBytes=0;imageFileContent_t fileContent{};
+struct idBinaryImage{bimageFile_t fileData{};idList<idBinaryImageData>images;byte*loadedFileData=nullptr;int fileDepth=1;int loadedFileBytes=0;imageFileContent_t fileContent{};
  std::string name;idBinaryImage(const char* n="test"):name(n){}const char*GetName()const{return name.c_str();}
  ~idBinaryImage(){Clear();}void Clear();
  void Load2DFromOwnedCompressedData(int,int,int,textureFormat_t,textureColor_t,byte*,const int*,const int*);
@@ -78,7 +78,9 @@ def prefetch_contract():
  assert 'fileSystem->OpenFileRead( entry.qpath.c_str() )' in pump and 'Mem_Alloc( bytes )' in pump,'the main thread opens and allocates'
  assert 'nextToOpen - consumeIndex < LEVEL_IMAGE_PREFETCH_MAX_OPEN' in pump and 'outstandingBytes < LEVEL_IMAGE_PREFETCH_MAX_BYTES' in pump,'bounded window'
  settle=method(manager,'void Settle( levelImagePrefetchEntry_t &entry, bool wantData )')
- assert settle.index('workDone.wait( lock, [&entry] { return entry.done; } );')<settle.index('fileSystem->CloseFile( entry.file );'),'files close on the main thread after their read'
+ assert settle.index('workDone.wait_for( lock, std::chrono::milliseconds( 2 ), [&entry] { return entry.done; } )')<settle.index('fileSystem->CloseFile( entry.file );'),'files close on the main thread after their read'
+ # the loading screen presents while a worker reads, outside the workers' lock
+ assert settle.index('lock.unlock();')<settle.index('common->LoadingCheckpoint();')<settle.index('lock.lock();'),'the wait presents outside the lock'
  end=method(manager,'void End()')
  assert end.index('R_SetDDSPrefetchSource( NULL );')<end.index('worker.join();'),'the hook is withdrawn before workers stop'
  load=method(manager,'int idImageManager::LoadLevelImages(')
@@ -117,7 +119,9 @@ def main():
    ('cold-skip-output-proof','!R_ImageBinaryContentEqual(expected.binary,actual)','false'),
    ('cold-cache-source-authority','expected.resolved.maxDimension || expected.resolved.mipShift || expected.resolved.minDimension != 1 ||','false ||'),
    ('cold-clear-output-on-entry','const imagePortableContent_t expected=requested;','output.Clear(); const imagePortableContent_t expected=requested;'),
-   ('dds-forget-file-identity','if (contentObserved) image.ObserveFileContent(actualContent);','(void)contentObserved;'),
+   # The BC6H half-float branch (d229362cf) publishes first in source order but is
+   # unreachable here (BPTC caps stay on); mutate the compressed-load publication.
+   ('dds-forget-file-identity','buffer = NULL;\t// the binary image now owns the file buffer\n        if (contentObserved) image.ObserveFileContent(actualContent);','buffer = NULL;\n        (void)contentObserved;'),
    ('ordinary-cache-unobserved','if (R_MakeImageFileContent(IFC_OBSERVED_BIMAGE,binaryFileName.c_str(),loadedFileData,loadedFileBytes,content)) fileContent=content;','(void)content;'),
    ('compact-cache-unobserved','if (R_MakeImageFileContent(IFC_OBSERVED_BIMAGE,compactFileName.c_str(),loadedFileData,loadedFileBytes,content)) fileContent=content;','(void)content;'),
   ]

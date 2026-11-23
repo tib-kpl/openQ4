@@ -478,6 +478,20 @@ extern idCVar	si_timeoutLength;
 extern idCVar	si_spectatorLock;
 extern idCVar	g_inactivity;
 extern idCVar	g_pauseOnDisconnect;
+extern idCVar	g_chatFloodMessages;
+extern idCVar	g_chatFloodSeconds;
+extern idCVar	g_chatFloodWait;
+extern idCVar	g_adminLog;
+extern idCVar	g_voteMuteMinutes;
+extern idCVar	g_adminMaxBanMinutes;
+extern idCVar	ui_identity;
+extern idCVar	g_identity;
+extern idCVar	g_reconnectRestore;
+extern idCVar	g_ranking;
+extern idCVar	g_intermissionAnnounce;
+extern idCVar	ui_autoAction;
+extern idCVar	si_autoAction;
+extern idCVar	g_reservedNames;
 extern idCVar	g_mapCycle;
 // RAVEN BEGIN
 // shouchard:  g_balanceTDM->g_balanceTeams so we can also use it for CTF

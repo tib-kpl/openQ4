@@ -406,6 +406,9 @@ void idAsyncServer::Spawn( void ) {
 	}
 
 	active = true;
+	// openQ4 MP-18: a new server, not a new map: what the game module scheduled for the last one
+	// (serverShutdown) is not this one's
+	idAsyncNetwork::serverRunId.SetInteger( idAsyncNetwork::serverRunId.GetInteger() + 1 );
 	RefreshRcon2Verifier();
 
 	nextHeartbeatTime = 0;
@@ -962,6 +965,48 @@ float idAsyncServer::GetClientIncomingPacketLoss( int clientNum ) const {
 
 /*
 ==================
+AsyncServer_SameSubscriber
+
+openQ4 MP-18: whether two addresses belong to one subscriber, for
+net_serverMaxClientsPerAddress. A home connection is given a whole IPv6 /64
+and a device picks new addresses inside it at will, so IPv6 is compared by its
+first 64 bits. Link-local and IPv4-mapped addresses, and IPv4, are compared
+whole. The game module's bans and mutes take the same view (mp/Moderation.h,
+MPModPlayerPrefixBits).
+==================
+*/
+static bool AsyncServer_SameSubscriber( const netadr_t &a, const netadr_t &b ) {
+	if ( a.type == NA_IP6 && b.type == NA_IP6 ) {
+		static const unsigned char mappedPrefix[ 12 ] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff };
+		const bool linkLocal = a.ip6[ 0 ] == 0xfe && ( a.ip6[ 1 ] & 0xc0 ) == 0x80;
+		const bool mapped = memcmp( a.ip6, mappedPrefix, sizeof( mappedPrefix ) ) == 0;
+		if ( !linkLocal && !mapped ) {
+			return memcmp( a.ip6, b.ip6, 8 ) == 0;
+		}
+	}
+	return Sys_CompareNetAdrBase( a, b );
+}
+
+/*
+==================
+idAsyncServer::CopyClientAddress
+==================
+*/
+bool idAsyncServer::CopyClientAddress( int clientNum, char *out, int outSize ) const {
+	if ( out == NULL || outSize <= 0 ) {
+		return false;
+	}
+	out[ 0 ] = '\0';
+	if ( clientNum < 0 || clientNum >= MAX_ASYNC_CLIENTS || clientNum == localClientNum ||
+		clients[ clientNum ].clientState == SCS_FREE ) {
+		return false;
+	}
+	idStr::Copynz( out, Sys_NetAdrToString( clients[ clientNum ].channel.GetRemoteAddress() ), outSize );
+	return true;
+}
+
+/*
+==================
 idAsyncServer::GetNumClients
 ==================
 */
@@ -1310,6 +1355,11 @@ void idAsyncServer::DropClient( int clientNum, const char *reason ) {
 			}
 		}
 	}
+
+	// openQ4 MP-18: the game's disconnect call carries no reason. Publish it first,
+	// so the game's admin log can tell a kick typed at the console from a lost
+	// connection without a change to the game interface.
+	idAsyncNetwork::serverLastDrop.SetString( va( "%d %s", clientNum, reason ) );
 
 	reason = common->GetLanguageDict()->GetString( reason );
 	common->Printf( "client %d %s\n", clientNum, reason );
@@ -2960,6 +3010,35 @@ void idAsyncServer::ProcessConnectMessage( const netadr_t from, const idBitMsg &
 		}
 	}
 
+	// openQ4 MP-18: net_serverMaxClientsPerAddress. Without it one address can
+	// hold every slot. Players behind one router share an address, so the cap
+	// is the operator's number and 0 (the default) leaves it off. The slot this
+	// connect would take over is the same connection, not another one.
+	const int perAddressLimit = idAsyncNetwork::serverMaxClientsPerAddress.GetInteger();
+	if ( perAddressLimit > 0 ) {
+		int sameAddress = 0;
+		for ( i = 0; i < MAX_ASYNC_CLIENTS; i++ ) {
+			const serverClient_t &client = clients[ i ];
+			const netadr_t held = client.channel.GetRemoteAddress();
+			if ( client.clientState < SCS_PUREWAIT || !AsyncServer_SameSubscriber( from, held ) ) {
+				continue;
+			}
+			// The same client coming back holds the very address, with its id or its port. Neither
+			// alone is enough within an IPv6 /64: the id is the client's own choice of 16 bits, and
+			// two machines of one household use the same port by default.
+			if ( Sys_CompareNetAdrBase( from, held ) && ( clientId == client.clientId || from.port == held.port ) ) {
+				continue;
+			}
+			sameAddress++;
+		}
+		if ( sameAddress >= perAddressLimit ) {
+			common->DPrintf( "connect from %s refused: %d clients already hold this address (net_serverMaxClientsPerAddress %d)\n",
+				Sys_NetAdrToString( from ), sameAddress, perAddressLimit );
+			PrintOOB( from, SERVER_PRINT_MISC, "#str_232640" );
+			return;
+		}
+	}
+
 	// game may be passworded, client banned by IP or GUID
 	// if authState == CDK_PUREOK, the check was already performed once before entering pure checks
 	// but meanwhile, the max players may have been reached
@@ -3290,6 +3369,12 @@ void idAsyncServer::ExecuteRemoteConsoleCommand( const netadr_t from, const char
 	rconAddress = from;
 	noRconOutput = true;
 	rconCommandExecuted = true;
+	// openQ4 MP-18: while the command runs, the game module's admin log can say that it
+	// came by rcon and from where. Cleared however the command ends.
+	struct rconSource_t {
+		rconSource_t( const netadr_t &address ) { idAsyncNetwork::serverRconFrom.SetString( Sys_NetAdrToString( address ) ); }
+		~rconSource_t() { idAsyncNetwork::serverRconFrom.SetString( "" ); }
+	} rconSource( from );
 	common->BeginRedirect( (char *)msgBuf, sizeof( msgBuf ), RConRedirect );
 	cmdSystem->BufferCommandText( CMD_EXEC_NOW, command );
 	common->EndRedirect();

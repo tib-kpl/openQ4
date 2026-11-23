@@ -80,6 +80,8 @@
 extern idCVar r_skipDynamicTextures;
 static idCVar r_vkCopyResolveScratchReference( "r_vkCopyResolveScratchReference", "0", CVAR_RENDERER | CVAR_BOOL,
 	"resolve color captures through an intermediate image even when no conversion is needed" );
+static idCVar r_vkDepthCaptureLayoutReference( "r_vkDepthCaptureLayoutReference", "0", CVAR_RENDERER | CVAR_BOOL,
+	"move a multisampled depth target to the sampled layout and back around each depth capture, as before" );
 static idCVar r_vkResourceProfile( "r_vkResourceProfile", "0", CVAR_RENDERER | CVAR_BOOL,
 	"count executor resource operations for rendererVulkanMemoryInfo; reset its interval with rendererVulkanMemoryInfo reset" );
 static idCVar r_vkWindowViewMultisample( "r_vkWindowViewMultisample", "1", CVAR_RENDERER | CVAR_BOOL,
@@ -116,6 +118,8 @@ void VK_PostProcess_CaptureWorldDepth( const viewDef_t *viewDef, int fillPhase, 
 bool VK_PostProcess_PrepareSSAOField( const viewDef_t *viewDef );
 bool VK_PostProcess_DrawSceneEffects( const viewDef_t *viewDef );
 bool VK_SceneEffects_DrawPreFog( const viewDef_t *viewDef, int processed );
+void VK_PostProcess_DrawVolumetricLights( const viewDef_t *viewDef, bool classicLights );
+bool VK_PostProcess_CompositeVolumetrics( const viewDef_t *viewDef );
 bool VK_PostProcess_DrawUnderwater( const viewDef_t *viewDef );
 void VK_DebugTools_DrawView( const viewDef_t *viewDef );
 #include "../SavePreviewCapture.h"
@@ -274,7 +278,10 @@ enum vkSpecialPipelineKind_t {
 	VK_SPECIAL_FOG,
 	VK_SPECIAL_SHADOW_OVERLAY_PANEL,
 	VK_SPECIAL_SHADOW_OVERLAY_POINT_PANEL,
-	VK_SPECIAL_SHADOW_OVERLAY_TEXT
+	VK_SPECIAL_SHADOW_OVERLAY_TEXT,
+	// REN-09 volumetric march through a projected or point shadow map
+	VK_SPECIAL_VOLUMETRIC_PROJECTED,
+	VK_SPECIAL_VOLUMETRIC_POINT
 };
 
 typedef struct vkSpecialPipeline_s {
@@ -2159,6 +2166,38 @@ VkPipelineLayout VK_Exec_ShadowOverlayPipelineLayout( void ) {
 	return vkExec.shadowOverlayPipelineLayout;
 }
 
+/*
+====================
+VK_Exec_VolumetricShadowPipeline
+
+REN-09: the volumetric march of a shadow-mapped light into the scattering
+target. One covering triangle from gl_VertexIndex (post_fullscreen.vert), no
+vertex input, additive, on the shadow interaction layout so set 7 carries
+the light's shadow map and its march block.
+====================
+*/
+VkPipeline VK_Exec_VolumetricShadowPipeline( bool pointLight, VkShaderModule vertModule,
+		VkShaderModule fragModule ) {
+	const vkSpecialPipelineKind_t kind = pointLight
+		? VK_SPECIAL_VOLUMETRIC_POINT : VK_SPECIAL_VOLUMETRIC_PROJECTED;
+	const vkPipelineTarget_t target = VK_Exec_CurrentPipelineTarget();
+	VkPipeline cached = VK_Exec_FindSpecialPipeline( kind, target );
+	if ( cached != VK_NULL_HANDLE ) {
+		return cached;
+	}
+	if ( vertModule == VK_NULL_HANDLE || fragModule == VK_NULL_HANDLE
+			|| vkExec.shadowInteractionPipelineLayout == VK_NULL_HANDLE ) {
+		return VK_NULL_HANDLE;
+	}
+	VkPipelineVertexInputStateCreateInfo vertexInput;
+	memset( &vertexInput, 0, sizeof( vertexInput ) );
+	vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+	return VK_Exec_StoreSpecialPipeline( kind, target,
+			VK_Exec_CreatePipeline( vertModule, fragModule,
+				&vertexInput, GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE,
+				vkExec.shadowInteractionPipelineLayout, false, false, target ) );
+}
+
 // position + st off the idDrawVert stream, shared by the caster pipelines
 // (perforated casters alpha-test; opaque draws ignore the texcoord)
 static void VK_Exec_CasterVertexInput( VkVertexInputBindingDescription &binding,
@@ -2871,6 +2910,11 @@ void VK_Exec_PBRDescriptorCommit() {
 static VkDescriptorSet VK_GuiExecutor_GetImageDescriptor( unsigned int texnum ) {
 	vkImageEntry_t *entry = VK_Image_GetEntry( texnum );
 	if ( entry == NULL || entry->view == VK_NULL_HANDLE ) {
+		return VK_NULL_HANDLE;
+	}
+	// Every shader behind this cache samples 2D or cube
+	// images; a volume or array reaches only authored material programs.
+	if ( entry->viewType == VK_IMAGE_VIEW_TYPE_3D || entry->viewType == VK_IMAGE_VIEW_TYPE_2D_ARRAY ) {
 		return VK_NULL_HANDLE;
 	}
 
@@ -6308,7 +6352,8 @@ static bool VK_Exec_PrepareCopyDestination( idImage *image, int width, int heigh
 
 static VkResolveModeFlagBits VK_Exec_DepthResolveMode( void );
 static bool VK_Exec_ResolveDepthImage( vkImageEntry_t *sourceDepth,
-		vkImageEntry_t *destinationDepth, uint32_t width, uint32_t height );
+		vkImageEntry_t *destinationDepth, uint32_t width, uint32_t height,
+		bool sourceStaysAttachment = false );
 
 bool VK_Exec_CopyRender( idImage *image, int x, int y, int width, int height,
 		int cubeFace, bool copyDepth ) {
@@ -6409,6 +6454,7 @@ bool VK_Exec_CopyRender( idImage *image, int x, int y, int width, int height,
 	}
 
 	VK_Exec_EndMainRendering();
+	vkGpuPhaseScope colorTiming( vkExec.cmd, VK_GPU_PHASE_FEEDBACK_COLOR, !copyDepth );
 	if ( resolveDepthSource ) {
 		// stays a depth attachment; the resolve pass reads it as one
 	} else if ( sourceEntry != NULL ) {
@@ -6494,11 +6540,15 @@ bool VK_Exec_CopyRender( idImage *image, int x, int y, int width, int height,
 	if ( copyDepth ) {
 		VkImage depthSource = sourceImage;
 		uint32_t depthSourceLayer = sourceLayer;
+		vkGpuPhaseScope resolveTiming( vkExec.cmd, VK_GPU_PHASE_FEEDBACK_DEPTH_RESOLVE, resolveDepthSource );
 		if ( resolveDepthSource ) {
 			vkImageEntry_t *scratch = VK_Image_AcquireDepthResolveScratch( sourceWidth,
 					sourceHeight, sourceFormat );
+			// The capture resumes rendering into the source at once, so the
+			// source never takes the sampled layout.
 			if ( scratch == NULL || !VK_Exec_ResolveDepthImage( sourceEntry, scratch,
-					(uint32_t)sourceWidth, (uint32_t)sourceHeight ) ) {
+					(uint32_t)sourceWidth, (uint32_t)sourceHeight,
+					!r_vkDepthCaptureLayoutReference.GetBool() ) ) {
 				VK_Exec_TransitionImage( destination, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
 				VK_Exec_TransitionImage( sourceEntry, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL );
 				VK_Exec_BeginMainRendering( false );
@@ -6508,6 +6558,8 @@ bool VK_Exec_CopyRender( idImage *image, int x, int y, int width, int height,
 			depthSource = scratch->image;
 			depthSourceLayer = 0;
 		}
+		resolveTiming.End();
+		vkGpuPhaseScope copyTiming( vkExec.cmd, VK_GPU_PHASE_FEEDBACK_DEPTH_COPY );
 		if ( VK_Exec_DepthBlitSupported( sourceFormat ) ) {
 			// One flipped NEAREST blit reproduces the per-row copy's GL
 			// bottom-left orientation texel-exactly (identical format + NEAREST),
@@ -6572,6 +6624,7 @@ bool VK_Exec_CopyRender( idImage *image, int x, int y, int width, int height,
 		destination->everUploaded = true;
 		destination->materialSampleFlipY = false;
 		VK_Exec_TransitionImage( destination, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
+		copyTiming.End();
 		if ( sourceEntry != NULL ) {
 			VK_Exec_TransitionImage( sourceEntry, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL );
 		} else {
@@ -6822,7 +6875,8 @@ static VkResolveModeFlagBits VK_Exec_DepthResolveMode( void ) {
 }
 
 static void VK_Exec_DepthResolveBarrier( vkImageEntry_t *sourceDepth,
-		vkImageEntry_t *destinationDepth, bool beforeResolve ) {
+		vkImageEntry_t *destinationDepth, bool beforeResolve,
+		bool sourceStaysAttachment = false ) {
 	VkImageMemoryBarrier2 barriers[ 2 ];
 	VkSampleLocationsInfoEXT depthLocations[ 2 ];
 	memset( barriers, 0, sizeof( barriers ) );
@@ -6871,6 +6925,17 @@ static void VK_Exec_DepthResolveBarrier( vkImageEntry_t *sourceDepth,
 			barrier.oldLayout =
 					VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 			barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			if ( i == 0 && sourceStaysAttachment ) {
+				// The source goes straight back to rendering. Leaving the
+				// attachment layout and returning to it costs a pass over
+				// every sample where the driver keeps multisampled depth
+				// compressed: 0.48 ms per capture at 8x on the reference GPU.
+				barrier.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
+						| VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+				barrier.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+						| VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+				barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+			}
 		}
 	}
 
@@ -6882,10 +6947,11 @@ static void VK_Exec_DepthResolveBarrier( vkImageEntry_t *sourceDepth,
 	if ( r_vkResourceProfile.GetBool() ) { ++vkResourceProfile.barriers; }
 	vkCmdPipelineBarrier2( vkExec.cmd, &dependency );
 
-	sourceDepth->layout = beforeResolve
+	destinationDepth->layout = beforeResolve
 			? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
 			: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	destinationDepth->layout = sourceDepth->layout;
+	sourceDepth->layout = sourceStaysAttachment
+			? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL : destinationDepth->layout;
 }
 
 static bool VK_Exec_CanResolveDepthImage( const vkImageEntry_t *sourceDepth,
@@ -6907,7 +6973,8 @@ static bool VK_Exec_CanResolveDepthImage( const vkImageEntry_t *sourceDepth,
 }
 
 static bool VK_Exec_ResolveDepthImage( vkImageEntry_t *sourceDepth,
-		vkImageEntry_t *destinationDepth, uint32_t width, uint32_t height ) {
+		vkImageEntry_t *destinationDepth, uint32_t width, uint32_t height,
+		bool sourceStaysAttachment ) {
 	if ( !VK_Exec_CanResolveDepthImage( sourceDepth, destinationDepth, width, height ) ) {
 		return false;
 	}
@@ -6973,7 +7040,7 @@ static bool VK_Exec_ResolveDepthImage( vkImageEntry_t *sourceDepth,
 		vkCmdEndRendering( vkExec.cmd );
 
 		VK_Exec_DepthResolveBarrier(
-				sourceDepth, destinationDepth, false );
+				sourceDepth, destinationDepth, false, sourceStaysAttachment );
 		sourceDepth->everUploaded = true;
 		destinationDepth->everUploaded = true;
 		destinationDepth->materialSampleFlipY = sourceDepth->materialSampleFlipY;
@@ -15676,6 +15743,9 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 		VK_Interactions_DrawLights( viewDef );
 	}
 	lightTiming.End();
+	// REN-09: every light's shadow map is still resident; march them into
+	// the scattering target before anything else draws over the scene.
+	VK_PostProcess_DrawVolumetricLights( viewDef, !sharedWorldInteractionOwned );
 	// r_shadowMapDebugOverlay draws where RB_ARB2_DrawInteractions draws it:
 	// after the last receiver, while the shadow atlas and point cubes still
 	// hold this view's contents. One call site covers both walkers and the
@@ -15753,6 +15823,16 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 				}
 				VK_TemporalPresentation_EndView( viewDef, sceneScaleState, false );
 				return;
+			}
+			// REN-09: the scattered light and the medium over the opaque
+			// scene, before fog, blend lights and translucent surfaces.
+			if ( VK_PostProcess_CompositeVolumetrics( viewDef ) ) {
+				backEnd.currentRenderCopied = false;
+				backEnd.currentDepthCopied = false;
+				currentSpace = NULL;
+				weaponDepthRange = false;
+				viewport.maxDepth = 1.0f;
+				vkCmdSetViewport( cmd, 0, 1, &viewport );
 			}
 			compositionTiming.End();
 			vkGpuPhaseScope fogTiming( cmd, VK_GPU_PHASE_WORLD_FOG, profileMainView );
@@ -16811,6 +16891,101 @@ bool VK_Exec_ReadLinearScreenshot( idImage *image, idList<float> &values ) {
 bool VK_Exec_ReadImageScreenshot( idImage *image, idList<byte> &pixels ) {
 	R_RenderThread_Sync( "readback" );
 	return VK_Exec_ReadImage( image, NULL, &pixels, true );
+}
+
+/*
+====================
+VK_Exec_ReadImageLevel
+
+Copies one level of a volume (every slice) or array
+(every layer) to a host buffer, unconverted, and resumes the frame as
+VK_Exec_ReadImage does. Uploads are never flipped, so rows stay in upload
+order; whole 4x4 blocks for a block format, tightly packed.
+====================
+*/
+bool VK_Exec_ReadImageLevel( idImage *image, int level, int levelBytes, idList<byte> &bytes ) {
+	R_RenderThread_Sync( "readback" );
+	bytes.Clear();
+	vkImageEntry_t *entry = image != NULL ? VK_Image_GetEntry( image->GetDeviceHandle() ) : NULL;
+	if ( entry == NULL || levelBytes <= 0
+			|| ( entry->viewType != VK_IMAGE_VIEW_TYPE_3D && entry->viewType != VK_IMAGE_VIEW_TYPE_2D_ARRAY )
+			|| entry->droppedLevels != 0 || level < 0 || level >= entry->numMips
+			|| ( entry->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT ) == 0
+			|| ( !vkExec.frameOpen && !VK_GuiExecutor_BeginFrame() ) ) {
+		return false;
+	}
+	const bool volume = entry->viewType == VK_IMAGE_VIEW_TYPE_3D;
+	VkBufferCreateInfo info = {};
+	info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+	info.size = (VkDeviceSize)levelBytes;
+	info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+	VmaAllocationCreateInfo create = {};
+	create.usage = VMA_MEMORY_USAGE_AUTO;
+	create.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+	VkBuffer buffer = VK_NULL_HANDLE;
+	VmaAllocation allocation = NULL;
+	VmaAllocationInfo mapped = {};
+	if ( vmaCreateBuffer( vkCtx.allocator, &info, &create, &buffer, &allocation, &mapped ) != VK_SUCCESS ) {
+		return false;
+	}
+	VK_Exec_EndMainRendering();
+	VK_Exec_TransitionImage( entry, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL );
+	VkBufferImageCopy copy = {};
+	copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	copy.imageSubresource.mipLevel = (uint32_t)level;
+	copy.imageSubresource.layerCount = (uint32_t)entry->numLayers;
+	copy.imageExtent.width = (uint32_t)Max( 1, entry->width >> level );
+	copy.imageExtent.height = (uint32_t)Max( 1, entry->height >> level );
+	copy.imageExtent.depth = (uint32_t)( volume ? Max( 1, entry->depth >> level ) : 1 );
+	vkCmdCopyImageToBuffer( vkExec.cmd, entry->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy );
+	VK_Exec_TransitionImage( entry, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
+	VkBufferMemoryBarrier2 barrier = {};
+	barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+	barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+	barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+	barrier.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+	barrier.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+	barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.buffer = buffer;
+	barrier.size = VK_WHOLE_SIZE;
+	VkDependencyInfo dependency = {};
+	dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+	dependency.bufferMemoryBarrierCount = 1;
+	dependency.pBufferMemoryBarriers = &barrier;
+	vkCmdPipelineBarrier2( vkExec.cmd, &dependency );
+	const int slot = vkExec.frameSlot;
+	R_RendererMetrics_ResetGpuFrameTiming( "Vulkan image readback" );
+	if ( !VK_GuiExecutor_SubmitFrame( false )
+			|| vkWaitForFences( vkCtx.device, 1, &vkCtx.frameFences[slot], VK_TRUE, UINT64_MAX ) != VK_SUCCESS ) {
+		VK_Device_DeferDestroy( VK_NULL_HANDLE, VK_NULL_HANDLE, buffer, allocation );
+		return false;
+	}
+	const bool passed = mapped.pMappedData != NULL
+		&& vmaInvalidateAllocation( vkCtx.allocator, allocation, 0, VK_WHOLE_SIZE ) == VK_SUCCESS;
+	if ( passed ) {
+		bytes.SetNum( levelBytes );
+		memcpy( bytes.Ptr(), mapped.pMappedData, (size_t)levelBytes );
+	}
+	vmaDestroyBuffer( vkCtx.allocator, buffer, allocation );
+	VK_Exec_ConsumeHDRReadback( slot );
+	VkCommandBufferBeginInfo begin = {};
+	begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+	if ( vkResetCommandBuffer( vkExec.cmd, 0 ) != VK_SUCCESS
+			|| vkBeginCommandBuffer( vkExec.cmd, &begin ) != VK_SUCCESS
+			|| vkResetFences( vkCtx.device, 1, &vkCtx.frameFences[slot] ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: failed to resume rendering after image readback" );
+		bytes.Clear();
+		return false;
+	}
+	vkExec.frameOpen = true;
+	vkExec.mainScopeOpen = false;
+	VK_Exec_TransitionActiveTargetToAttachments();
+	const bool resumed = VK_Exec_BeginMainRendering( false );
+	if ( !resumed ) {
+		bytes.Clear();
+	}
+	return passed && resumed;
 }
 
 static bool VK_Exec_TestColorResolveCase( VkShaderModule vertex, VkShaderModule fragment, int samples ) {

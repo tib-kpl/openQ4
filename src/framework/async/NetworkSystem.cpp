@@ -117,6 +117,20 @@ void idNetworkSystem::ServerRecordInstanceReliableMessage( int instance, int exc
 
 /*
 ==================
+idNetworkSystem::GetClientAddress
+==================
+*/
+const char *idNetworkSystem::GetClientAddress( int clientNum ) {
+	static char clientAddress[ MAX_STRING_CHARS ];
+	clientAddress[ 0 ] = '\0';
+	if ( idAsyncNetwork::server.IsActive() ) {
+		idAsyncNetwork::server.CopyClientAddress( clientNum, clientAddress, sizeof( clientAddress ) );
+	}
+	return clientAddress;
+}
+
+/*
+==================
 idNetworkSystem::ServerStartMVDRecording
 ==================
 */
@@ -167,7 +181,8 @@ idNetworkSystem::ServerRecordMVDMarker
 ==================
 */
 bool idNetworkSystem::ServerRecordMVDMarker( const serverMVDMarker_t &marker ) {
-	return idAsyncNetwork::server.IsActive() &&
+	// openQ4 MP-22: a recording of a client's own view takes the markers its game finds too
+	return ( idAsyncNetwork::server.IsActive() || idAsyncNetwork::multiViewDemo.IsClientRecording() ) &&
 		idAsyncNetwork::multiViewDemo.RecordMarker( marker );
 }
 

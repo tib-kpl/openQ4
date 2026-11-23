@@ -90,8 +90,12 @@ def check_engine(usercmd_h: str, usercmd_cpp: str, game_h: str, common_cpp: str)
         "NormalizeMouseDeltasForCpi( mx, my, strafeMx, strafeMy )",
         "CalculateMouseSensitivity( mx, my, NULL, NULL ) * GetZoomLookSensitivityScale()",
         "openq4::PresentationRateShare( yawRate, elapsedSeconds, tickSeconds )",
+        # PAD-04: gyro aim not yet in a usercmd, looked at and never taken
+        "GyroLookActive() && Sys_GetGyroLook( gyroYaw, gyroPitch, false )",
+        "yaw += gyroYaw * gyroScale;",
     ):
         require(sampler, token, context)
+    reject(sampler, "Sys_GetGyroLook( gyroYaw, gyroPitch, true )", f"{context} must not take gyro motion from the next usercmd")
     require_before(sampler, "Sys_EnterCriticalSection();", "Mouse();", f"{context}: drained under the async lock")
     require_before(sampler, "Mouse();", "Sys_LeaveCriticalSection();", f"{context}: drained under the async lock")
     # Read-only: the next usercmd must still receive all of the input.
@@ -108,11 +112,28 @@ def check_engine(usercmd_h: str, usercmd_cpp: str, game_h: str, common_cpp: str)
     rate = function(usercmd_cpp, "bool idUsercmdGenLocal::PresentationLookRate( float &yawRate, float &pitchRate )", context)
     for token in ("in_yawSpeed.GetFloat()", "in_pitchSpeed.GetFloat()", "in_angleSpeedKey.GetFloat()",
                   "Sys_GetJoystickAxisState( axis, value )", "retainedAxisBlocked[axis]",
-                  "in_joystickInvertLook", "ScoreboardScrolls()", "in_joystickLookSensitivity",
-                  "GetZoomLookSensitivityScale()"):
+                  # PAD-02: the stick through the usercmd's own transform, the boost from a copy
+                  "openq4::TurnBoostState boostPreview = turnBoost;",
+                  "StickLookRate( axes, false, boostPreview, stickYawRate, stickPitchRate )"):
         require(rate, token, f"{context} held-rate mirror")
-    reject_pattern(rate, r"\b(viewangles|joystickAxis|scoreboardStick\w*)\s*(\[[^\]]+\])?\s*[-+*/]?=(?!=)", f"{context} held-rate read-only")
+    reject_pattern(rate, r"\b(viewangles|joystickAxis|scoreboardStick\w*|turnBoost)\s*(\[[^\]]+\])?\s*[-+*/]?=(?!=)", f"{context} held-rate read-only")
     reject(rate, "ScrollScoreboard", f"{context} held-rate read-only")
+
+    # PAD-02: one stick-look transform for the usercmd and the drawn view.
+    stick = function(usercmd_cpp, "bool idUsercmdGenLocal::StickLookRate( const int axes[MAX_JOYSTICK_AXIS], bool radial, openq4::TurnBoostState &boost, float &yawRate, float &pitchRate )", context)
+    for token in ("in_joystickInvertLook", "ScoreboardScrolls()", "in_joystickLookSensitivity",
+                  "in_joystickYawSpeed", "in_joystickPitchSpeed", "in_joystickTurnBoost",
+                  "GetZoomLookSensitivityScale()", "zoomScale >= 1.0f",
+                  "openq4::AdvanceTurnBoost( boost, lookAxisX, common->GetUserCmdSec(), boostAllowed, boostSettings )",
+                  "openq4::ComputeStickLookRate( lookAxisX, lookAxisY, settings, share )"):
+        require(stick, token, f"{context} shared stick transform")
+    reject_pattern(stick, r"\b(viewangles|joystickAxis|scoreboardStick\w*|turnBoost|cmd\.\w+)\s*(\[[^\]]+\])?\s*[-+*/|&]?=(?!=)", f"{context} shared stick transform writes only its results")
+    reject(stick, "ScrollScoreboard", f"{context} shared stick transform never scrolls")
+    reject(stick, "IsRunButtonActive", f"{context}: stick turning is independent of walking and running")
+    joystick_move = function(usercmd_cpp, "void idUsercmdGenLocal::JoystickMove( void )", context)
+    require(joystick_move, "StickLookRate( joystickAxis, radial, turnBoost, yawRate, pitchRate )", f"{context}: the usercmd uses the shared stick transform")
+    reject(joystick_move, "in_joystickLookSensitivity", f"{context}: the usercmd repeats no look arithmetic")
+    reject(joystick_move, "IsRunButtonActive", f"{context}: stick turning is independent of walking and running")
 
     make_current = function(usercmd_cpp, "void idUsercmdGenLocal::MakeCurrent( void )", context)
     require(make_current, "lastBuildMsec = Sys_GetClockTicks() * 1000.0 / Sys_ClockTicksPerSecond();", f"{context} build stamp")
@@ -141,7 +162,7 @@ def check_engine(usercmd_h: str, usercmd_cpp: str, game_h: str, common_cpp: str)
     require(console, "if ( Usercmd_ConsumeLatencyFlash() && com_latencyFlash.GetBool() ) {", "latency flash consumed every frame, drawn when enabled")
     require(console, '"latencyFlashTest", Con_LatencyFlashTest_f, CMD_FL_SYSTEM | CMD_FL_CHEAT', "latency flash test is cheat-gated")
 
-    require(game_h, "const int GAME_API_VERSION\t\t= 61;", "game ABI v61")
+    require(game_h, "const int GAME_API_VERSION\t\t= 62;", "game ABI v62")
     require(game_h, "idUsercmdGen *\t\t\t\tusercmdGen;", "gameImport_t carries the generator")
     require(common_cpp, "gameImport.usercmdGen\t\t\t\t= ::usercmdGen;", "engine hands the generator to the game")
 
@@ -187,8 +208,11 @@ def check_frame_rate_policy(common: str | None = None) -> None:
     update = function(read("src/framework/Session.cpp"), "void idSessionLocal::UpdateFramePacingStats( int requestedWaitMsec, int actualWaitMsec, int gameTicsToRun )", context)
     require(update, "openQ4_GetPresentationFrameStartMsec()", f"{context}: intervals use the limiter's high-resolution stamp")
     require(update, "frameIntervalBins[ openq4::FramePacingBin( frameDeltaMsec ) ]", f"{context}: intervals are binned finely")
-    begin = function(common, "void openQ4_BeginPresentationFrame( void )", context)
+    begin = function(common, "static void Common_BeginPresentationFrame( bool throttle )", context)
     require_before(begin, "Common_ThrottlePresentationFrame();", "commonPresentationFrameStartClock = Common_GetPresentationClockNow();", f"{context}: the stamp follows the wait")
+    require(function(common, "void openQ4_BeginPresentationFrame( void )", context), "Common_BeginPresentationFrame( true );", f"{context}: ordinary frames wait for the limiter")
+    # a frame the loading pacer admitted starts the clock without the limiter's sleep
+    require(function(common, "void openQ4_BeginPacedPresentationFrame( void )", context), "Common_BeginPresentationFrame( false );", f"{context}: paced loading frames skip the limiter")
     # the engine's 240 Hz budget is the one the runtime harness judges
     harness = read("tools/tests/presentation_look_runtime.py")
     budgets = re.search(r'BUDGETS = \{240: \{"intervalP95": ([\d.]+), "intervalP99": ([\d.]+)', harness)
@@ -215,10 +239,21 @@ def check_frame_rate_policy(common: str | None = None) -> None:
     require_before(frame, "Common_PresentationStallProbe();", "Sys_GenerateEvents();", f"{context}: the hitch lands in an ordinary frame")
     require(common, 'com_maxfps( "com_maxfps", "240"', f"{context}: 240 default cap")
     session = read("src/framework/Session.cpp")
-    require(session, "static const float SESSION_MAX_BLOCKING_LOAD_REDRAW_HZ = 60.0f;", f"{context}: loading redraw ceiling")
+    # Client loading and startup screens: the shared pacer, at the display's
+    # refresh or a whole divisor of it, never above 90 Hz or a lower cap.
+    pacer = read("src/framework/LoadingFramePacer.h")
+    require(pacer, "static constexpr double MaxRateHz = 90.0;", f"{context}: loading redraw ceiling")
+    require(pacer, "while ( value < capInterval - Epsilon ) {", f"{context}: loading honours a lower cap only")
+    require(pacer, "static constexpr double MaxPresentationShare = 0.4;", f"{context}: loading backs off by its presentation share")
+    pacifier = function(session, "void idSessionLocal::PacifierUpdate()", context)
+    require(pacifier, "loadingFramePacer.Due( offerMsec )", f"{context}: level loads use the shared pacer")
+    common_init = read("src/framework/Common.cpp")
+    require(common_init, "initializationPacing.Due( InitializationMilliseconds() )", f"{context}: startup uses the shared pacer")
+    # The dedicated server's pacifier keeps its floored 60 Hz interval.
+    require(session, "static const float SESSION_MAX_BLOCKING_LOAD_REDRAW_HZ = 60.0f;", f"{context}: dedicated pacifier ceiling")
     load = function(session, "static float Session_GetBlockingLoadFrameIntervalMsec( void )", context)
-    require(load, "return Max( ceilingMsec, 1000.0f / static_cast<float>( presentationCap ) );", f"{context}: loading honours a lower cap only")
-    require(load, "return Max( ceilingMsec, common->GetUserCmdMsecFloat() );", f"{context}: uncapped loading at most once per tick")
+    require(load, "return Max( ceilingMsec, 1000.0f / static_cast<float>( presentationCap ) );", f"{context}: dedicated pacifier honours a lower cap only")
+    require(load, "return Max( ceilingMsec, common->GetUserCmdMsecFloat() );", f"{context}: uncapped dedicated pacifier at most once per tick")
     presets = read("src/framework/PerformancePreset.cpp")
     caps = {}
     for name, fps in re.findall(r'\{ "(\w+)", \d+, "[\w-]+",\s*\d+, \d+, \d+, (\d+),', presets):
@@ -505,7 +540,17 @@ def mutations() -> None:
         "sampler skips the filter guard": usercmd_cpp.replace(
             "m_smooth.GetInteger() > 1 || GetMouseFilterSamples() > 0", "false", 1),
         "held rates scroll the scoreboard": usercmd_cpp.replace(
-            "\t\tlookAxisY = 0.0f;\n\t}\n\tfloat joystickLookSensitivity", "\t\tScrollScoreboard( 1 );\n\t}\n\tfloat joystickLookSensitivity", 1),
+            "\t\tlookAxisY = 0.0f;\n\t}\n\tif ( !hasDedicatedLookAxis && ButtonState( UB_STRAFE ) ) {",
+            "\t\tScrollScoreboard( 1 );\n\t}\n\tif ( !hasDedicatedLookAxis && ButtonState( UB_STRAFE ) ) {", 1),
+        "late look takes the gyro motion": usercmd_cpp.replace(
+            "GyroLookActive() && Sys_GetGyroLook( gyroYaw, gyroPitch, false )",
+            "GyroLookActive() && Sys_GetGyroLook( gyroYaw, gyroPitch, true )", 1),
+        "late look advances the turn boost": usercmd_cpp.replace(
+            "StickLookRate( axes, false, boostPreview, stickYawRate, stickPitchRate )",
+            "StickLookRate( axes, false, turnBoost, stickYawRate, stickPitchRate )", 1),
+        "stick turning slows while walking": usercmd_cpp.replace(
+            "\t\tconst float zoomScale = GetZoomLookSensitivityScale();\n",
+            "\t\tconst float zoomScale = GetZoomLookSensitivityScale() * ( IsRunButtonActive() ? 1.0f : 0.66f );\n", 1),
     }
     for name, mutated in cases.items():
         if mutated == usercmd_cpp:
@@ -562,7 +607,7 @@ def mutations() -> None:
         pass
     else:
         raise AssertionError("mutation survived: the waiter keeps a retiring swapchain")
-    print("presentation_hf_contract mutations: 8 rejected")
+    print("presentation_hf_contract mutations: 11 rejected")
 
 
 def main() -> None:

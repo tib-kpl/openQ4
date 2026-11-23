@@ -1,6 +1,6 @@
 # High-refresh presentation owners
 
-> **Development status:** This document describes the current source tree and its evidence, not the contents of the latest available 0.14.1 package. The 0.14.0 release was withdrawn. See [release status](../user/release-status.md).
+> **Development status:** This document describes the current source tree and its evidence, not the contents of the latest available 0.15.0 package. The 0.14.0 release was withdrawn. See [release status](../user/release-status.md).
 
 Contract for HF-03 through HF-08 in the [roadmap](roadmap.md), 23 October 2026,
 extended 24 and 25 October 2026.
@@ -238,9 +238,13 @@ Declared targets, pending physical qualification:
 Cases to qualify: caps 30/60/120/144/165/240/360 and `0`, vsync and VRR where
 available, low-FPS catch-up (fewer draws than ticks), menus and loading, hidden
 windows, and the preset caps. The declared policy, pinned by
-`presentation_hf_contract.py`, is as follows. Loading screens redraw at the
-lower of `com_maxfps` and 60 Hz, never faster, and back off when a redraw is
-slow. Uncapped, they redraw at most once per tick. A window that shows nothing
+`presentation_hf_contract.py`, is as follows. Loading screens and the startup
+screen present on a steady cadence at the display's refresh rate, or its
+largest whole divisor of at most 90 Hz (144 Hz presents 72), never faster than
+a lower `com_maxfps`, and slow by whole refresh periods while a redraw would
+take more than 40% of the time ([loading presentation](loading-presentation.md)).
+A dedicated server's load pacifier runs at the lower of `com_maxfps` and 60 Hz,
+at most once per tick uncapped. A window that shows nothing
 (hidden, minimized, not created yet, or an app in the background) presents at
 most 60 Hz on every platform, uncapped included; the state comes from SDL's
 window flags (`Sys_SDL_IsGameWindowShown`, `openq4::PresentationCapForWindow`).
@@ -1071,6 +1075,400 @@ The earlier MP shutdown overflow was not reproduced in this run; existing
 scene-packet capacity fallback and post-restart Vulkan bootstrap labeling remain
 outside this iteration.
 
+### Retained vertex streams, 23 November 2026
+
+Mode 2 now also retains the vertex-class streams of static geometry across
+views and frames: vertices, the CPU bytes of the ambient, lighting and shadow
+vertex caches, shadow vertices, and the per-vertex and per-face tables
+(silhouette edges, face planes, dominant triangles, mirrored and duplicate
+vertices). Index streams keep their existing cache.
+
+**What counts as static.** A stream is a candidate only when all of these hold:
+
+- the drawing entity has a static model class, no dynamic model and no joints:
+  world areas and static models;
+- the triangle record is the model's own, not frame memory. Material deforms,
+  decals, overlays and dynamic light or shadow triangles are allocated from the
+  frame arena whichever entity draws them
+  (`R_FrameMemoryContains`);
+- the surface carries no GPU-skinning sidecar, captured previous positions or
+  packed MD5R mesh, and is not marked deformed;
+- a vertex cache is a static block, not a frame-temporary one.
+
+A light triangle or a deform source passes the entity's classification on to
+the ambient surface it references, so light triangles share the ambient
+surface's retained vertices. Everything else keeps its per-view copy: animated
+and GPU-skinned meshes, effects, liquids, beams, GUI geometry, joints, palettes,
+MD5R transforms, previous positions, dynamic texture coordinates and decal
+colours.
+
+**What makes a version immutable.** The classification only selects
+candidates. `idFrameSnapshotRetainedStreams` compares the complete byte range
+with its owned copy on every acquisition; the source address and length are
+lookup keys, never a version or a lifetime guarantee. No sound version identity
+exists for model geometry (tangents derive lazily, models reload, interactions
+are rebuilt at reused addresses), so none is assumed. A view validates each
+range once: the view's own lookup records the retained bytes, and later
+references in that view reuse them without another comparison.
+
+A range that compares unequal was rewritten in place. Its cached version is
+dropped (submitted leases keep it alive) and the range is refused for a
+doubling run of acquisitions, 2 up to 256, during which the caller takes its
+ordinary per-view copy. Geometry that derives tangents once costs two per-view
+copies; data animated in place despite its classification settles on per-view
+copies with one comparison every 256 acquisitions, instead of a comparison, an
+allocation and a release every view.
+
+**Lifetime and bounds.** Blocks are 16-byte aligned and owned by reference
+count. A submitted frame holds a lease on every version it uses, through
+replacement, refusal, eviction, `Clear` and model destruction, and releases it
+at retirement after the worker joins. The cache holds at most 128 MiB and
+32,768 entries (keyed by address and length) beside the index cache's 64 MiB
+and 32,768; pressure evicts the least recently acquired entries one at a time
+and oversized ranges are never retained. The audited Vulkan backend never
+writes these streams: its only in-place vertex write is the GPU-skinning
+repair, which the classification excludes and mode 2 completes before the
+snapshot.
+
+**Switch.** `r_vkSnapshotRetain` is now 0 (per-view copies only), 1 (index
+streams, the 4 November behaviour) or 2 (index and static vertex streams, the
+default within mode 2). Lowering it drops the cached versions at the next
+retirement. `rendererFrameSnapshotStats` adds `retainedVertexBytes` and the
+entries, resident bytes and live leases of both caches. The comparison runner
+takes `--retain 0|1|2`.
+
+**Tests.** The production-header native test (`openq4-render-snapshot-copy`)
+covers unchanged reuse, length as identity, replacement after an in-place
+rewrite, the doubling refusal run and its cap, leases through replacement,
+`Clear` and eviction, least-recently-used eviction under the byte and entry
+bounds, oversized ranges and the view lookup's record of externally owned
+bytes. Four new negative controls fail as required: a stale version served
+after a rewrite, whole-cache clearing under pressure, an immediate retry after
+a rewrite, and a view record that displaces the view's own copy. With the five
+existing controls that is nine. `rendererFrameOwnershipSelfTest` adds a static
+entity fixture: two views share one version of its vertices and cache bytes, a
+rewrite reaches neither that version nor the next view, and a frame-allocated
+triangle record under the same entity is not a candidate.
+
+**Copied bytes.** Two runs of the comparison runner against the same staged
+binary (windowed 1280 x 720 Quality `game/airdefense1` view sweep, uncapped,
+VSync off, nine windows each), with `--retain 1` and `--retain 2`:
+
+| Mode 2, per frame | `--retain 1` (indexes) | `--retain 2` (indexes and static vertices) |
+| --- | ---: | ---: |
+| Copied bytes | 6,861,836 | 2,648,681 |
+| Static vertex bytes served from retention | 0 | 4,225,593 |
+| Bytes reused, all sources | 5,564,669 | 9,870,717 |
+| Elapsed snapshot time | 4.90 ms | 6.18 ms |
+
+Copied bytes fall by **61.4%**. Elapsed snapshot time does not fall: these are
+shared-machine numbers (below), and a comparison replaces each avoided copy.
+A stack sample of the main thread during the same sweep in mode 2 with
+retention 2 (hidden window, 3,322 samples over 20 s, `tools/debug/cpu_sampler.py`)
+puts the snapshot at 29.6% of the thread. Of those 29.6 points, 17.6 acquire
+retained versions (10.2 static vertex streams, 7.3 index streams): about 11
+are the validating comparison itself, and most of the rest is the index
+cache's lookups, evictions and allocations. 2.7 are the remaining per-view
+copies, and about 4 are the per-view hash containers and their heap nodes.
+The index cache sat at its 32,768-entry cap through the sweep, churning on
+frame-temporary index streams. Retention as
+built therefore bounds memory traffic into the frame arena but **establishes no
+CPU gain**. The next lever is not re-reading unchanged streams at all, which
+needs a sound version identity for model geometry and vertex-cache blocks; the
+per-view containers come after that.
+
+### Overlap repair and mode qualification, 23 November 2026
+
+**The overlap had been lost.** Since the 6 November VR change,
+`idRenderSystemLocal::SetVRFrame` joined the render thread unconditionally, and
+the engine clears the VR frame on every frame without a headset. In ordinary
+play modes 1 and 2 therefore joined the worker once per frame before the next
+front end began: `renderThreadStats` showed `early sync: vr frame` on 149 of
+150 frames and `frontEndsWhileBusy=0`. Mode 0/1/2 timings taken between
+6 and 23 November compared a serialized frame with the hand-off cost added.
+Clearing an already clear VR frame now returns before the join (the stored
+frame is either active or all zero, so nothing the backend reads changes); a
+real frame, or one releasing images, still joins. The render-thread contract
+test pins both.
+
+**Qualification runner.** `tools/tests/renderer_overlap_benchmark.py` gains two
+checks beside the comparison. Both launch the staged Vulkan client with a hidden
+window, validation layers on, device input disabled and an isolated save path,
+and drive it with console commands only:
+
+```text
+python tools/tests/renderer_overlap_benchmark.py --check parity --runtime-dir .install --output-dir .tmp/ren07/parity
+python tools/tests/renderer_overlap_benchmark.py --check bounds --runtime-dir .install --output-dir .tmp/ren07/bounds
+```
+
+**Parity.** Each view applies Quality (temporal AA 2, 2x scene MSAA as the
+preset sets them), freezes the world with `g_stopTime 1`, then visits modes
+0, 1, 2 and 0 again. Every visit runs 90 settling frames and a 150-frame window
+bracketed by `renderThreadStats`, reads back the backend's `_vkPostScene` and
+`_currentRender` images (drawn by the worker in modes 1 and 2) and takes an
+engine capture. A capture frame runs inline in every mode; in mode 2 it is
+drawn from the frozen snapshot, retained streams included. `g_stopTime` does
+not stop the HUD's own clock, so each view is captured twice: with the HUD
+(judged against the mode 0 repeat) and with `g_showHud 0`, where a frozen
+Quality frame must repeat bit for bit.
+
+| View | HUD hidden: captures and readbacks, modes 0/1/2/0 | With HUD: pixels over 8/255 from mode 0 (modes 1, 2; mode 0 repeat) |
+| --- | --- | --- |
+| `game/airdefense1` arena | identical | 0.079%, 0.072%; 0.081% |
+| `game/airdefense1` skyline | identical | 0.063%, 0.068%; 0.055% |
+| `game/hub2` spawn | identical | 0.047%, 0.062%; 0.062% |
+| `game/medlabs` spawn | identical | identical |
+| `mp/q4dm1` listen server | not still: 5.2%, 5.5%; 5.5% | 2.3%, 5.2%; 5.3% |
+
+The with-HUD differences sit in one top-centre HUD element in every still
+view. Multiplayer has no single-client world freeze (pickups turn, lights
+pulse), so it is compared with how far mode 0 differs from itself over the
+run: modes 1 and 2 must stay within 1.5 times that floor plus 0.5%. A view
+that cannot be held still at all, such as `game/storage1`'s moving craft
+inside dust effects (mode 0 differs from itself in 10% of pixels), tells
+nothing either way and is not part of the check.
+
+Every mode 1 and mode 2 window drew all 150 frames on the render thread and
+none inline. Mode 1 recorded no early join. Mode 2 recorded only its ordinary
+`handoff` join, and started 24 to 149 of its 150 front ends while the backend
+was still busy; the low counts are the lightest views, where the backend
+usually finishes first. Both ownership self-tests passed in every launch and no
+validation message was logged. The table is the final run, on the same binary
+as the bounds and timing below; two earlier runs on the preceding build gave
+the same identities.
+
+**Bounds.** One launch per mode (0 as the control, then 1 and 2) loads
+`game/airdefense1` at Quality, starts a view sweep and runs 100 cycles. Each
+cycle sets a new window size (1280 x 720, 1024 x 576, 1600 x 900, 960 x 540 in
+rotation) and applies it with `vid_restart partial`, which resizes the window,
+recreates the swapchain and purges the vertex caches, then sets a new scene
+scale (`r_screenFraction` 100, 75, 50, 67, 125 in rotation). Every cycle
+reports the render-thread and snapshot counters, and the runner samples the
+process at that moment. A full `vid_restart` follows the cycles, then 240
+frames, the ownership self-test and a clean exit. Validation layers were on.
+
+Bounds declared in the runner before the final run: the retained caches within
+64 MiB / 32,768 index entries and 128 MiB / 32,768 vertex entries at every
+cycle; process private bytes within 5%, and within 64 MiB of the mode 0
+control, between the second and the last 20-cycle period; handles within 16;
+Vulkan allocations within 5% and 32 MiB between cycles 40 and 100. Single
+samples of private bytes swing by about 150 MiB (image reloads are in flight
+when a cycle's marker is logged), so each period is summarized by its median;
+a period visits every size and scale once.
+
+| | Mode 0 (control) | Mode 1 | Mode 2 |
+| --- | ---: | ---: | ---: |
+| Private bytes, median of period 2 | 4,383 MiB | 4,456 MiB | 4,491 MiB |
+| Private bytes, median of period 5 | 4,458 MiB | 4,502 MiB | 4,555 MiB |
+| Growth, period 2 to 5 | 74.4 MiB (1.70%) | 45.9 MiB (1.03%) | 64.4 MiB (1.43%) |
+| Growth against the control | | -28.5 MiB | -10.0 MiB |
+| Handles, period medians 2 to 5 | -2 | -0.5 | 0 |
+| Handles, minimum to maximum | 792 to 829 | 792 to 844 | 799 to 834 |
+| Vulkan allocations, cycle 40 to 100 | -2.3 MiB, 0 | 0.0 MiB, 0 | +6.0 MiB, +1 |
+| Vulkan allocations at cycle 100 | 988.0 MiB in 2,093 | 994.0 MiB in 2,094 | 1,000.0 MiB in 2,095 |
+| Retained vertex cache, maximum | not used | not used | 5.5 MiB, 1,153 entries |
+| Retained index cache, maximum | not used | not used | 3.9 MiB, 7,613 entries |
+| Frames on the render thread in the cycles | 0 | 2,410 | 2,410 |
+| After the full restart: threaded, inline | 0, 240 | 240, 0 | 240, 0 |
+
+All three launches pass: no error or validation message in any log, both
+ownership self-tests in each, clean exits. Mode 2 started 184
+of the 240 post-restart front ends while the backend was busy. The joins the
+cycles produced are the expected barriers: one `renderer configuration` join
+per cycle for the setting changes, two `image` joins per cycle in mode 2 for
+images recreated by the restart, and the report commands.
+
+The first bounds run, before retained versions were dropped at a vertex-cache
+purge, failed and is kept (`bounds-before-clear/`): every restart reallocates
+the caches at new addresses, the dead entries could only age out under
+pressure, the vertex cache climbed towards its budget (99 MiB by cycle 100) and
+mode 2's private bytes grew 258 MiB between periods 2 and 5. Retained versions
+are now dropped when the vertex caches are purged (both restart routes) and
+when a world is freed; submitted leases are unaffected. The control's own
+1.7% drift over 60 partial restarts is not a render-thread effect and is
+outside REN-07.
+
+**Timing with the overlap restored (shared machine, not qualification).** The
+two comparison runs of the previous section are also the first mode 0/1/2
+timings since the join was removed: windowed 1280 x 720 Quality, uncapped,
+VSync off, each mode once in each order position, 8-second windows after
+4-second warm-ups. Milliseconds per frame, per window in run order:
+
+| `--retain` | Window | Frames | Mean | p50 | p95 | p99 |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | r0 mode 0 | 754 | 10.60 | 10.50 | 15.35 | 17.30 |
+| 1 | r0 mode 1 | 1,000 | 8.00 | 7.75 | 11.05 | 14.55 |
+| 1 | r0 mode 2 | 691 | 11.57 | 11.10 | 17.80 | 23.05 |
+| 1 | r1 mode 2 | 724 | 11.05 | 10.75 | 17.05 | 19.65 |
+| 1 | r1 mode 0 | 748 | 10.68 | 9.90 | 18.10 | 27.30 |
+| 1 | r1 mode 1 | 967 | 8.27 | 7.55 | 13.55 | 23.15 |
+| 1 | r2 mode 1 | 955 | 8.38 | 7.90 | 12.75 | 18.85 |
+| 1 | r2 mode 2 | 576 | 13.88 | 12.70 | 25.55 | 39.75 |
+| 1 | r2 mode 0 | 834 | 9.59 | 8.90 | 16.55 | 23.90 |
+| 2 | r0 mode 0 | 735 | 10.87 | 10.90 | 14.75 | 15.90 |
+| 2 | r0 mode 1 | 915 | 8.75 | 8.20 | 13.05 | 15.20 |
+| 2 | r0 mode 2 | 645 | 12.41 | 12.25 | 17.60 | 19.95 |
+| 2 | r1 mode 2 | 617 | 12.96 | 13.10 | 17.85 | 20.20 |
+| 2 | r1 mode 0 | 753 | 10.62 | 10.40 | 14.35 | 21.85 |
+| 2 | r1 mode 1 | 993 | 8.05 | 7.95 | 11.15 | 13.80 |
+| 2 | r2 mode 1 | 930 | 8.60 | 8.30 | 12.05 | 15.20 |
+| 2 | r2 mode 2 | 450 | 17.75 | 17.25 | 26.60 | 33.70 |
+| 2 | r2 mode 0 | 687 | 11.65 | 11.00 | 18.30 | 24.20 |
+
+Medians of the three window statistics per mode:
+
+| `--retain` | Mode | Mean | p50 | p95 | p99 |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0 | 10.598 | 9.90 | 16.55 | 23.90 |
+| 1 | 1 | 8.273 | 7.75 | 12.75 | 18.85 |
+| 1 | 2 | 11.571 | 11.10 | 17.80 | 23.05 |
+| 2 | 0 | 10.875 | 10.90 | 14.75 | 21.85 |
+| 2 | 1 | 8.604 | 8.20 | 12.05 | 15.20 |
+| 2 | 2 | 12.959 | 13.10 | 17.85 | 20.20 |
+
+The host was busy throughout. Competing processes appeared in all 171 and all
+164 one-second host samples, mean host CPU was 95.2% and 94.7%, and on average
+5.4 and 6.1 other openQ4 clients (other sessions' harness runs) were running,
+with compilers and linkers beside them in the second run. The process list
+taken before each run showed the same.
+
+Read as shared-machine observations only: mode 1 was faster than mode 0 in all
+six paired windows (window means 8.00 to 8.75 ms against 9.59 to 11.65 ms),
+and mode 2 was slower than mode 0 in all six (11.05 to 17.75 ms), with 4.6 to
+7.5 ms of snapshot time per frame. Mode 1's gain is what the stage 1 design
+predicted once the tic really overlaps the backend; mode 2's loss is the
+snapshot cost attributed above. Neither is budget evidence. `r_vkRenderThread`
+stays 0, the every-frame Quality floor is not claimed, and five quiet matched
+runs per GOV-03 are still required before any default changes.
+
+Evidence is retained under `.tmp/ren07/evidence/`: `parity/` (report and
+logs; the report carries each image's hash), `bounds/` and
+`bounds-before-clear/`, `compare-retain1/` and `compare-retain2/` (comparison
+JSON, host samples, gameplay reports with runtime hashes) and `sample-retain2/`
+(stack samples). The binaries were built from the working tree of the commit
+that records this section.
+
+### Snapshot cost beyond copying, 23 November 2026
+
+The stack sample of the preceding section put about 40% of mode 2's snapshot
+in the comparisons that validate retained streams, about 18% in heap
+allocation and release, and about 10% in the per-view `std` hash containers.
+Four changes cut that work. None of them treats a stream as unchanged without
+reading it: the full-range comparison of every retained stream stays.
+
+- **Streams the consumer never reads are not frozen.** The Vulkan back end
+  never reads silhouette indexes or edges, face planes, dominant triangles,
+  shadow vertexes or the mirrored and duplicated vertex tables. They feed the
+  front end's shadow volumes, culling and tangent derivation, all of which ran
+  before the snapshot. The back end derives tangents only to repair GPU
+  skinning that a view deferred, and the snapshot's preparation already
+  finishes that repair for every copy; a copy whose source still defers keeps
+  the tables. Three debug views read some of them (`r_showEdges`,
+  `r_showDominantTri`, `r_showTextureVectors`), each null-checked, and a
+  snapshot taken while any of them is on keeps all of them. Otherwise the copy
+  keeps the counts and nulls the pointers, so a reader that was missed fails
+  at once instead of reading a live stream. This is about 2.0 MB a frame on
+  the comparison route that is neither copied nor compared.
+- **Frame-temporary index streams stay out of the retained cache.** Index
+  bytes in frame memory or in a temporary vertex cache are refilled every
+  frame, and retaining them displaced the persistent streams. The working set
+  exceeded the 32,768-entry cap, and least-recently-used eviction then missed
+  on nearly every acquisition, paying an allocation, a copy and a release
+  each time. Those bytes (about 45 KB a frame) now take the ordinary per-view
+  copy. The cache holds 670 to 950 entries in place of a constant 32,768.
+  Index streams also join the per-view lookup, so a range that two records in
+  one view share is validated once per view, as vertex streams already were.
+- **One lease per version per frame.** A frame held one shared owner per
+  acquisition, an atomic count update and a vector append for every reused
+  range. `Lease` hands out the bytes and appends an owner only the first time a
+  version is leased under the frame slot's epoch, which changes whenever the
+  slot's holder is emptied. A replaced version starts unleased.
+- **Reused per-view identity tables.** The geometry, cache, surface and entity
+  lookups were four `std::unordered_*` containers built and destroyed per view
+  (nine views a frame here). `idFrameSnapshotIdentities` is an open-addressing
+  table whose storage persists across views; a view starts by advancing a
+  generation, so it pays no node allocations and no clear. It is released
+  with the retained caches at a vertex-cache purge, a world free and shutdown.
+
+`rendererFrameSnapshotStats` adds `threadWork` (work on the snapshotting
+thread: cycles on Windows, nanoseconds where POSIX has a thread CPU clock),
+`omittedBytes` and `temporaryIndexBytes`. Unlike `cpuUs`, `threadWork`
+excludes time the thread spends preempted by other processes, so two builds
+can be compared on a busy host. Memory contention from other processes still
+reaches it. The native snapshot test covers leases, the identity tables and
+three further negative controls (twelve in all).
+
+**Parity.** `--check parity` on the final binary repeats the preceding
+section's result on all five views: with the HUD hidden, captures and the
+backend readbacks are bit-identical across modes 0, 1, 2 and 0 again on
+`airdefense1` (twice), `hub2` and `medlabs`. `q4dm1` stays within the mode 0
+floor. Validation layers were on, no message was logged, and all four
+ownership self-tests passed in each launch.
+
+**Same-binary A/B.** Only `renderer-vk_x64.dll` holds the snapshot code, so
+one build serves both arms: a baseline DLL from the preceding commit's
+snapshot sources and the candidate, each with the same `threadWork` counter,
+swapped into `.install` between runs. Six comparison runs (`--retain 2`,
+airdefense1 Quality sweep, 1280 x 720 windowed, uncapped) in the order
+candidate, baseline, baseline, candidate, candidate, baseline, give nine mode 2
+windows per arm. Per mode 2 frame:
+
+| | Baseline | Candidate | Change |
+| --- | ---: | ---: | ---: |
+| Thread work, median (min to max) | 17.04 M cycles (11.63 to 20.67) | 9.23 M cycles (7.30 to 15.28) | -45.8% |
+| Elapsed snapshot time, median | 7.72 ms | 4.03 ms | -47.8% |
+| Bytes copied, median | 2,643 KB | 2,285 KB | -13.5% |
+| Bytes compared or shared, median | 9,444 KB | 8,054 KB | -14.7% |
+| Front-end-only bytes omitted | 0 | 2,049 KB | |
+| Retained index entries | 32,768 in every window | 672 to 951 | |
+| Retained vertex entries | 1,007 to 1,011 | 423 to 425 | |
+| Mode 2 window mean / same run's mode 0 median | 1.29 (1.06 to 3.12) | 0.90 (0.74 to 1.48) | |
+
+The compared bytes fall by less than the omitted bytes because they now also
+count index ranges served from the per-view lookup. An earlier four-run A/B
+without the counter (candidate, baseline, baseline, candidate) gave the same
+counters: 715 to 884 retained index entries against 15,426 to 32,768, and
+copied and compared bytes within 2% of the table.
+
+The host was busy throughout (mean CPU 79 to 99% per run, two to five and a
+half other openQ4 clients on average, compilers and linkers in every run),
+and single windows swung from 8 to 60 ms. Thread work is the measure; the
+window means and the mode 2 to mode 0 ratio are shared-machine observations,
+not budget evidence. They agree in direction: the candidate's mode 2 windows
+were below the same run's mode 0 median in six of nine, where the baseline's
+were above it in all nine. `r_vkRenderThread` stays 0.
+
+**Bounds.** `--check bounds` on the final binary (100 resize and scene-scale
+cycles and a full `vid_restart` per mode, validation layers on) passes with
+the bounds declared in the preceding section:
+
+| | Mode 0 (control) | Mode 1 | Mode 2 |
+| --- | ---: | ---: | ---: |
+| Private bytes, period medians 1 to 5 (MiB) | 4,375, 4,463, 4,459, 4,480, 4,463 | 4,440, 4,468, 4,508, 4,480, 4,456 | 4,483, 4,467, 4,567, 4,481, 4,515 |
+| Growth, period 2 to 5 | 0.8 MiB (0.02%) | -12.5 MiB (-0.28%) | 47.4 MiB (1.06%) |
+| Growth against the control | | -13.2 MiB | 46.6 MiB |
+| Handles, period medians 2 to 5 | -5 | -1 | 0 |
+| Vulkan allocations, cycle 40 to 100 | 0.0 MiB, 0 | 0.0 MiB, 0 | +2.2 MiB, 0 |
+| Retained caches, maximum | not used | not used | index 684 entries (1.7 MiB), vertex 492 (4.0 MiB) |
+| After the full restart: threaded, inline | 0, 240 | 240, 0 | 240, 0 |
+
+Mode 2's period medians do not climb (the third is the highest), and its
+growth is smaller than the preceding run's 64.4 MiB. That run's control,
+though, drifted 74 MiB where this one drifted almost none, so mode 2 sits
+closer to the 64 MiB allowance over the control than it did. Both ownership
+self-tests passed in every launch, and no error or validation message was
+logged.
+
+The next lever is the vertex stream itself. Static geometry is validated twice
+a view, once as `verts` and once as the ambient cache bytes holding the same
+vertices. Dropping `verts` from the snapshot needs an audit of every reader
+in the shared domain code linked into the Vulkan module, which this round did
+not do.
+
+Evidence is under `.tmp/ren07b/` in the ren07 worktree: `parity/`, `ab/` (the
+first A/B), `ab2/` (the counter A/B, with `driver.log` naming the DLL hash per
+run), `bounds/`, and the two DLL pairs under `dll/`.
+
 ### Quiet Quality floor baseline, 5 November 2026
 
 All earlier Quality-floor timings ran beside a dozen peer builds and clients.
@@ -1226,6 +1624,232 @@ locate the sky, and full-frame captures with the clip on lost the whole sky
 (`pshots1`, `pshots2`: up to 2.4 million pixels changed against an off/off
 capture noise of at most 27 levels). An exact clip would need the main view's
 depth before the backdrop is drawn, which reorders the frame.
+
+### Filtered SSAO occlusion, 21 November 2026
+
+Players reported that SSAO had started to dither. Each pixel rotated its
+spiral of samples by interleaved-gradient noise, and nothing filtered the
+result: at full resolution the noise read as fine grain, and once Quality and
+Enhanced took the half-resolution pass (FPS-04) the noise was evaluated on
+every other pixel, where it aliases into a coarse ordered pattern that the
+2x2 upsample then blocked out. The debug view showed it plainly; at 12
+samples it was the dominant texture of every occluded surface.
+
+Both renderers now draw SSAO the same way at every resolution, and native
+PBR's occlusion field uses the same passes:
+
+1. **Occlusion target** (mode 3; `RB_DrawSSAOOcclusion`,
+   `VK_Post_DrawSSAOOcclusion`). An RGBA16F target of the view's size, or
+   half of it rounded up with `R_SSAOHalfResolution`. Each texel holds the raw
+   AO of one view pixel (the even pixel of its 2x2 block at half resolution),
+   that pixel's view depth (negative where sky or a foreground model takes
+   none) and the view depth's slope per view pixel, taken from the same
+   differences that reconstruct the normal. The spiral's rotation and radial
+   offset come from a 4x4 ordered (Bayer) index of the texel instead of noise:
+   neighbours differ as much as possible and every 4x4 window holds all
+   sixteen patterns once.
+2. **Filter** (mode 5, twice). A separable tent over five texels, weights
+   1/2, 1, 1, 1, 1/2, horizontally into a second target of the same size and
+   vertically back. The patterns repeat every four texels, so the two halves
+   weigh one pattern together and each of the sixteen counts exactly once:
+   the pattern cancels. Each tap also counts by how well its plane (depth plus
+   slope) predicts the centre texel's depth, within 3% of the depth or one
+   unit, so occlusion keeps to its surface across silhouettes and grazing
+   floors. Texels without AO pass through.
+3. **Resolve** (mode 4 for classic views, mode 1 for the field). At full
+   resolution a pixel reads its own texel; at half resolution it blends the
+   texels of the even pixels around it bilinearly (one, two or four), each
+   weighted by how well its plane predicts the pixel's depth, so occlusion
+   slides with every pixel instead of stepping with each texel; with no tap
+   on the pixel's surface, the closest in depth stands in. The classic
+   resolve multiplies the factor into every scene sample as before; the field
+   writes it for native PBR's indirect light and the classic factor, which
+   therefore stays identical to a classic-only frame.
+
+A single 5x5 tent in the resolve gave the same picture (within half a level of
+noise) but read 16-25 texels per view pixel; the separable passes read ten
+per occlusion texel plus one to four per view pixel, about a third as many at
+half resolution.
+
+`r_ssaoDebug` writes the resolved AO, white wherever none applies, on every
+path; the field's debug view now matches it (sky was the scene there). The
+validation references (`r_glSSAOReferenceComposition`,
+`r_vkSSAOReferenceComposition`) darken a scene copy with the same filtered
+occlusion. Mode 0, the unfiltered single pass, remains only as the fallback
+when the occlusion target cannot be created, and logs that once.
+
+Native PBR's field now follows `r_ssaoResolution` too, so Quality's PBR views
+take the half-resolution pass instead of a full-resolution one.
+
+Image check, OpenGL and Vulkan, 1280x800, frozen storage2 and hub2 poses,
+`r_ssaoDebug 1`. High-frequency noise (mean absolute difference from a 5x5
+box blur, over occluded pixels) fell from 6.1 to 1.5 levels at Quality and
+from 5.4 to 1.8 at Ultra in storage2, and from 3.6-3.9 to 0.7-1.1 in hub2.
+Mean occlusion moved by at most 0.03 levels: no bias. OpenGL and Vulkan agree
+to 0.01-0.02 levels on average (550-830 of a million pixels differ by more
+than one level, at silhouettes). Half resolution now follows full resolution
+smoothly along gradients.
+
+The PBR laboratory's SSAO controls pass 10/10 on OpenGL, OpenGL with the
+native PBR owner, and Vulkan: native PBR keeps its direct light exactly,
+classic pixels and the debug view match a classic-only frame exactly (0
+pixels), and forced half resolution now differs from full by 0.68 levels on
+average (it was about 2.1; the limit is 4) with no bias (under 0.002).
+
+### Ground-truth ambient occlusion (REN-10), 21 November 2026
+
+`r_ssaoMethod` (archived, default `0`; `ssaoMethod_t` in `tr_local.h`)
+selects the kernel of the occlusion pass: `0` SSAO, the shipped obscurance
+estimate; `1` HBAO; `2` GTAO; `3` a brute-force reference for comparisons.
+All four write the same occlusion target and go through the same filter,
+resolve and native PBR field, so the application (the classic multiply,
+indirect-only PBR occlusion), the resolution policy, MSAA, dynamic
+resolution, subviews, the view weapon (a foreground model, untouched) and
+both renderers are shared. `0` is SSAO exactly: the SSAO capture taken after
+the other methods ran in the same process is byte-identical to the one
+before.
+
+**Naming.** The controls keep their `r_ssao*` names. SSAO, screen-space
+ambient occlusion, is the family: HBAO and GTAO are SSAO techniques that
+read the same depth buffer, and `r_ssao`, `r_ssaoRadius`, `r_ssaoSamples`,
+`r_ssaoResolution`, `r_ssaoMaxDistance` and `r_ssaoDebug` mean the same for
+every method. Only method `0`'s own estimator is "SSAO" in the narrow sense;
+the cvar help and these notes call it the obscurance estimate where the
+difference matters. Renaming the family would change the presets (a SYSTEM
+catalog ripple), the Display menu rows and their language-table entries, saved
+configs and every test, for no change in behaviour.
+
+**HBAO** (`HorizonBasedOcclusion`, after Bavoil, Sainz and Dimitrov 2008).
+Per screen direction it marches out to the radius and, each time a sample
+rises above the highest horizon so far (its elevation measured above the
+pixel's tangent plane, raised by a sine of 0.1 so a surface never occludes
+itself), adds the rise in the horizon's sine, attenuated by
+1 - (distance / radius)^2; the result is one minus the mean over directions.
+Directions are weighted evenly, not by cosine, and the bias and attenuation
+discount near and far occluders, so HBAO is an estimate like SSAO's:
+`r_ssaoIntensity` and `r_ssaoPower` set its strength (without them it reads
+4-9 levels lighter than the reference). `r_ssaoSamples` is the depth budget:
+four directions of up to eight steps below 24 samples (Quality's 12 is four of
+three), eight at 24 and above (Ultra's 32 is eight of four). Steps are evenly
+spaced, offset by whole pixels and stop at the view's edge; the sixteen
+patterns turn the directions by a sixteenth of the angle between them, so the
+filter averages 64 or 128 directions. Multi-bounce stays GTAO's: the fit
+expects a visibility.
+
+**GTAO** (`GroundTruthOcclusion` in `glprogs/ssao.fs` and `post_ssao.frag`,
+after Jimenez et al. 2016). Per slice through the view direction it finds the
+highest horizon on each side out to `r_ssaoRadius` and integrates the
+cosine-weighted visible arc between them analytically. `r_ssaoSamples` is the
+depth budget, so GTAO costs about what SSAO does at each preset: one slice of
+up to eight steps a side below 24 samples (Quality's 12 is one slice of six),
+two slices at 24 and above (Ultra's 32 is two of eight). Steps are spaced
+quadratically and offset by whole pixels, so every reconstructed position
+sits on the texel its depth came from. The sixteen sample patterns turn the
+slices by a sixteenth of a half turn, so the separable filter averages
+sixteen (Quality) or thirty-two (Ultra) slice directions per pixel. Horizons
+fade to the surface's own over the last fifth of the radius. GTAO ignores
+`r_ssaoIntensity` and `r_ssaoPower`: its result is a visibility, not an
+artistic curve.
+
+Three corrections that the reference comparison found:
+
+- Slices turn evenly about the view direction in view space and are walked
+  along their own line on the screen. Even turns of the screen direction are
+  uneven about an off-centre pixel's view direction; at the screen's edges
+  that darkened open surfaces by 3-4% (an analytic open floor came out 0.963,
+  the reference 0.998).
+- One slice of an open surface seen at an angle can exceed 1; only the
+  average over slice directions is 1. The occlusion target keeps up to 2 and
+  the resolve clamps, otherwise one-slice GTAO (Quality) darkened every
+  tilted floor to about 0.85.
+- Samples off the view are skipped. A clamped edge texel otherwise stood in
+  as a false wall along the screen's border.
+
+**Multi-bounce and specular occlusion.** Native PBR already folds the field
+through the coloured multi-bounce fit and Lagarde's specular occlusion
+(`PBRMultiBounceAO`, `PBRSpecularOcclusion` in `PBRMath.h`); GTAO gives those
+terms the visibility they expect. Classic surfaces have no albedo at the
+resolve, so they bounce with one grey albedo, `r_ssaoMultiBounceAlbedo`
+(archived, `0.3`, `0` off), in the classic resolve and in the field's classic
+factor alike (`ClassicOcclusionFactor`), which keeps classic pixels identical
+with and without native PBR. SSAO is unchanged.
+
+**Temporal accumulation.** In a jittered view (temporal AA) HBAO and GTAO
+turn their patterns by a quarter pattern per frame (`R_SSAOMethodInfo`), so
+the history accumulates four times the directions; without temporal AA the patterns
+hold still and nothing crawls. Screenshot frames render without jitter by
+design, so captures never show the turn: it is checked by its code path only.
+
+**The reference** (`ReferenceOcclusion`, developer only). 256
+cosine-weighted rays per pixel, each marched in 24 steps to the radius
+through the depth buffer, full resolution and unfiltered
+(`R_SSAOHalfResolution` and `R_SSAOFiltered` both decline it). A ray is
+occluded where it passes behind a visible surface within the radius of the
+pixel, which is the scene GTAO's horizons describe. Without that radius test
+a cable well in front of a wall occluded the whole wall behind it: the
+classic screen-space halo, in the reference instead of in the method.
+
+**Qualification** (`tools/tests/renderer_ao_reference.py`, 1280x800, three
+stock poses, both renderers). Mean absolute difference from the reference in
+8-bit levels over the pixels any method occludes; "halo" is the mean
+darkening beyond the reference within four pixels of a silhouette in the lit
+frame:
+
+| Pose | Tier | SSAO error | HBAO error | GTAO error | SSAO halo | HBAO halo | GTAO halo |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| storage2 | Quality | 7.14 | 6.21 | 4.67 | 3.7-4.1 | 2.4-2.8 | 1.2-1.3 |
+| storage2 | Ultra | 6.95 | 6.09 | 3.73 | 3.6-3.9 | 3.4-3.9 | 1.1-1.2 |
+| hub2 | Quality | 5.90 | 5.91 | 4.16 | 2.5-2.6 | 2.8-2.9 | 1.2 |
+| hub2 | Ultra | 5.83 | 6.09 | 3.37 | 2.6-2.8 | 3.5-3.7 | 1.0 |
+| hub2, looking down | Quality | 3.42 | 3.35 | 2.93 | 1.0 | 1.8 | 0.6 |
+| hub2, looking down | Ultra | 3.39 | 3.58 | 2.45 | 1.0 | 2.4 | 0.6 |
+
+GTAO is 15-50% closer to the reference than SSAO everywhere and darkens
+silhouettes a third to a half as much. HBAO, at the shipped
+`r_ssaoIntensity` 1.35 and `r_ssaoPower` 1.6, is as close as SSAO overall
+(closer in storage2, up to 0.26 levels further in hub2) with somewhat more
+silhouette darkening; at intensity 1 and power 1 it had the least halo of all
+(0.2-0.5) but read 4-9 levels lighter than the reference. Crawl, the part of a method's change
+under a 1.5-unit sideways move that the reference's own change does not
+explain, is 2.5 against SSAO's 3.5 levels in storage2, 2.4 against 2.7 in
+hub2, and 1.6 for both looking down (HBAO 3.1, 2.6 and 1.6). OpenGL and
+Vulkan agree to 0.001-0.01 levels on average for HBAO and GTAO alike. GTAO with 4x MSAA (effective 4) and at 75%
+resolution scale draws on both renderers with no validation messages and
+agrees across them to 0.006 levels.
+
+The PBR laboratory runs every SSAO control with HBAO and GTAO too
+(`hbao-*`, `gtao-*`, 20/20 on OpenGL, the native OpenGL owner and Vulkan):
+native PBR keeps its direct light exactly, its indirect light darkens,
+classic pixels and the debug view match a classic-only frame exactly, and
+forced half resolution stays within the half-resolution limits with no bias.
+
+Not covered here: VR stereo draws each eye as its own view through the same
+passes, and the HBAO and GTAO kernels use only the GLSL 1.10 constructs
+SSAO already uses, so they are available wherever SSAO is; neither VR
+headsets nor the GLES/mobile tiers were run. A preset decision between the
+methods is the owner's, after the cost below.
+
+**Cost** (2560x1440, hidden window at 60 Hz on a GPU other sessions were
+using, so the low end of each distribution is the uncontended cost). Vulkan:
+the minimum over 600 frames of the SSAO phase (occlusion, both filter passes
+and the resolve), two launches each. OpenGL has no SSAO pass timer: the 5th
+percentile of the whole GPU frame in alternating windows of one launch,
+against SSAO off.
+
+| Pose | Tier | Vulkan SSAO | Vulkan HBAO | Vulkan GTAO | OpenGL SSAO | OpenGL HBAO | OpenGL GTAO |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| hub2 | Quality | 0.38 | 0.37 | 0.33 | +1.08 | +1.27 | +1.07 |
+| storage2 | Quality | 0.51 | 0.46 | 0.43 | +1.66 | +1.50 | +1.68 |
+| hub2 | Ultra | 1.81 | 1.46 | 1.35 | +2.34 | +1.95 | +1.96 |
+| storage2 | Ultra | 2.79 | 2.16 | 1.88 | +2.92 | +2.51 | +2.45 |
+
+GTAO costs the same as SSAO or up to a third less at the same sample
+budget: its steps run along lines from the pixel instead of a spiral around
+it, which the texture cache prefers. HBAO lies between them on Vulkan and at
+Ultra on OpenGL, and within 0.2 ms of SSAO at Quality on OpenGL. Both fit
+every FPS-01 tier SSAO fits. The reference costs several frames' worth and never belongs
+in a preset. The filter itself, measured the same way against the old
+unfiltered SSAO before this work, costs about 0.3 ms on Vulkan at both tiers.
 
 ### Portal-sky mask, 5 November 2026
 

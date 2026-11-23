@@ -905,11 +905,15 @@ def validate_remote_dictionary_authority() -> None:
     require(client, "SetCVarsFromDictByFlags( info, CVAR_USERINFO )", "client userinfo authority")
     require(client, "SetCVarsFromDictByFlags( info, CVAR_NETWORKSYNC )", "client sync authority")
     require(server, "SetCVarsFromDictByFlags( *gameInfo, CVAR_USERINFO )", "listen-server userinfo authority")
-    # Playback start, replay reset and a keyframe jump each restore recorded map state.
-    if demo.count("SetCVarsFromDictByFlags( sessLocal.mapSpawnData.syncedCVars, CVAR_NETWORKSYNC )") != 3:
+    # Playback start and replay reset restore recorded map state through
+    # ApplyPlaybackNetworkState (MP-22), and a keyframe jump on its own.
+    if demo.count("SetCVarsFromDictByFlags( sessLocal.mapSpawnData.syncedCVars, CVAR_NETWORKSYNC )") != 2:
         raise AssertionError("MVD start/reset/keyframe must each apply only NETWORKSYNC CVars")
-    if demo.count("SetCVarsFromDictByFlags(") != 3:
+    if demo.count("SetCVarsFromDictByFlags(") != 2:
         raise AssertionError("MVD playback applies recorded CVars outside the NETWORKSYNC paths")
+    if demo.count('ApplyPlaybackNetworkState( networkState, "initial" )') != 1 or \
+            demo.count('ApplyPlaybackNetworkState( playbackNetworkState, "reset" )') != 1:
+        raise AssertionError("MVD start and reset must both restore state through ApplyPlaybackNetworkState")
 
     for source, label in (
         (engine_bitmsg, "engine delta dictionary"),
@@ -1396,6 +1400,123 @@ def validate_mp_audit_round_2026_11_17() -> None:
     reject(capture, "gameTime - lastSnapshotGameTime < static_cast<int>( header.snapshotDelay )", "MVD pacing on the 16 ms label")
 
 
+def validate_password_cvars_private() -> None:
+    """22 November 2026: the game's passwords are private before the game module is loaded.
+
+    A private cvar is kept out of the console history, the log's parsed command line, listings
+    and the config, but only once it is registered. The main menu runs the single-player game
+    module, so a password cvar that only the multiplayer module declared was still an ordinary
+    cvar when a host typed it there or passed it on the command line. The engine declares them."""
+    network = read("src/framework/async/AsyncNetwork.cpp")
+    for name in ("g_refPassword", "net_serverAdminPassword", "net_clientAdminPassword"):
+        lines = [line for line in network.splitlines() if f'( "{name}", "", ' in line]
+        if len(lines) != 1 or not lines[0].startswith("idCVar") or "idAsyncNetwork::" not in lines[0]:
+            raise AssertionError(f"{name} must be declared once by the engine")
+        require(lines[0], "CVAR_SYSTEM | CVAR_NOCHEAT | CVAR_PRIVATE | CVAR_CASE_SENSITIVE", f"{name} engine declaration")
+        for flag in ("CVAR_ARCHIVE", "CVAR_SERVERINFO", "CVAR_USERINFO", "CVAR_NETWORKSYNC"):
+            reject(lines[0], flag, f"{name} engine declaration")
+    game = [line for line in read_game("src/mpgame/gamesys/SysCvar.cpp").splitlines() if line.startswith("idCVar g_refPassword(")]
+    if len(game) != 1:
+        raise AssertionError("the multiplayer module declares g_refPassword once")
+    require(game[0], '"",\t\t\t\t\tCVAR_GAME | CVAR_PRIVATE | CVAR_CASE_SENSITIVE,', "g_refPassword game declaration")
+    reject(game[0], "CVAR_ARCHIVE", "g_refPassword game declaration")
+    reject(read_game("src/mpgame/gamesys/SysCvar.cpp"), "AdminPassword", "the admin passwords are the engine's cvars")
+    common = read("src/framework/Common.cpp")
+    require_before(common, "\t\tInitGame();", "Printf( \"Command line (parsed):\\n\" );", "the command line is echoed after the game is up")
+    require_before(common, "if ( cvarSystem->CommandContainsPrivateCVar( lineText ) ) {",
+                   "Printf( \"  %d: <private command redacted>\\n\", i );", "private startup command redaction")
+
+
+def validate_server_moderation() -> None:
+    """MP-18 (22 November 2026): bans by address, the per-address connection limit, the chat
+    flood window, the name policy and the admin log. tools/tests/mp_moderation.py runs the
+    engine-free core and pins each console command."""
+    core = read_game("src/mpgame/mp/Moderation.h")
+    for cap in (
+        "static const int MP_MOD_MAX_BANS = 512;",
+        "static const int MP_MOD_MAX_MUTES = 64;",
+        "static const int MP_MOD_MIN_PREFIX_V4 = 8;",
+        "static const int MP_MOD_MIN_PREFIX_V6 = 16;",
+        "static const int MP_MOD_NAME_VISIBLE_MAX = 32;",
+        "static const int MP_MOD_FLOOD_MAX_MESSAGES = 16;",
+        "static const int MP_MOD_LINE_BYTES = 512;",
+        "static const int MP_MOD_LOG_LINE_BYTES = 1024;",
+        "static const mpModTime_t MP_MOD_MAX_DURATION_SECONDS = 10LL * 365 * 24 * 3600;",
+    ):
+        require(core, cap, "moderation caps")
+    add = function_body(core, "inline int MPModBanAdd(", "ban list add")
+    require_before(add, "if ( !MPModRangeIsAllowed( address, prefixBits ) ) {", "index = list.count++;",
+                   "a range too wide to be a ban is refused before it is stored")
+    require_before(add, "if ( list.count >= MP_MOD_MAX_BANS ) {\n\t\t\treturn -1;", "index = list.count++;", "a full ban list refuses")
+    require(function_body(core, "inline int MPModBanFind(", "ban list find"), "!MPModBanExpired( ban, now )", "an expired ban matches nobody")
+    parse = function_body(core, "inline bool MPModParseAddress(", "address parser")
+    require(parse, "if ( length <= 0 || length >= 128 ) {", "address text is bounded before it is read")
+    require(parse, "static const unsigned char mapped[ 12 ]", "an IPv4-mapped address is its IPv4 address")
+    require(function_body(core, "inline void MPModCopyText(", "stored text"),
+            "if ( bytes == 0 || value < 0x20 || value == 0x7f || ( value >= 0x80 && value <= 0x9f ) ) {",
+            "control characters and bytes that are not UTF-8 never reach the ban list or its file")
+    log_value = function_body(core, "inline void MPModLogValue(", "admin log value")
+    require(log_value, "} else if ( code == '\"' || code == '\\\\' ) {", "player text is escaped in the admin log")
+    require(log_value, "ufffd", "a byte that is not UTF-8 is written as U+FFFD, so a log line is always valid")
+    require(core, "inline int MPModEscapeLength( const char *s ) {", "names are read with the engine's own escape lengths")
+    require(core, "static const int MP_MOD_PLAYER_PREFIX_V6 = 64;", "a player over IPv6 is their /64")
+    loader = read_game("src/mpgame/mp/ModerationFile.h")
+    require(loader, "static const int MP_MOD_BANLIST_MAX_BYTES = 512 * 1024;", "ban file size cap")
+    require(loader, "static const int MP_MOD_BANLIST_MAX_KEPT_LINES = 256;", "ban file kept-line cap")
+
+    server = read("src/framework/async/AsyncServer.cpp")
+    connect = function_body(server, "void idAsyncServer::ProcessConnectMessage(", "connect")
+    require_before(connect, "ValidateChallenge( from, challenge, clientId )", "idAsyncNetwork::serverMaxClientsPerAddress.GetInteger()",
+                   "the per-address limit counts only proven addresses")
+    require_before(connect, "if ( sameAddress >= perAddressLimit ) {", "game->ServerAllowClient(",
+                   "the per-address limit refuses before the game is asked")
+    require(read("src/framework/async/AsyncNetwork.cpp"),
+            'idAsyncNetwork::serverMaxClientsPerAddress( "net_serverMaxClientsPerAddress", "0",', "the per-address limit is off by default")
+
+    network = read_game("src/mpgame/Game_network.cpp")
+    for signature in ("allowReply_t idGameLocal::ServerAllowClient(", "allowReply_t idGameLocal::RepeaterAllowClient("):
+        require_before(function_body(network, signature, signature), "if ( ModerationRefuseBanned( IP ) ) {", "si_pure",
+                       "a banned address is refused first")
+    reject(network, "IsGuidBanned", "a ban keyed to the GUID no client sends")
+    reliable = function_body(network, "void idGameLocal::ServerProcessReliableMessage(", "client reliable messages")
+    if reliable.count("if ( !ModerationAllowChat( clientNum, true ) ) {") != 2:
+        raise AssertionError("chat and voice-menu lines both answer to the mute and the flood window")
+    require_before(reliable, "RELIABLE_FLOOD_CHAT_DELAY ) ) {", "if ( !ModerationAllowChat( clientNum, true ) ) {",
+                   "the per-line delay still runs ahead of the flood window")
+    cvars = read_game("src/mpgame/gamesys/SysCvar.cpp")
+    for declaration in (
+        'idCVar g_chatFloodMessages(\t\t"g_chatFloodMessages",\t\t"4",',
+        'idCVar g_chatFloodSeconds(\t\t\t"g_chatFloodSeconds",\t\t"4",',
+        'idCVar g_chatFloodWait(\t\t\t\t"g_chatFloodWait",\t\t\t"10",',
+        'idCVar g_adminLog(\t\t\t\t\t"g_adminLog",\t\t\t\t"1",',
+        'idCVar g_reservedNames(\t\t\t\t"g_reservedNames",\t\t\t"admin;console;referee",',
+    ):
+        require(cvars, declaration, "moderation defaults")
+    names = function_body(read_game("src/mpgame/Game_local.cpp"), "const idDict* idGameLocal::SetUserInfo(", "user info")
+    require_before(names, "MPModCleanName(", "MPModNameIsNumeric(", "the name policy runs on every server-side name")
+    require(names, "MP_MOD_NAME_VISIBLE_MAX", "names are bounded")
+
+    # The mute vote, graceful shutdown and the engine's kick in the admin log.
+    require(read("src/framework/async/AsyncNetwork.cpp"),
+            'idAsyncNetwork::serverLastDrop( "net_serverLastDrop", "", CVAR_SYSTEM | CVAR_NOCHEAT | CVAR_ROM,',
+            "only the engine writes the last drop's reason")
+    vote = function_body(read_game("src/mpgame/MultiplayerGame.cpp"), "void idMultiplayerGame::ServerCallPackedVote(", "packed vote")
+    require_before(vote, "if ( ( wireFieldFlags & VOTEFLAG_MUTE ) != 0 && ( wireFieldFlags & VOTEFLAG_KICK ) == 0 ) {",
+                   "voteData.m_kick = msg.ReadByte();", "a mute vote must name its player in the kick field")
+    shutdown = function_body(network, "void idGameLocal::Shutdown_f(", "serverShutdown")
+    require_before(shutdown, 'if ( !ModerationServerCommand( "serverShutdown" ) ) {', "gameLocal.ScheduleServerShutdown(",
+                   "only the server can schedule its shutdown")
+
+    guide = read("docs/user/server-security.md")
+    for token in ("banlist.txt", "logs/admin.ndjson", "net_serverMaxClientsPerAddress", "A ban follows the address, not the person"):
+        require(guide, token, "moderation administrator guidance")
+    for path in (".github/workflows/commit-validation.yml", ".github/workflows/push-verification.yml"):
+        workflow = read(path)
+        require(workflow, "tools/tests/mp_moderation.py \\", f"{path} syntax-check registration")
+        require(workflow, "python tools/tests/mp_moderation.py", f"{path} execution registration")
+    require(read("tools/validation/openq4_validate.py"), '"mp_moderation.py"', "local validation registration")
+
+
 def main() -> None:
     validate_crypto_and_native_vectors()
     validate_secure_random_and_connection_challenges()
@@ -1406,12 +1527,14 @@ def main() -> None:
     validate_rcon2_flow()
     validate_pure_admission_fail_closed()
     validate_private_cvar_handling()
+    validate_password_cvars_private()
     validate_remote_dictionary_authority()
     validate_network_rate_budget()
     validate_channel_and_message_abuse_bounds()
     validate_session_lifecycle_and_flood_bounds()
     validate_protocol_2_42()
     validate_mp_audit_round_2026_11_17()
+    validate_server_moderation()
     validate_documentation_and_registration()
     print("network_security: ok")
 

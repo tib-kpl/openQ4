@@ -55,6 +55,10 @@ idCVar si_motd(						"si_motd",					"",					CVAR_GAME | CVAR_SERVERINFO | PC_CVA
 idCVar si_isBuyingEnabled(			"si_isBuyingEnabled",			"0",		CVAR_GAME | CVAR_SERVERINFO | CVAR_ARCHIVE | CVAR_BOOL, "enable buying in current mode" );
 idCVar si_dropWeaponsInBuyingModes(	"si_dropWeaponsInBuyingModes",	"0",		CVAR_GAME | CVAR_SERVERINFO | CVAR_ARCHIVE | CVAR_BOOL, "dead players drop weapons, even in Buying game modes" );
 // openQ4: the rules a buying server sells by: 0 Quake 4 (retail), 1 The Awakening (mp/Buying.h)
+// openQ4 (PAD-03): the most controller aim assistance this server allows its
+// players. The player's own in_aimAssist is clamped to it, competitive
+// rulesets allow none whatever it says, and bots never use it.
+idCVar si_aimAssist(				"si_aimAssist",					"0",		CVAR_GAME | CVAR_SERVERINFO | CVAR_ARCHIVE | CVAR_INTEGER, "controller stick aim assistance allowed on this server: 0 none, 1 low, 2 standard, 3 high; never under a competitive ruleset", 0, 3 );
 idCVar si_buyingRules(				"si_buyingRules",				"0",		CVAR_GAME | CVAR_SERVERINFO | CVAR_ARCHIVE | CVAR_INTEGER, "buying rules when si_isBuyingEnabled is set: 0 Quake 4, 1 The Awakening", 0, 1 );
 // RITUAL END
 // RAVEN BEGIN
@@ -69,7 +73,8 @@ idCVar si_arenaCampaign(				"si_arenaCampaign",			"0",					CVAR_GAME | CVAR_SERV
 idCVar g_matchProfile(				"g_matchProfile",			"casual",				CVAR_GAME | CVAR_SERVERINFO | PC_CVAR_ARCHIVE, "typed match-rules profile token" );
 idCVar si_matchRules(				"si_matchRules",			"",					CVAR_GAME | CVAR_SERVERINFO | CVAR_ROM, "committed match-rules profile, schema and digest" );
 idCVar si_managedMatch(			"si_managedMatch",		"0",					CVAR_GAME | CVAR_SERVERINFO | CVAR_ROM | CVAR_BOOL, "committed managed-match state for client participation" );
-idCVar g_refPassword(				"g_refPassword",			"",					CVAR_GAME, "one-shot server-only referee credential; converted to a verifier and cleared at session start" );
+// openQ4 (MP-18): private, and declared in the engine as well (AsyncNetwork.cpp) so that it is private before this module loads
+idCVar g_refPassword(				"g_refPassword",			"",					CVAR_GAME | CVAR_PRIVATE | CVAR_CASE_SENSITIVE, "private one-shot server-only referee credential; converted to a verifier and cleared at session start" );
 idCVar g_matchEvidence(				"g_matchEvidence",			"2",					CVAR_GAME | PC_CVAR_ARCHIVE | CVAR_INTEGER, "competitive match evidence: 0 off, 1 final reports, 2 journal and reports", 0, 2 );
 idCVar g_matchSeriesRecoveryId(		"g_matchSeriesRecoveryId",	"0",					CVAR_GAME | PC_CVAR_ARCHIVE, "server-owned active competition-series recovery identity" );
 // bdube: raise player limit
@@ -869,7 +874,12 @@ idCVar si_voteFlags(				"si_voteFlags",				"0",			CVAR_GAME | CVAR_SERVERINFO | 
 																	"bit 16 (+65536) overtime\n"
 																	"bit 17 (+131072) coin toss\n"
 																	"bit 18 (+262144) random map\n"
-																	"bit 19 (+524288) ready all" );
+																	"bit 19 (+524288) ready all\n"
+																	"bit 20 (+1048576) mute player\n"
+																	"bit 21 (+2097152) modifiers\n"
+																	"bit 22 (+4194304) spectator chat\n"
+																	"bit 23 (+8388608) preset\n"
+																	"bit 24 (+16777216) weapon arena" );
 // openQ4 MP-12: casual vote policy. The defaults reproduce the inherited rule
 // (a strict majority of the frozen electorate, no per-map limit, players only).
 idCVar g_votePercent(				"g_votePercent",			"51",			CVAR_GAME | CVAR_ARCHIVE | CVAR_INTEGER, "percentage of the players eligible when a vote starts that must vote yes for it to pass", 1, 100 );
@@ -884,6 +894,30 @@ idCVar si_timeoutLength(			"si_timeoutLength",			"60",			CVAR_GAME | CVAR_SERVER
 idCVar si_spectatorLock(			"si_spectatorLock",			"0",			CVAR_GAME | CVAR_SERVERINFO | PC_CVAR_ARCHIVE | CVAR_INTEGER, "during live play: 1 spectators cannot join the game, 2 players cannot leave it either; 0 off", 0, 2 );
 idCVar g_inactivity(				"g_inactivity",				"0",			CVAR_GAME | CVAR_ARCHIVE | CVAR_INTEGER, "seconds a playing human may send no input before being moved to spectators (dropped when spectators are off); 0 off", 0, 3600 );
 idCVar g_pauseOnDisconnect(			"g_pauseOnDisconnect",		"0",			CVAR_GAME | CVAR_ARCHIVE | CVAR_INTEGER, "seconds a casual team match pauses when a playing human disconnects, so they can reconnect; 0 off", 0, 300 );
+// openQ4 MP-18: server moderation (mp/Moderation.h). The flood window is Quake II's
+// flood_msgs, flood_persecond and flood_waitdelay with its defaults.
+idCVar g_chatFloodMessages(		"g_chatFloodMessages",		"4",			CVAR_GAME | CVAR_ARCHIVE | CVAR_INTEGER, "chat lines one player may send within g_chatFloodSeconds before being silenced for g_chatFloodWait; 0 for no limit", 0, 16 );
+idCVar g_chatFloodSeconds(			"g_chatFloodSeconds",		"4",			CVAR_GAME | CVAR_ARCHIVE | CVAR_INTEGER, "length in seconds of the window g_chatFloodMessages counts", 1, 60 );
+idCVar g_chatFloodWait(				"g_chatFloodWait",			"10",			CVAR_GAME | CVAR_ARCHIVE | CVAR_INTEGER, "seconds a player who passed the chat flood window stays silenced", 0, 600 );
+idCVar g_adminLog(					"g_adminLog",				"1",			CVAR_GAME | CVAR_ARCHIVE | CVAR_BOOL, "write kicks, bans, mutes, chat floods and refused connections to logs/admin.ndjson in the save folder" );
+idCVar g_voteMuteMinutes(			"g_voteMuteMinutes",		"10",			CVAR_GAME | CVAR_ARCHIVE | CVAR_INTEGER, "minutes a player stays silenced after a mute vote passes; 0 until unmute or a server restart", 0, 1440 );
+// openQ4 MP-17: player identity. ui_identity travels in the player's userinfo,
+// so a server challenges only a game that answers; the user chose on
+// 23 November 2026 to have it on unless the player turns it off.
+idCVar ui_identity(					"ui_identity",				"1",			CVAR_GAME | CVAR_USERINFO | CVAR_ARCHIVE | CVAR_BOOL, "prove to each server that you are the same player as before, with a key kept only on this computer and different for every server; 0 sends no identity" );
+idCVar g_identity(					"g_identity",				"1",			CVAR_GAME | CVAR_ARCHIVE | CVAR_BOOL, "ask each player whose game offers one for their identity on this server; status shows it, ban id:<identity> bans it, and returning players and the ranking table use it" );
+idCVar g_reconnectRestore(			"g_reconnectRestore",		"300",			CVAR_GAME | CVAR_ARCHIVE | CVAR_INTEGER, "seconds a player who leaves a casual match keeps their team and score for when they return, by identity or by the ghost code they were told; 0 forgets them at once", 0, 3600 );
+// openQ4 MP-12: the intermission. Off by default: a casual server keeps Quake 4's
+// quiet scoreboard until its operator turns this on.
+// openQ4 MP-22: what is done for every match. Words: demo (record it), ss (a
+// screenshot of the result), stats (stats/<match>.json). The server's is in its
+// server info, so players can see that their matches are recorded.
+idCVar ui_autoAction(				"ui_autoAction",			"",				CVAR_GAME | CVAR_ARCHIVE | CVAR_NOCHEAT, "for every match you play: demo records it, ss takes a screenshot of the result, stats writes stats/<match>.json; e.g. \"demo ss stats\"" );
+idCVar si_autoAction(				"si_autoAction",			"",				CVAR_GAME | CVAR_SERVERINFO | CVAR_ARCHIVE | CVAR_NOCHEAT, "for every match the server runs: demo records a multi-view demo, stats writes stats/<match>.json" );
+idCVar g_intermissionAnnounce(		"g_intermissionAnnounce",	"0",			CVAR_GAME | CVAR_ARCHIVE | CVAR_BOOL, "while the final scoreboard is up, name the next map and read out each player's awards" );
+idCVar g_ranking(					"g_ranking",				"0",			CVAR_GAME | CVAR_ARCHIVE | CVAR_BOOL, "keep a local ranking table (ranking.txt): an Elo rating for each identity and game type, updated when a casual match ends; rankings lists it" );
+idCVar g_adminMaxBanMinutes(		"g_adminMaxBanMinutes",		"1440",			CVAR_GAME | CVAR_ARCHIVE | CVAR_INTEGER, "the longest ban, in minutes, a logged-in admin may give a connected player; 0 lets admins ban nobody", 0, 525600 );
+idCVar g_reservedNames(				"g_reservedNames",			"admin;console;referee",	CVAR_GAME | CVAR_ARCHIVE, "player names nobody may take, separated by ';', whatever their case or colours; a player who asks for one gets it with '_' added" );
 
 idCVar g_mapCycle(					"g_mapCycle",				"mapcycle",		CVAR_GAME | CVAR_ARCHIVE, "map cycling script for multiplayer games - see mapcycle.scriptcfg" );
 

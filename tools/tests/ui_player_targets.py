@@ -39,6 +39,7 @@ constexpr int VOTEFLAG_RESTART=1,VOTEFLAG_BUYING=2,VOTEFLAG_TEAMBALANCE=4,VOTEFL
 struct {int GetInteger()const{return 51;}} g_votePercent;
 struct idMath {static int ClampChar(int n){return n;}static int ClampShort(int n){return n;}
     static int ClampInt(int lo,int hi,int n){return n<lo?lo:n>hi?hi:n;}};
+template<class T>T Max(T a,T b){return a>b?a:b;}
 // The buying vote carries the mode: off, Quake 4's rules or The Awakening's (mp/Buying.h).
 enum {BUYING_MODE_OFF,BUYING_MODE_QUAKE4,BUYING_MODE_AWAKENING,BUYING_MODE_COUNT};
 template<class T>struct idList:std::vector<T>{int Num()const{return int(this->size());}void Clear(){this->clear();}void Append(T v){this->push_back(v);}int FindIndex(T v)const{auto i=std::find(this->begin(),this->end(),v);return i==this->end()?-1:int(i-this->begin());}};
@@ -80,6 +81,11 @@ struct Network {std::vector<idBitMsg> sent;void ClientSendReliableMessage(const 
 struct voteStruct_t {int m_fieldFlags=0,m_kick=-1;idStr m_map;int m_gameType=0,m_timeLimit=0,m_fragLimit=0,m_tourneyLimit=0,m_captureLimit=0,m_buying=0,m_teamBalance=0,m_controlTime=0,
     m_roundLimit=0,m_ruleset=0,m_instagib=0,m_overtime=0;};
 struct serverAdminData_t {};
+// MP-18: the Admin page's Ban bans the player's address (mp/Moderation.h); a bot has none.
+typedef long long mpModTime_t;
+struct mpModAddress_t {unsigned char bytes[16]={};int family=0;};
+static int MPModAddressBits(const mpModAddress_t& a){return a.family==4?32:a.family==6?128:0;}
+static int MPModPlayerPrefixBits(const mpModAddress_t& a){return a.family==6?64:MPModAddressBits(a);}
 static bool IsValidVotePlayerSlot(int);
 static bool IsCurrentPlayerTarget(int,int);
 struct idMultiplayerGame {
@@ -105,8 +111,13 @@ struct idMultiplayerGame {
     bool VoteKickTargetCurrent()const;void CheckVote();bool AbortInheritedVoteForManagedMatch(){return false;}
     void ClientUpdateVote(int v,int,int,const voteStruct_t&){updates.push_back(v);}
     void ExecuteVote(){++executed;}
-    void HandleServerAdminKickPlayer(int);void HandleServerAdminBanPlayer(int);void HandleServerAdminForceTeamSwitch(int);
+    void HandleServerAdminKickPlayer(int);void HandleServerAdminBanPlayer(int,int=0,int=0);void HandleServerAdminForceTeamSwitch(int);
     static void ServerAdminTarget_f(const idCmdArgs&);
+    // MP-18: the Admin page's ban length and reason; the vote payloads MP-14/16 added
+    int retainedAdminBanLength=4,retainedAdminBanReason=0;static const int RETAINED_ADMIN_BAN_REASONS=6;
+    static int RetainedAdminBanSeconds(int){return 0;}static bool RetainedAdminBanLengthKnown(int s){return s==0;}
+    static const char* RetainedAdminBanReasonText(int){return "";}
+    static void WriteVoteExtensionFields(idBitMsg&,const voteStruct_t&){}
     const char* RetainedAdminRefusal(int);
     bool Handle(const char* verb,std::vector<std::string> values){
         if(!admin)return false;idStr sub(verb);idCmdArgs args{values};int icmd=0;
@@ -127,6 +138,14 @@ struct Game {
     idDict* GetUserInfo(int i){return &userInfo[i];}
     bool IsTeamGame()const{return team;}
     template<class... T>void Warning(T...){}
+    bool addressed=true;std::vector<std::string> logged;
+    void ModerationLogClient(const char* event,const char* by,int client,const char*,mpModTime_t){logged.push_back(std::string(event)+" "+by+" "+std::to_string(client));}
+    mpModAddress_t GetClientModAddress(int)const{mpModAddress_t a;a.family=addressed?4:0;return a;}
+    int ServerBan(const mpModAddress_t&,int bits,mpModTime_t seconds,const char*,const char*,const char* by){
+        commandsObject.commands.emplace_back("ServerBan /"+std::to_string(bits)+" "+std::to_string(seconds)+" "+by);return 0;}
+    // MP-17: a connected player's ban covers their range (and their identity); the range is what this test reads
+    int ServerBanClient(int client,mpModTime_t seconds,const char* reason,const char* by){
+        mpModAddress_t address=GetClientModAddress(client);return ServerBan(address,MPModPlayerPrefixBits(address),seconds,"",reason,by);}
 }gameLocal;
 @VALID@
 @CURRENT@
@@ -226,6 +245,14 @@ int main(){
     for(const char* operation:{"adminKick","adminBan","adminSwitch"}){
         m.Handle("adminSelect",{"31",identity});commandsObject.commands.clear();m.Handle(operation,{"31",identity});assert(commandsObject.commands.size()==1);
     }
+    // Ban bans the selected player's whole address for good, and is the admin's act; Quake 4 ran
+    // "kick <n> ban", which the engine read as a kick.
+    m.Handle("adminSelect",{"31",identity});commandsObject.commands.clear();g.logged.clear();m.Handle("adminBan",{"31",identity});
+    assert(commandsObject.commands.size()==1&&commandsObject.commands[0]=="ServerBan /32 0 admin"&&g.logged.empty());
+    // A bot has no address: Ban removes it as a kick does, and the kick is recorded.
+    g.addressed=false;m.Handle("adminSelect",{"31",identity});commandsObject.commands.clear();m.Handle("adminBan",{"31",identity});
+    assert(commandsObject.commands.size()==1&&commandsObject.commands[0].rfind("kick 31",0)==0);
+    assert(g.logged.size()==1&&g.logged[0]=="kick admin 31");g.addressed=true;
     m.Handle("adminSelect",{"31",identity});++g.generations[31];commandsObject.commands.clear();
     for(const char* operation:{"adminKick","adminBan","adminSwitch"})m.Handle(operation,{"31",identity});
     assert(commandsObject.commands.empty());m.retainedAdminClient=-1;m.Handle("adminSelect",{"31",identity});assert(m.retainedAdminClient==-1);

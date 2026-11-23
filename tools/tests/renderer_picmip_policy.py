@@ -260,10 +260,70 @@ def test_reduction_changes_reload_images_without_a_restart():
         "image_downSizeBumpLimit",
     ):
         assert_true(f"&{cvar}" in image_manager, f"{cvar} changes should trigger an image reload")
+    def body(source, signature):
+        text = source[source.index(signature):]
+        return text[:text.index("\n}\n")]
+
+    check = body(image_manager, "void idImageManager::CheckCvars() {")
+    apply = body(image_manager, "void idImageManager::ApplyPendingImageCvars( bool finishReloads ) {")
     assert_true(
-        "ReloadImages( true, true );" in image_manager,
-        "a reduction change should force a reload of every file-backed image",
+        "ApplyPendingImageCvars( false );" in check and "ReloadImages(" not in check + apply
+        and "ReloadReductionChangedImages();" in apply,
+        "a reduction change should reload only the images it reaches, not the whole catalogue",
     )
+    assert_true(
+        "PendingReductionReloads() <= 0" in check,
+        "the per-frame check keeps running while queued images remain, with no cvar change",
+    )
+    assert_true(
+        "ContinueReductionReloads( finishReloads ? 0.0 : static_cast<double>( Max( 0, image_reloadFrameMsec.GetInteger() ) ) );" in apply,
+        "queued images reload within image_reloadFrameMsec a frame, or all at once when finishing",
+    )
+    needs = body(image_manager, "static bool R_ImageNeedsReductionReload( idImage *image ) {")
+    assert_true(
+        "!image->IsFileBacked() || R_IsMutableRenderImage( image ) || !image->IsLoaded()" in needs
+        and "!R_ImagePolicyShouldReload( image )" in needs
+        and "image->ReductionInputsChanged() || R_ImageHeldBelowRequest( image )" in needs,
+        "only resident file-backed images whose key moved, or that Vulkan held below their request, are reloaded",
+    )
+    queue = body(image_manager, "int idImageManager::ReloadReductionChangedImages() {")
+    assert_true(
+        "R_ImageNeedsReductionReload( image )" in queue and "ClearReductionReloads();" in queue
+        and "->Reload(" not in queue,
+        "a change builds a fresh queue from every image and reloads nothing itself",
+    )
+    step = body(image_manager, "bool idImageManager::ContinueReductionReloads( double budgetMsec ) {")
+    assert_true(
+        step.index("workThisFrame > 0 && !finishing && R_ReductionReloadClockMsec() - frameStart >= budgetMsec")
+        < step.index("if ( !R_ImageNeedsReductionReload( image ) ) {")
+        < step.index("deferred = image->ReloadOrDefer( job );"),
+        "each frame does at least one step, stops at its budget, and checks every image again at its turn",
+    )
+    assert_true(
+        "R_RendererDeviceAwaitsRestart()" in step and "ClearReductionReloads();" in step,
+        "a failed device drops the queue: its restart reloads everything",
+    )
+    for signature in ("void idImageManager::PurgeAllImages() {", "void idImageManager::Shutdown() {"):
+        assert_true("ClearReductionReloads();" in body(image_manager, signature),
+                    f"{signature} must drop the queue of image pointers")
+    end_load = body(image_manager, "void idImageManager::EndLevelLoad() {")
+    assert_true(
+        end_load.index("LoadLevelImages( true );") < end_load.index("ApplyPendingImageCvars( true );"),
+        "a change pending over a level load is finished behind its loading screen",
+    )
+    image_load = read_repo_file(Path("src/renderer/Image_load.cpp"))
+    load = image_load[image_load.index("void idImage::ActuallyLoadImage( bool fromBackEnd ) {"):]
+    assert_true(
+        load.index("imageConsumedLoad_t consumedLoad(*this);") < load.index("loadedReductionKey = CurrentReductionKey();")
+        < load.index("loadedReductionKey = reductionKey_t();"),
+        "every file-backed load records its key; a prepared recovery candidate leaves it unknown",
+    )
+    key = image_load[image_load.index("idImage::reductionKey_t idImage::CurrentReductionKey() const {"):]
+    key = key[:key.index("\n}\n")]
+    for snippet in ("R_GetImageDownsizePolicy( GetName(), usage, allowDownSize, key.policy );",
+                    "R_DecodedImageCompression( usage, cubeFiles, allowDownSize, GetName(), color );",
+                    "image_usePrecompressedTextures.GetInteger();"):
+        assert_true(snippet in key, f"the reduction key should hold {snippet}")
     assert_true(
         "void idImageManager::ReloadImages( bool all, bool fileBackedOnly ) {" in image_manager,
         "a reload should be able to restrict itself to images that have a file behind them",
@@ -274,8 +334,11 @@ def test_reduction_changes_reload_images_without_a_restart():
         "reallocates it with no texels - which empties the generated glyph atlases",
     )
     assert_true(
-        "if ( insideLevelLoad ) {" in image_manager,
-        "a level load already touches every image, so the reload must not double up on it",
+        check.index("if ( insideLevelLoad || R_ImagePolicyActive() ) {")
+        < check.index("ApplyPendingImageCvars( false );")
+        and "R_ImageReductionCvarsChanged( true );" not in check,
+        "a change during a level load or a checked attempt stays pending, flags still set, "
+        "so the images the load kept resident are reloaded after it",
     )
 
     # Every cvar is born CVAR_MODIFIED, so without a startup prime the first
@@ -316,6 +379,86 @@ def test_picmip_is_documented_for_players():
         assert_true(snippet in display_settings, f"missing picmip documentation detail {snippet!r}")
 
 
+def test_reload_decodes_on_workers_from_recorded_reads():
+    """The settings reload decodes 2D sources on image workers from file reads the main thread recorded."""
+
+    def body(source, signature):
+        text = source[source.index(signature):]
+        return text[:text.index("\n}\n")]
+
+    tools_h = read_repo_file(Path("src") / "imagetools" / "ImageTools.h")
+    files = read_repo_file(IMAGE_FILES_CPP)
+    program = read_repo_file(Path("src") / "imagetools" / "Image_program.cpp")
+    binary = read_repo_file(Path("src") / "imagetools" / "BinaryImage.cpp")
+    image_h = read_repo_file(IMAGE_H)
+    image_load = read_repo_file(IMAGE_LOAD_CPP)
+    image_manager = read_repo_file(IMAGE_MANAGER_CPP)
+    tr_main = read_repo_file(Path("src") / "renderer" / "tr_main.cpp")
+
+    # The tape: per thread, a replay never reaches the file system, a miss is recorded as a failure.
+    assert_true("static thread_local idImageFileTape *imageFileTape = NULL;" in files, "the tape is per thread")
+    read = body(files, "static int R_ReadImageSourceFile( const char *name, void **buffer, ID_TIME_T *timestamp ) {")
+    replay = read[read.index("IMAGE_TAPE_REPLAY"):read.index("void *bytes = NULL;")]
+    assert_true("fileSystem" not in replay and "imageFileTape->missed = true;" in replay,
+                "a replayed read is answered from the tape, and a read it does not hold fails the replay")
+    assert_true(read.index("void *bytes = NULL;") < read.index("fileSystem->ReadFileContentStamp( name, &bytes, &stamp );"),
+                "a recording read takes the bytes even when its caller wants only the timestamp")
+    for signature in ("static void LoadTGA( const char *name, byte **pic, int *width, int *height, ID_TIME_T *timestamp ) {",
+                      "static void LoadPNG( const char *name, byte **pic, int *width, int *height, ID_TIME_T *timestamp ) {",
+                      "static void LoadDDS( const char *name, byte **pic, int *width, int *height, ID_TIME_T *timestamp, bool decodeRXGBNormalMap ) {"):
+        loader = body(files, signature)
+        assert_true("fileSystem->" not in loader and "R_ReadImageSourceFile(" in loader,
+                    f"{signature} reads through the tape helpers")
+    assert_true("if ( imageFileTape != NULL ) {" in body(files, "static void LoadJPG( const char *filename, unsigned char **pic, int *width, int *height, ID_TIME_T *timestamp ) {"),
+                "LoadJPG reads through the tape too")
+    resolve = body(files, "bool R_ResolvePreferredDDSImageSource( const char *cname, idStr &ddsName, ID_TIME_T *timestamp, bool allowPrecompressedDDS, bool *precompressedDDS, bool *retailResultSuperseded ) {")
+    assert_true("FindResolve( key, allowPrecompressedDDS )" in resolve and "R_ResolvePreferredDDSImageSourceUntaped(" in resolve,
+                "the dds/ replacement lookup is recorded and replayed, never probed on a worker")
+    assert_true("if ( R_ImageFileTapeRecording() ) {\n\t\t\t\tR_ReadImageSourceFile( preferredDDSName.c_str(), NULL, NULL );" in files,
+                "a timestamp-only probe records the replacement DDS the replay decodes")
+    assert_true("static thread_local char parseBuffer[MAX_IMAGE_NAME];" in program, "image programs parse into a per-thread buffer")
+    assert_true("class idImageFileTape {" in tools_h and "bool	R_ImageFileTapeReplaying();" in tools_h, "the tape is part of imagetools")
+    assert_true("!R_ImageFileTapeReplaying()" in binary, "a worker's block compression runs in its own thread, not in bands")
+    assert_true(tr_main.count("if ( R_ImageFileTapeReplaying() ) { return; }") == 2, "workers leave the frame counters alone")
+
+    # The load: defer at the 2D decode, publish only a result that still fits.
+    load = body(image_load, "void idImage::ActuallyLoadImage( bool fromBackEnd ) {")
+    defer = load.index("route->mode == IMAGE_DECODE_DEFER")
+    assert_true(defer < load.index("route->deferred = true;\n\t\t\t\t\treturn;")
+                < load.index("R_LoadImageProgramForDeclaredUsage( fallbackLoadSourceName, &pic, &width, &height, &sourceFileTime, usage );"),
+                "a deferral records the decode's reads and stops before decoding")
+    publish = load[load.index("route->mode == IMAGE_DECODE_PUBLISH && route->job != NULL"):load.index("if ( !workerResult ) {")]
+    for condition in ("route->job->sourceName.Cmp( fallbackLoadSourceName ) == 0",
+                      "route->job->generatedName.Cmp( generatedName.c_str() ) == 0",
+                      "route->job->usage == usage", "R_SameDownsizePolicy( route->job->policy, consumedDownsize )",
+                      "R_SameDecodeOpts( route->job->opts, opts )", "usage = job.resultUsage;", "im.SwapContent( *job.image );"):
+        assert_true(condition in publish, f"a published result must satisfy {condition}")
+    assert_true("if ( bypassGeneratedFile || publishingWorkerResult ) {" in load,
+                "publishing skips the cache reads the deferral just found missing")
+    reload = body(image_load, "bool idImage::ReloadOrDefer( std::shared_ptr<imageDecodeJob_t> &job ) {")
+    assert_true("consumedPolicy = savedConsumedPolicy;" in reload and "usage = savedUsage;" in reload
+                and "if ( storageGeneration == storageBefore ) {\n\t\tPurgeImage();" in reload,
+                "a deferral leaves the image as it was; a load without storage purges as Reload does")
+    worker = body(image_load, "bool R_RunImageDecodeJob( imageDecodeJob_t &job ) {")
+    assert_true("idScopedImageFileTape replay( &job.tape, IMAGE_TAPE_REPLAY );" in worker and "catch ( ... )" in worker,
+                "the worker decodes from the replayed tape and fails the job on any exception")
+
+    # The workers and the queue.
+    assert_true('idCVar image_reloadWorkers( "image_reloadWorkers", "2"' in image_manager, "two workers by default")
+    pool = image_manager[image_manager.index("class idImageDecodeWorkers {"):image_manager.index("static idImageDecodeWorkers imageDecodeWorkers;")]
+    assert_true("_mm_setcsr( controlWord );" in pool and "R_LowerImageWorkerPriority();" in pool,
+                "workers round as the main thread does and run below it")
+    assert_true("worker.detach();" in pool[:pool.index("void EnsureStarted")], "a static destructor never joins under the loader lock")
+    for signature in ("void idImageManager::PurgeAllImages() {", "void idImageManager::Shutdown() {"):
+        assert_true("R_StopImageDecodeWorkers();" in body(image_manager, signature), f"{signature} stops the workers")
+    step = body(image_manager, "bool idImageManager::ContinueReductionReloads( double budgetMsec ) {")
+    assert_true(step.index("reductionInFlight.front()") < step.index("image->ReloadOrDefer( job )"),
+                "each frame publishes finished decodes, oldest first, before it starts new ones")
+    assert_true("imageDecodeWorkers.WaitFor(" in step and "imageDecodeWorkers.Stop();" in step,
+                "finishing waits for the workers, and a drained queue stops them")
+    assert_true("bool		ReloadOrDefer( std::shared_ptr<imageDecodeJob_t> &job );" in image_h, "the route is part of idImage")
+
+
 def main():
     test_picmip_cvars_are_declared_with_explicit_ranges()
     test_picmip_filter_buckets_are_shared_constants()
@@ -326,6 +469,7 @@ def main():
     test_generated_cache_key_tracks_the_active_reduction()
     test_exact_halvings_reuse_the_mip_chain_filter()
     test_reduction_changes_reload_images_without_a_restart()
+    test_reload_decodes_on_workers_from_recorded_reads()
     test_picmip_is_documented_for_players()
     print("renderer_picmip_policy: ok")
     return 0

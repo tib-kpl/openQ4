@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 #define __SESSIONLOCAL_H__
 #include "NativeInputPublications.h"
 #include "PresentationPacing.h"
+#include "LoadingFramePacer.h"
 
 /*
 
@@ -139,6 +140,11 @@ struct demoLibraryEntry_t {
 	idStr					format;
 	idStr					status;
 	idStr					details;
+	// openQ4 MP-22: what demoFind searches
+	idStr					serverName;
+	idStr					players;
+	idStr					recorder;
+	bool					clientView = false;
 };
 
 // A v11 or v12 render demo's time at a frame index: each recorded frame is
@@ -238,7 +244,9 @@ const int MAX_LOGGED_USERCMDS		= 60*60*60;	// one hour of single player, 15 minu
 // undoes (::undo).
 enum {
 	RETAINED_NOTICE_FAVORITE = 1,		// the favorite's star
-	RETAINED_NOTICE_CONTROLLER = 2		// a controller crossed out
+	RETAINED_NOTICE_CONTROLLER = 2,		// a controller crossed out
+	RETAINED_NOTICE_BATTERY = 3,		// a controller: its battery is low, or it started charging
+	RETAINED_NOTICE_NEW_CONTROLLER = 4	// a controller family's first connection: where its prompts are chosen
 };
 enum {
 	RETAINED_NOTICE_UNDO_NONE,
@@ -534,6 +542,15 @@ public:
 							bool persistent );
 	void				ResolveRetainedNotices( int kind );
 	void				UpdateRetainedNotices();
+	void				UpdateControllerNotices();	// openQ4 (PAD-01): pause or HUD notice on loss, battery notices
+	void				UpdateControllerTestPanel();	// openQ4 (PAD-07): the Controls page's live controller state
+	// openQ4 (PAD-05): the on-screen keyboard over the retained screen whose field is being edited
+	idUserInterface *	OnScreenKeyboardOwner();
+	void				UpdateOnScreenKeyboard();
+	void				PublishOnScreenKeyboard();
+	bool				OnScreenKeyboardEvent( const sysEvent_t *event );
+	void				HandleOnScreenKeyboardRequest( const char *request, int key );
+	void				DrawOnScreenKeyboard( int presentationTime );
 	void				HandleRetainedNoticeAction( idUserInterface *gui, int slot );
 	// The stock browser's server tooltip, kept for the hovered row while the
 	// classic main menu runs (idServerScan::GUIUpdateHover).
@@ -624,6 +641,9 @@ public:
 	// called by Draw when the scene to scene wipe is still running
 	void				DrawWipeModel();
 	void				StartWipe( const char *materialName, bool hold = false);
+	// Draws the level's first view once, unseen, before the loading screen
+	// hands over; returns the milliseconds it took (0 when skipped).
+	int					WarmFirstGameFrame();
 	void				CompleteWipe();
 	void				ClearWipe();
 
@@ -675,10 +695,10 @@ public:
 	// we don't want to redraw the loading screen for every single
 	// console print that happens
 	int					lastPacifierTime;
-	// Measured cost of the last blocking-load redraw. The pacifier interval backs
-	// off to a multiple of this so loading-screen presentation can never consume an
+	// Paces blocking-load redraws on a steady cadence and charges each redraw's
+	// measured cost, so loading-screen presentation can never consume an
 	// unbounded share of the load's wall clock on a slow present path.
-	int					lastPacifierDrawMsec;
+	openq4::LoadingFramePacer	loadingFramePacer;
 	bool				loadingAssetQueueActive;
 	int					loadingAssetQueueTotal;
 	int					loadingAssetQueueLoaded;
@@ -705,6 +725,10 @@ public:
 
 	bool				insideUpdateScreen;	// true while inside ::UpdateScreen() or a capture draw (sessionCaptureDrawGuard_t)
 	bool				insidePacifierUpdate;	// prevents recursive loading/network updates
+	// A map change that started from the startup screen, until its loading
+	// screen takes over: the startup view keeps presenting instead of a fade
+	// to black and a black hold.
+	bool				startupLoadingHandoff;
 
 	bool				loadingSaveGame;	// currently loading map from a SaveGame
 	idFile *			savegameFile;		// this is the savegame file to load from
@@ -947,6 +971,11 @@ public:
 	idUserInterface *	retainedGameParent;			// the screen it returns to, and that screen's handler
 	HandleGuiCommand_t	retainedGameParentHandle;
 	idUserInterface *	guiRetainedControls;		// the retained CONTROLS settings page (NULL until it loads)
+	idUserInterface *	guiOnScreenKeyboard;		// the retained on-screen keyboard (NULL until a field first needs it)
+	idUserInterface *	oskOwner;					// the screen whose field it types into while it shows, else NULL
+	int					oskLayer;					// its layer (OnScreenKeyboard.h)
+	bool				oskShift;					// capitals until the next letter
+	bool				oskEnding;					// DONE committed the field: its edit ends once the commit settles
 	idUserInterface *	retainedControlsParent;		// the screen it returns to, and that screen's handler
 	HandleGuiCommand_t	retainedControlsParentHandle;
 	int					retainedControlsCapture;	// the row waiting for a key, or -1
@@ -1026,6 +1055,11 @@ public:
 	void				RefreshDemoLibrary();
 	void				RefreshDemoLibraryList();
 	void				UpdateDemoMenuGui();
+	// openQ4 MP-22: the deck's player list (a multi-view demo's recorded players)
+	static const int	DEMO_PLAYER_ROWS = 16;
+	bool				demoPlayersOpen = false;
+	int					demoPlayerRowSlots[ DEMO_PLAYER_ROWS ] = {};
+	int					demoPlayerRows = 0;
 	bool				HandleDemoMenuCommand( const char *menuCommand );
 	bool				IsDemoPlaybackActive() const;
 	void				SetDemoPaused( bool paused );
@@ -1033,7 +1067,7 @@ public:
 	void				SetDemoSpeed( float speed );
 	bool				SeekDemoMS( int timeMS );
 	bool				SkipDemoMS( int deltaMS );
-	void				StepDemo();
+	void				StepDemo( int frames = 1 );	// openQ4 MP-22: negative steps back
 	void				StopDemoPlayback();
 	
 	void				FinishCmdLoad();

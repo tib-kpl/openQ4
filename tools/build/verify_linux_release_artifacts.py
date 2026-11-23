@@ -136,6 +136,7 @@ def reject_unexpected_binary_variants(
     game_dir = runtime_root / "baseoq4"
     candidates = set(runtime_root.glob("openQ4-client_*"))
     candidates.update(runtime_root.glob("openQ4-ded_*"))
+    candidates.update(runtime_root.glob("openQ4-updater_*"))
     for module_dir in (game_dir, *(runtime_root / name for name in packaged_layer_dirs(runtime_root))):
         candidates.update(module_dir.glob("game-sp_*"))
         candidates.update(module_dir.glob("game-mp_*"))
@@ -476,12 +477,22 @@ def validate_archive_member_name(name: str) -> PurePosixPath:
     return path
 
 
+# The release ships each Linux package as .tar.xz and, for sites that do not
+# take xz (ModDB), the same tar as .tar.gz.
+LINUX_ARCHIVE_READ_MODES = {".tar.xz": "r:xz", ".tar.gz": "r:gz"}
+
+
+def linux_archive_suffix(archive_path: Path) -> str:
+    for suffix in LINUX_ARCHIVE_READ_MODES:
+        if archive_path.name.endswith(suffix):
+            return suffix
+    raise ReleaseArtifactError(
+        "Linux runtime archive must use the expected .tar.xz or .tar.gz suffix: " + archive_path.name
+    )
+
+
 def expected_archive_root_name(archive_path: Path) -> str:
-    suffix = ".tar.xz"
-    if not archive_path.name.endswith(suffix):
-        raise ReleaseArtifactError(
-            f"Linux runtime archive must use the expected {suffix} suffix: {archive_path.name}"
-        )
+    suffix = linux_archive_suffix(archive_path)
     name = archive_path.name[: -len(suffix)]
     if re.fullmatch(r"openq4-[A-Za-z0-9._-]+-linux-(?:x64|arm64)(?:-preview)?", name) is None:
         raise ReleaseArtifactError(f"Linux runtime archive has an unsafe package stem: {name!r}")
@@ -503,7 +514,7 @@ def extract_linux_runtime_archive(archive_path: Path, extraction_root: Path) -> 
     entry_count = 0
 
     try:
-        archive = tarfile.open(archive_path, mode="r:xz")
+        archive = tarfile.open(archive_path, mode=LINUX_ARCHIVE_READ_MODES[linux_archive_suffix(archive_path)])
     except (OSError, tarfile.TarError) as exc:
         raise ReleaseArtifactError(f"Linux runtime archive is unreadable: {archive_path}") from exc
 

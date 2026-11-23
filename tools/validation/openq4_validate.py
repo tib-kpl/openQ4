@@ -214,6 +214,18 @@ def positive_int(value: str) -> int:
     return parsed
 
 
+def shard_spec(value: str) -> tuple[int, int]:
+    """Parse K/N: run the Kth of N interleaved slices of the Python checks."""
+    index_text, separator, count_text = value.partition("/")
+    if not separator:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a K/N shard")
+    index = positive_int(index_text)
+    count = positive_int(count_text)
+    if index > count:
+        raise argparse.ArgumentTypeError(f"{value!r} names shard {index} of only {count}")
+    return index, count
+
+
 def repo_root_from_script() -> Path:
     return Path(__file__).resolve().parents[2]
 
@@ -382,7 +394,28 @@ def install_args(build_dir: Path) -> list[str]:
 
 
 def test_args(build_dir: Path) -> list[str]:
-    return ["test", "-C", str(build_dir), "--print-errorlogs"]
+    args = ["test", "-C", str(build_dir), "--print-errorlogs"]
+    # A runner that is slow across the board (the hosted macOS Intel image)
+    # scales every test's hang guard instead of raising them one by one.
+    multiplier = os.environ.get("OPENQ4_MESON_TEST_TIMEOUT_MULTIPLIER", "").strip()
+    if multiplier:
+        try:
+            factor = float(multiplier)
+        except ValueError:
+            raise SystemExit(f"OPENQ4_MESON_TEST_TIMEOUT_MULTIPLIER must be a number, not {multiplier!r}")
+        if factor <= 0:
+            raise SystemExit("OPENQ4_MESON_TEST_TIMEOUT_MULTIPLIER must be greater than zero")
+        args += ["--timeout-multiplier", multiplier]
+    return args
+
+
+def suite_filter_args(args: argparse.Namespace) -> list[str]:
+    # A suite of repeats that one lane covers (the SYSTEM page's non-English
+    # 'locales') is left out of the others.
+    filtered: list[str] = []
+    for suite in getattr(args, "skip_test_suite", None) or []:
+        filtered += ["--no-suite", suite]
+    return filtered
 
 
 def validation_env(args: argparse.Namespace, root: Path) -> dict[str, str]:
@@ -479,6 +512,7 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         root / "tools" / "tests" / "renderer_selection_startup.py",
         root / "tools" / "tests" / "ui_rendering_settings.py",
         root / "tools" / "tests" / "aas_compiler_contract.py",
+        root / "tools" / "tests" / "stock_aas_availability.py",
         root / "tools" / "tests" / "aas_settings_contract.py",
         root / "tools" / "tests" / "arena_campaign.py",
         root / "tools" / "tests" / "arena_restart_in_place.py",
@@ -493,6 +527,12 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         root / "tools" / "tests" / "async_usercmd_window_contract.py",
         root / "tools" / "tests" / "chat_history.py",
         root / "tools" / "tests" / "mp_client_options.py",
+        root / "tools" / "tests" / "mp_moderation.py",
+        root / "tools" / "tests" / "mp_identity.py",
+        root / "tools" / "tests" / "master_protocol.py",
+        root / "tools" / "tests" / "mp_server_discovery.py",
+        root / "tools" / "tests" / "mp_client_demo.py",
+        root / "tools" / "tests" / "mp_autoaction.py",
         root / "tools" / "tests" / "choice_gui_value_contract.py",
         root / "tools" / "tests" / "list_window_selection_contract.py",
         root / "tools" / "tests" / "loading_pacifier_reentry_contract.py",
@@ -697,6 +737,8 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         root / "tools" / "tests" / "mp_bot_hazards.py",
         root / "tools" / "tests" / "mp_bot_server_menu.py",
         root / "tools" / "tests" / "mp_instagib_contract.py",
+        root / "tools" / "tests" / "mp_casual_match_flow_contract.py",
+        root / "tools" / "tests" / "mp_classic_grapple_contract.py",
         root / "tools" / "tests" / "mp_modifiers_contract.py",
         root / "tools" / "tests" / "mp_map_database_contract.py",
         root / "tools" / "tests" / "mp_client_combat_effects.py",
@@ -752,6 +794,7 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         root / "tools" / "tests" / "renderer_vulkan_gui_upload.py",
         root / "tools" / "tests" / "renderer_mp_flat_items.py",
         root / "tools" / "tests" / "renderer_pbr_materials.py",
+        root / "tools" / "tests" / "parallax_occlusion_contract.py",
         root / "tools" / "tests" / "material_constant_registers_contract.py",
         root / "tools" / "tests" / "material_quality_reparse_contract.py",
         root / "tools" / "tests" / "renderer_gl_window_view_contract.py",
@@ -784,6 +827,7 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         root / "tools" / "tests" / "renderer_shared_domain_targets.py",
         root / "tools" / "tests" / "rigid_body_recovery_diagnostics.py",
         root / "tools" / "tests" / "ai_medic_approach_watchdog.py",
+        root / "tools" / "tests" / "ai_medic_combat_stance_restore.py",
         root / "tools" / "tests" / "savegame_corruption_contract.py",
         root / "tools" / "tests" / "savegame_gui_layout_contract.py",
         root / "tools" / "tests" / "weapon_gui_event_queue_contract.py",
@@ -867,6 +911,7 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         (root / "tools" / "tests" / 'sound_distance.py', []),
         (root / "tools" / "tests" / 'sound_distance_retail.py', []),
         (root / "tools" / "tests" / 'sound_retail_reverb_contract.py', []),
+        (root / "tools" / "tests" / 'sound_volume_retail_contract.py', []),
         (root / "tools" / "tests" / 'sound_screen_shake.py', []),
         (root / "tools" / "tests" / 'audio_decode_budget.py', []),
         (root / "tools" / "tests" / 'audio_memory.py', []),
@@ -928,7 +973,6 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         (root / "tools" / "tests" / 'ui_capture_system_exit.py', []),
         (root / "tools" / "tests" / 'ui_capture_multiplayer_rosters.py', []),
         (root / "tools" / "tests" / 'ui_capture_system_refresh.py', []),
-        (root / "tools" / "tests" / 'ui_player_identity.py', []),
         (root / "tools" / "tests" / 'renderer_vid_restart_route.py', []),
         (root / "tools" / "tests" / 'renderer_image_recovery_owner.py', ['--mutations']),
         (root / "tools" / "tests" / 'renderer_image_recovery_module.py', ['--mutations']),
@@ -969,6 +1013,10 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         (root / "tools" / "tests" / 'vk_display_color_mapping_capture.py', ['--self-test']),
         (root / "tools" / "tests" / 'savegame_restore_matrix.py', ['--self-test']),
         (root / "tools" / "tests" / 'savegame_cross_load.py', ['--self-test']),
+        (root / "tools" / "tests" / 'release_profile_runtime.py', ['self-test']),
+        (root / "tools" / "tests" / 'archived_settings_across_modules.py', []),
+        (root / "tools" / "tests" / 'release_archive_formats.py', []),
+        (root / "tools" / "validation" / 'release_qualification.py', ['self-test']),
         (root / "tools" / "tests" / 'bse_lifecycle_runtime.py', ['--self-test']),
         (root / "tools" / "tests" / 'turbo_lift_runtime.py', ['--self-test']),
         (root / "tools" / "tests" / 'awakening_vehicle_runtime.py', ['--self-test']),
@@ -980,6 +1028,14 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
             failures.append(f"{rel(test_script, root)}: test script was not found")
             continue
         checks.append((test_script, test_args))
+
+    # CI splits the checks across parallel jobs. Interleaving keeps the slow
+    # native-harness checks, which sit together in the list, spread out.
+    shard = getattr(args, "python_shard", None)
+    if shard is not None:
+        index, count = shard
+        checks = checks[index - 1::count]
+        print(f"\n==> Python check shard {index}/{count}: {len(checks)} check(s)", flush=True)
 
     jobs = python_test_jobs(args)
     if jobs <= 1 or args.dry_run:
@@ -1830,12 +1886,12 @@ def validate_windows_symbols(root: Path, install_root: Path, game_dir: Path, arc
     if not (install_root / "OpenAL32.dll").is_file():
         raise ValidationError("Windows staged payload is missing OpenAL32.dll.")
 
+    # The renderer modules and the updater ship beside the engine, and a crash
+    # in one of them is symbolized from the release's symbols archive too.
     required_symbols = {
-        install_root / f"openQ4-client_{arch}.pdb"
+        install_root / f"{name}_{arch}.pdb"
         for arch in arches
-    } | {
-        install_root / f"openQ4-ded_{arch}.pdb"
-        for arch in arches
+        for name in ("openQ4-client", "openQ4-ded", "openQ4-updater", "renderer-gl", "renderer-vk")
     } | {
         game_dir / f"game-sp_{arch}.pdb"
         for arch in arches
@@ -1852,6 +1908,9 @@ def validate_windows_symbols(root: Path, install_root: Path, game_dir: Path, arc
     staged_symbols = (
         sorted(install_root.glob("openQ4-client_*.pdb"))
         + sorted(install_root.glob("openQ4-ded_*.pdb"))
+        + sorted(install_root.glob("openQ4-updater_*.pdb"))
+        + sorted(install_root.glob("renderer-gl_*.pdb"))
+        + sorted(install_root.glob("renderer-vk_*.pdb"))
         + sorted(game_dir.glob("game-sp_*.pdb"))
         + sorted(game_dir.glob("game-mp_*.pdb"))
     )
@@ -2187,6 +2246,20 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=None,
         help="Python validation checks to run at once (default: OPENQ4_PYTHON_TEST_JOBS or the CPU count; 1 runs them in sequence).",
     )
+    parser.add_argument(
+        "--python-shard",
+        type=shard_spec,
+        default=None,
+        metavar="K/N",
+        help="Run only the Kth of N interleaved slices of the Python checks, so CI can split them across jobs.",
+    )
+    parser.add_argument(
+        "--skip-test-suite",
+        action="append",
+        default=[],
+        metavar="SUITE",
+        help="Leave a Meson test suite out of the native tests (repeatable), such as 'locales' on lanes another lane covers.",
+    )
     parser.add_argument("--skip-build", action="store_true", help="Skip Meson setup/compile/install steps.")
     parser.add_argument("--build-gamelibs", action="store_true", help="Deprecated: game modules now build with the engine.")
     parser.add_argument("--game-libs-repo", default="", help="Override the game-source root for validation fixtures; ordinary builds use this checkout.")
@@ -2232,6 +2305,10 @@ def main(argv: list[str]) -> int:
     print(f"Build dir: {build_dir}", flush=True)
     print(f"Build type: {args.buildtype}", flush=True)
     print(f"GameLibs repo: {env['OPENQ4_GAMELIBS_REPO']}", flush=True)
+    if args.python_shard is not None:
+        print(f"Python check shard: {args.python_shard[0]}/{args.python_shard[1]}", flush=True)
+    if args.skip_test_suite:
+        print(f"Skipped native test suites: {', '.join(args.skip_test_suite)}", flush=True)
 
     try:
         check_dirty_worktree(args, root, env)
@@ -2259,7 +2336,7 @@ def main(argv: list[str]) -> int:
                 dry_run=args.dry_run,
             )
             run_command(
-                wrapper + test_args(build_dir),
+                wrapper + test_args(build_dir) + suite_filter_args(args),
                 cwd=root,
                 env=env,
                 title="Meson native tests",

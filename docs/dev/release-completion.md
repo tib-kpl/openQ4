@@ -1,11 +1,817 @@
 # openQ4 release completion and evidence record
 
-**Release status, 11 November 2026:** 0.14.1 is the latest available release,
-replacing 0.13.2. 0.14.0 (`v0.14.000`) was published and then withdrawn because
-it was broken. Entries below dated up to 11 November 2026 shipped in 0.14.1;
-later entries are unreleased development work. Historical CI/publication success
+**Release status, November 2026:** 0.15.0, the Multiplayer Edition, is the
+latest available release, replacing 0.14.1, which replaced 0.13.2. 0.14.0 (`v0.14.000`) was published and then withdrawn because
+it was broken. Entries below dated up to 11 November 2026 shipped in 0.14.1, and
+entries up to 21 November 2026 in 0.15.0; later entries are unreleased
+development work. Historical CI/publication success
 does not restore the withdrawn release. See
 [player release status](../user/release-status.md).
+
+**0.15.0, the Multiplayer Edition:** a minor version, because network
+protocol 2.42 and render demo v14 do not interoperate with 0.14.1. Its
+player-facing notes are [releases/v0.15.0.md](releases/v0.15.0.md).
+
+## Music and ambience keep playing when the game runs slowly, 23 November 2026
+
+- **No more gaps in long tracks on slow frames.** Since 0.14.1, music, ambience
+  loops and long lines that play straight from the game's files were decoded in
+  the background a third of a second per frame. Below about three frames a
+  second, or during a long hitch just after one started, they ran dry, went
+  silent and started again. Each frame now refills the whole queue, up to about
+  a second of sound, as before 0.14.1, while decoding stays in the background.
+- **Back in full after headphones or speakers return.** A track restarted after
+  the audio output was lost now fills its whole buffer at once, instead of
+  playing a third of a second and dropping out again.
+- **What you need to do.** Nothing. Each playing stream keeps 96 KiB more
+  decoded audio, within the existing `s_streamMemoryMB` budget.
+- **Checks.** `audio_output_recovery_runtime.py` passes every stereo and
+  surround check; streams no longer underrun at two frames a second; native
+  stream and queue tests pin the per-frame refill. The release candidate's
+  failure came from a machine too busy to hold the hidden test client near
+  60 Hz and from two harness assumptions, which are fixed; 0.15.0 passes on a
+  quiet machine and fails the same way at two frames a second. The harness now
+  fails such a run as `frames_kept_pace`. Evidence:
+  [audio voice evidence](audio-voice-evidence.md#streams-across-long-frames-and-output-changes-23-november-2026).
+
+## Sunlight and off-centre lamps cast the original shadows with shadow maps on, 23 November 2026
+
+- **Sunlit maps keep their shadows.** With shadow maps on (the Quality tier
+  and above), some outdoor lights lit places the original shadows keep dark.
+  In the multiplayer map q4cmp13 the three sunlights left up to a third of a
+  view lit that should be in shadow; the large fill lights of q4ctf2 did the
+  same to a lesser degree. They now cast the shadows the original game does:
+  the worst sunlight goes from 31% of a view wrongly lit to under 1%.
+- **Lamps mounted outside the area they light stop casting extra shadows.**
+  A lamp whose source sits outside the box it lights, a common way to fake
+  soft fill light, shadowed the area with whatever lies between the two,
+  which the original shadows ignore, and with ground that the original
+  shadows let it shine through. Seen from where a player stands the
+  difference is small (2% of one outdoor view in MCC Landing); seen from the
+  lamp it was up to half the view.
+- **What you need to do.** Nothing. `r_shadowMapPrelightCasters 0` brings the
+  earlier behaviour back for comparison. The original stencil shadows and
+  the Balanced tier are unchanged.
+- **What is not shown.** About a quarter of these lights keep the earlier
+  behaviour: those whose stored shadow volume also holds a see-through
+  grating, and those the map compiler gave no volume. Where the shadow map
+  is coarse, a strip close behind the surface that casts a shadow can be lit
+  that the original shadows keep dark: one light in Air Defense 1 went
+  from 0.15% to 1.9% of a view that way. One graphics card on Windows was
+  measured.
+- **Checks.** The stencil parity scan on OpenGL and Vulkan; the
+  continuous-motion receiver check, the moving-door and caster-cycle
+  scenarios on both; the in-engine shadow self-tests.
+- **Developer detail:** [what the stock volumes hold](shadowmapping-audit-2026-11-09.md#what-the-stock-volumes-hold)
+  and REN-03 in the [roadmap](roadmap.md).
+
+## Logs say why two stock maps' AI cannot path, 23 November 2026
+
+- `game/tram1b` and `game/mcc_1` warned that AI "requested use_aas ... but no
+  such AAS is loaded", directly under a line loading that file. That read like
+  a pathing defect, but it is not one. The shipped `tram1b.aas32` and
+  `mcc_1.aas48` contain no navigation areas, and Quake 4 1.4.2 refuses them
+  too. The AI that ask for them ride trams or are hidden stand-ins that never
+  move. The log now says the file has no navigation areas, and the AI warning
+  names the file that did not load. Gameplay is unchanged. Evidence:
+  [retail baseline ledger](retail-baseline-ledger.md#stock-aas-refusals-on-tram1b-and-mcc_1-23-november-2026).
+
+## Linux downloads as .tar.gz, and a faster, rehearsable release workflow, 23 November 2026
+
+- **Linux packages also as `.tar.gz`.** Each Linux release now offers the
+  same archive as `.tar.gz` beside the `.tar.xz`, for sites that do not take
+  xz archives, such as ModDB. Both hold exactly the same files; the AppImage,
+  update archive and debug symbols are unchanged.
+- **Releases publish sooner.** Publishing 0.15.0 took two dispatches (the
+  first failed after 18 minutes in a Linux check that only releases run) and
+  50 minutes for the run that worked: Linux ARM64 took 30 minutes, 10 of them
+  compressing already-compressed content packs with single-threaded lzma
+  (about 1 to 2 MB/s, for a 1.5% saving). Linux and macOS archives now come
+  from one tar stream through `xz -T0` (fixed block size, so reproducible) and
+  gzip at once; Linux debug symbols use every core; the prepared OpenAL Soft is
+  cached on Windows (3 to 5 minutes per job); compressed archives upload as
+  artifacts without recompression; the publish job checks archives in one pass
+  on parallel threads and runs both update proofs at once; and the Discord job
+  checks out one folder instead of the 3 GB tree.
+- **Rehearse before release day.** `rehearsal: true` runs the whole release
+  from `main` or any branch, every build, package and publication check, and
+  stops before tagging, publishing or announcing.
+- **Evidence.** `release_archive_formats.py` checks that the `.tar.xz` and
+  `.tar.gz` hold exactly the tar the previous writer made, that the gzip
+  header carries no name or time, that reruns are byte-identical, that Python's
+  lzma is the fallback without `xz`, that a truncated stream still fails
+  verification, and pins the workflow's archive, upload, cache and rehearsal
+  wiring. The release, packaging, Linux, macOS and Windows workflow contracts
+  pass. The changes have not run on GitHub yet: the first rehearsal measures
+  them.
+
+## Windows crash reports from the renderers and the updater can be read, 23 November 2026
+
+- **For crash reports.** The Windows symbols download that accompanies each
+  release (`openq4-<version>-windows-<arch>-symbols.zip`) now carries the
+  debug symbols of both renderer modules and the updater, not only the
+  engine, the dedicated server and the game modules. Crashes inside the
+  OpenGL or Vulkan renderer, where many of them happen, can be symbolized from
+  a release again. The game package itself is unchanged.
+- **Evidence.** The REL-04 symbols check of the 0.16.0 candidates found the
+  three PDBs missing. `package_nightly.py` and the stage validator in
+  `openq4_validate.py` now require them. Packaging candidate C2's staged
+  install with the fixed packager gives a byte-identical runtime archive and a
+  symbols archive whose seven PDBs each carry their image's GUID
+  (`release_qualification.py check-symbols`).
+
+## Multiplayer settings and field of view are kept between sessions, 23 November 2026
+
+- **Your multiplayer settings stay set.** openQ4 starts on its single-player
+  game module and loads the multiplayer one only when a match starts. Until
+  then, the multiplayer-only settings in your config (field of view, the HUD's
+  damage numbers, speedometer, input display, item timers, hit sound,
+  crosshair names, team locations and local clock, and the bot and server
+  options of Create Server) were not marked to be saved, so the next time
+  anything changed the config they were dropped and came back at their
+  defaults. They are now kept. 0.15.0 and earlier releases had the same
+  problem.
+- **The multiplayer Player Setup rows always work.** The Create Server and
+  Player Setup settings the engine declares for the menu used to lose their
+  type when a saved config set them, and the menu then could not show or
+  change them on every launch after the first.
+- **A new profile's multiplayer character is a marine.** The shipped
+  configuration names a character the game does not have, and the menu
+  replaced it with the first one in its list, the Failed Transfer monster. It
+  now uses the game's own default marine (Strogg in a team game's Strogg
+  team). A character you picked yourself is unchanged.
+- **What to do.** Nothing. Settings you lose to the old problem return only if
+  you set them again.
+- **Evidence.** Found by the REL-01 release qualification of the 0.16.0
+  candidate `174cb31a4` (`release_profile_runtime.py clean-install`, then
+  reproduced by hand on the official 0.15.0 package): a level start dropped
+  all 21 menu settings, a menu start re-declared them at their defaults, and
+  `g_fov`, `hud_damageNumbers` and `hud_showSpeed` set in a config were gone
+  after one menu start. `archived_settings_across_modules.py` pins the three
+  source changes and fails on the earlier source; the clean-install run now
+  also seeds multiplayer-only settings and requires them to survive a level
+  start and a menu start. The packaged fix is qualified on the next candidate,
+  recorded in [release qualification](release-qualification.md).
+
+## Pick a player by name, step back, export pictures, find demos, 23 November 2026
+
+- **Players.** The playback controls list everyone in a multi-view demo; choose
+  one to follow. `demoPlayers` lists them at the console.
+- **Step back** a frame at a time, as well as forward.
+- **Export.** `demoExport name.mvd 30` writes a demo as PNG pictures for a
+  video editor. Sound is not exported yet.
+- **Find your demos.** The library names the players, or whose view a
+  recording shows, shows a picture from the recording itself, and
+  `demoFind <text>` searches them all.
+- **Markers in your own recordings**, for kills and the match's changes.
+- **Evidence.** `mp_client_demo_smoke.py` and `mp_autoaction_smoke.py` check
+  each on a cheats-off dedicated server (Windows, OpenGL). The new deck
+  buttons were not pressed by a person.
+
+## Record every match automatically, time a demo, and seek recordings faster, 23 November 2026
+
+- **Autoaction.** `ui_autoAction "demo ss stats"` records every match you play,
+  takes a screenshot of the result and writes the result to `stats/`. A server
+  can record and write the stats of every match it runs with `si_autoAction`,
+  which its players can see.
+- **Time a demo.** `timeDemo name.mvd` plays a multi-view demo or your own
+  recording as a benchmark and reports the frame rate.
+- **Faster seeking in your own recordings.** They keep a keyframe every ten
+  seconds, and `mvdRecover` saves one that was cut short.
+- **A clearer refusal.** When a demo's game data differs from yours, the
+  console names the pack that differs.
+- **Evidence.** `mp_autoaction.py`, `mp_client_demo.py`; `mp_autoaction_smoke.py`
+  and `mp_client_demo_smoke.py` on a cheats-off pure dedicated server with
+  bots (Windows, OpenGL). Not run: Vulkan, Linux, macOS and a person watching.
+
+## Record your own view on any server, 23 November 2026
+
+- **Record without hosting.** On a server you joined, `record match_name`
+  records your view; `stopRecord` saves it to **Demos**. `recordNetDemo` does
+  the same.
+- **Watch it as you saw it.** The recording plays back from your point of view,
+  with your HUD, the players and effects around you, pause, speed, stepping and
+  skipping. It cannot follow another player; seeking backwards replays from
+  the start.
+- **Compatibility.** A recording of your own view needs this version or later
+  to play; recordings made by a server are unchanged and play as before.
+- **Evidence.** `mp_client_demo.py` pins the recorder and the player;
+  `mp_client_demo_smoke.py` records on a cheats-off pure dedicated server with
+  two bots and plays the file back to its end (Windows, OpenGL). Not run:
+  Vulkan, Linux, macOS and a person watching a recording.
+
+## The scoreboard names the next map and reads out the awards, 23 November 2026
+
+- **Know where you are going.** With `g_intermissionAnnounce 1`, the
+  scoreboard that ends a casual match names the next map in chat, before the
+  map changes.
+- **An awards reel.** The same scoreboard then reads out each player's
+  end-of-match awards, one every two seconds.
+- **Off unless you turn it on.** Servers keep Quake 4's quiet scoreboard by
+  default; managed matches and the Arena campaign are unchanged.
+- **Evidence.** `mp_casual_match_flow_contract.py` and
+  `mp_map_database_contract.py` pin it; `mp_map_rotation_smoke.py` plays it on
+  a dedicated server with two bots and a hidden client (Windows). Not run:
+  Vulkan, Linux, macOS and a person watching it.
+
+## A master server you can run, and an HTTPS server list, 23 November 2026
+
+- **Run your own master.** `tools/master/openq4_master.py` lists the openQ4
+  servers that announce themselves to it, for IPv4 and IPv6 players, and lists
+  a server only once it has answered the master's own challenge. It needs
+  nothing but Python.
+- **A server list over HTTPS.** The master can write its list to a file for a
+  web server to publish. Set `net_serverListUrl` to that `https://` address and
+  the browser reads it beside the master, listing each server once, so your
+  players still find servers when no master answers.
+- **Nothing changes until you choose to.** The game still asks Quake 4's master
+  first, and reads no HTTPS list until you set one.
+- **Check it from the console.** `NETScan` runs the browser's Internet search,
+  and `listServers` shows what it found.
+- **Evidence.** `master_protocol.py` plays both sides of the protocol against
+  the program over loopback; `mp_server_discovery.py` runs the list reader's
+  native test and pins the browser's wiring; `mp_master_smoke.py` runs the
+  program, a staged dedicated server and a hidden client on loopback (Windows):
+  the server's heartbeat, the master's challenge, the JSON list, and the
+  client's `NETScan` listing the server once with its name and ping. Not run:
+  a deployed master, the HTTPS list against a real certificate, Linux and
+  macOS.
+
+## Servers recognise returning players; identity bans, rankings and your match history, 23 November 2026
+
+- **A dropped connection costs you nothing.** Leave a casual match and come
+  back within five minutes, and you get your team and score back. Your game
+  proves to each server that you are the same player as before, with a key
+  that never leaves your computer and is different for every server, so no
+  two servers can tell they have seen the same player. Nothing is uploaded and
+  there is no account.
+- **No identity?** Turn **Player Identity** off in Player Setup (or set
+  `ui_identity 0`) and your game sends none. The server then tells you a
+  six-letter code; type `ghost <code>` when you come back.
+- **Bans that follow the player.** Banning a player now also bans their
+  identity, so a new address alone does not bring them back. `status` shows
+  identities, and `ban id:<identity>` and `unban id:<identity>` take one.
+- **Rankings, if the server wants them.** `g_ranking 1` keeps a local Elo
+  table by game type, updated when each casual match ends; `rankings` lists it.
+- **Your history.** Your game keeps a line for every match you finish in
+  `profile/history.ndjson`; `history` shows the last ten.
+- **Starting over.** `identityReset confirm` makes you a new player on every
+  server.
+- **Compatibility.** Players and servers on 0.15.0 neither send nor ask for
+  identities and play as before.
+- **Evidence.** `mp_identity.py` runs Ed25519 signing against RFC 8032's
+  vectors and the identity core's native test, and pins the wiring;
+  `mp_identity_smoke.py` qualifies identities, a returning player on both
+  paths, rankings, history, identity bans and `identityReset` on a pure
+  dedicated server with three hidden clients (Windows). Not run: Linux,
+  macOS, IPv6 and a person playing.
+
+## Votes for modifiers, arenas, presets and spectator chat; ban lengths and reasons, 23 November 2026
+
+- **Vote on how the match plays.** `callvote quadhog 1` (or `vampiric`,
+  `frenzy`, or `modifier <name> 0|1`) turns a modifier on or off,
+  `callvote arena rocketlauncher` plays a single-weapon arena and `arena none`
+  ends it, and `callvote preset <name>` applies one of the server's presets.
+  The match restarts with the new rules once the vote passes. A preset sets
+  the game type and limits itself, so it is a vote of its own.
+- **Vote whether spectators talk to the players.** `callvote spectatorchat 1`
+  lets spectators' all-chat reach players during live play.
+- **On the Vote page.** The in-match **Vote** page now offers Quad Hog (in
+  Deathmatch), Vampiric Damage, Weapons Frenzy, a weapon arena, a built-in
+  preset, Spectator Chat and **Mute Instead of Kicking** for the player
+  chosen.
+- **Bans with a length and a reason from the Admin page.** Under **View Ban
+  List**, **Ban Length** (10 minutes to permanent) and **Ban Reason** set
+  what the next **Ban** records, and the ban list shows each ban's reason
+  and time left.
+- **For server operators.** `si_voteFlags` forbids the new votes with bits 21
+  (modifiers), 22 (spectator chat), 23 (presets) and 24 (weapon arenas).
+- **Compatibility.** Players on 0.15.0 can join and vote as before; they do
+  not see the new votes called. A remote admin's Ban on a server running
+  0.15.0 still only kicks.
+- **Evidence.** `mp_vote_extensions_smoke.py` (hidden OpenGL listen server,
+  Deathmatch on `mp/q4dm1` with two paused bots): three refused calls start
+  no vote, then Quad Hog, a rocket arena, spectator chat and the standard
+  preset each pass and apply. `mp_casual_match_flow_contract.py`,
+  `mp_vote_security_contract.py`, `mp_moderation.py` and
+  `mp_match_vote_electorate_contract.py` pin the flags, payloads and Admin
+  page handling. Not run: Vulkan, a dedicated server, a remote client, and a
+  person using the new rows with real input.
+
+## Sharper textures when upscaling, and on Vulkan with NVIDIA cards, 23 November 2026
+
+- **Lower resolution scales keep more texture detail.** When the 3D scene is
+  drawn below your screen's resolution and temporal AA upscales it (the
+  default below 100%, and with dynamic resolution), the world's textures are
+  now drawn from sharper detail levels, which the upscale turns into real
+  detail. At 50% scale the picture holds 16-18% more texture detail and at
+  75% about 5% more, with no added shimmer at rest. `r_temporalAALodBias 0`
+  turns it off. Menus, the HUD and text are untouched, and so is a scene at
+  100%.
+- **Vulkan is as sharp as OpenGL on NVIDIA cards.** Textures seen at an angle
+  were slightly softer under Vulkan than under OpenGL on NVIDIA graphics
+  cards: about 6% less detail in a typical outdoor view and up to 25% on
+  ground seen from above. The cause is how NVIDIA's Vulkan driver filters
+  angled textures, not openQ4's settings: the same code on an Intel GPU does
+  not show it. The Vulkan renderer now corrects for it on that driver, and
+  the two renderers measure the same. `r_vkAnisotropicLodBias 0` turns the
+  correction off. Other graphics cards get no correction.
+- **A sharpness setting of your own.** `image_lodbias` makes the world's
+  textures sharper (negative) or softer (positive), from `-2` to `2` in
+  quarter steps. The default `0` changes nothing.
+- **What is not shown.** One NVIDIA card and driver version were measured; a
+  different driver may need a different amount. Nobody has yet reviewed the
+  sharper upscaled picture in motion by eye, and Linux, macOS and Android were
+  not run. OpenGL ES devices have no such texture setting and are unchanged.
+- **Checks.** The temporal stability gate (14 single-player runs, OpenGL and
+  Vulkan) requires the extra detail and the unchanged stability limits; the
+  temporal qualification, the texture-filter contract and the native
+  resolution-policy test pass.
+- **Developer detail:** [texture detail](temporal-presentation.md#texture-detail-while-upscaling-and-under-vulkan-23-november-2026)
+  and REN-04 in the [roadmap](roadmap.md).
+
+## Controllers: the one in your hands, aim in degrees, gyro, layouts and haptics, 22 November 2026
+
+- **The controller in your hands is the one in charge.** Every connected
+  controller is ready: press a button or push a stick on another and it takes
+  over, with the prompts changing to its buttons and anything the first one
+  held released. **Settings → Controls → Controller → Active Controller** can
+  keep one controller in charge instead, which helps with a Steam Deck and an
+  external pad, or a remapping tool's second, virtual controller.
+- **Losing your controller no longer leaves you helpless.** In single-player
+  the game pauses, and plugging back in does not resume it for you. A
+  multiplayer match cannot pause, so its HUD tells you. You also get one
+  notice when the battery reaches 15% and one when it starts charging.
+- **Stick aim you can set in real units.** A new **Aim** tab has turn speed
+  and look up/down speed in degrees per second, a dead zone for each stick at
+  its centre and at its rim (so a worn stick still reaches full speed), an
+  optional turn boost for fast half turns, and three **Response** presets:
+  Classic (how openQ4 has always aimed), Precise and Dynamic. Turning no
+  longer slows down while you walk.
+- **Aim assist for sticks, off unless you turn it on.** It slows the stick
+  over an enemy and follows part of an enemy's movement while you move a
+  stick. It never pulls the crosshair onto anything, never helps the mouse or
+  gyro, and ignores allies and anything behind a wall. Servers decide how much
+  is allowed in multiplayer: none by default, and never in competitive
+  rulesets.
+- **Gyro aiming with its own settings.** The **Aim** tab also sets how far the
+  view turns for each degree you turn the controller, which movement turns it
+  (Yaw, Roll or Player Space), when it is active (including a button that
+  pauses it so you can re-centre), and a **Calibrate Gyro** button if the view
+  drifts. Mouse settings no longer change gyro aim.
+- **Buttons for everything.** With a vote open the D-pad votes. Holding View
+  with the scoreboard up gives Ready, Spectate, Chat, Team chat and the Buy
+  menu; in the campaign it gives Quick save and Quick load. Voice chat is on
+  D-pad up in a match. **Button Layout** offers Bumper Jumper and two
+  one-handed layouts, and **Reset Controller** and **Reset Keyboard and
+  Mouse** each reset one device without touching the other.
+- **More to feel.** On the **Controller** tab: the trigger you fire with
+  pulses on controllers with trigger motors, a DualSense's trigger resistance
+  follows your weapon, a hit rumbles more on the side it came from, and the
+  controller's light shows your team or your health.
+- **Fixed.** In play, the View button now shows the scoreboard or objectives
+  while held, as the default layout and the guide always said; it used to open
+  the menu. A controller could not turn the view while the mouse's View Filter
+  was on; it can now. Gyro aiming works with the mouse turned off.
+- **What to do.** Nothing. Your dead zone, look sensitivity and gyro speed
+  carry over the first time you start, so your controller feels the same until
+  you change it. If gyro turning or tilting feels reversed, turn on **Invert
+  Gyro Turn** or **Invert Gyro Tilt**: the direction now follows the standard
+  convention and has not yet been checked on every controller.
+- **See what your controller is doing.** **Settings → Controls → Controller →
+  Test Controller** shows both sticks with their dead zones drawn, how far
+  each trigger is pressed, every button lighting as you hold it, the gyro, the
+  battery, and a **Test Rumble** button that runs each motor in turn. If a
+  stick drifts or a button seems dead, this shows whether the game sees it.
+  The first time you connect a kind of controller, two notices point you to
+  **Prompt Style** and **Swap Confirm and Back**.
+- **Type with only a controller.** Select a text field with a controller,
+  such as a save's name, your player name or a server password, press Confirm
+  and an on-screen keyboard appears. It has every letter the game's twelve
+  languages use, and the controller's buttons delete, add a space, move the
+  caret and finish without leaving the keys. Touch and the mouse work on it
+  too. Systems that show their own keyboard (a Steam Deck in game mode,
+  Android) keep using that one.
+- **Not in this increment:** the in-game chat line and the console still need
+  a keyboard, and the new controller settings are not in the classic
+  (`ui_retained 0`) menus, where the three existing controller rows keep
+  working.
+- **Evidence.** Four native policy tests (`openq4-controller-roster`,
+  `-look`, `-gyro`, `-aim-assist`) and twelve scenarios of
+  `tools/tests/controller_runtime.py`, which drive SDL virtual controllers
+  inside the client on `game/airdefense1`: handover and release, pause on
+  loss, both battery notices, turn rates of 157, 90 and 357 degrees per second
+  (Classic, a set speed, Dynamic's boost), gyro turning 90 degrees for a
+  quarter turn whatever the mouse settings, calibration removing an injected
+  bias, the ratchet, haptics and lights reaching a virtual DualSense and not a
+  virtual Xbox pad's triggers, the layouts and resets, aim assist ignoring
+  allies and slowing to 0.45 and 0.75 on a live enemy, and the Controller and
+  Aim tabs driven row by row (a layout, a preset, aim assist and Reset
+  Controller taking effect), and the test panel showing a virtual DualSense's
+  stick, trigger and held button and running its four motors in order, and
+  the on-screen keyboard naming a save with a capital, an accented letter and
+  a Cyrillic one and saving under it. Three more native tests cover the
+  keyboard's layouts and document and the test panel. **Not verified:** any
+  physical controller; a multiplayer session (the HUD notice, the vote and
+  match buttons, the server cap); device buttons or touch on the on-screen
+  keyboard's keys, which the hidden test window cannot take; how any of it
+  feels. The translations of the
+  new menu text are machine-made and await native review.
+- **Developer detail:** [controller experience](controller-experience.md);
+  the hardware checklist is [controller qualification](controller-qualification.md).
+
+## The opening's QUAKE 4 logo shines over the stars again, 22 November 2026
+
+- **No black box behind the title.** With the new interface on, the opening
+  cinematic of Air Defense 1 drew the QUAKE 4 lettering inside an opaque black
+  rectangle that hid the starfield and cut through the emblem. The lettering's
+  stock material adds its light to the scene, but the retained HUD drew the
+  picture with ordinary alpha blending, so its black texels covered what was
+  behind. It now adds its light, as the classic interface always did.
+- **The emblem looks as it did in 2005.** The same moment showed the Quake
+  emblem as a flat orange shape. The stock picture is a dark silhouette inside
+  a soft orange halo; the retained HUD had swapped it for the flat vector
+  emblem. The opening's emblem and the ending's weathered green one are now
+  drawn from the installed pictures, like the lettering.
+- **Same fix elsewhere.** The walker cockpit's mech diagram (`mdisp_mech` in
+  `guis/vehicles/mdisp.gui`) had the same additive-material gap and adds its
+  light too.
+- **Soft focus.** The opening was checked for an authored soft focus on the
+  space backdrop: the shipped intro uses no blur effect, special effect or GUI
+  overlay, so there is nothing to restore. The starfield is plain textures.
+- **Checks.** Captures of the logo on OpenGL and Vulkan with the retained
+  interface now match the classic one; `ui_hud_coverage.py` with the stock
+  asset audit and the `openq4-ui-hud`, `-hud-coverage`, `-remastered-hud` and
+  `-retained-screens-loading-hud` tests pass.
+
+## Vulkan depth captures cost a quarter of what they did, 22 November 2026
+
+- **Smoke, haze and SSAO are cheaper on Vulkan with MSAA on.** Soft particles,
+  the heat haze's depth test, SSAO and the cel ink all read a copy of the
+  scene's depth. Each copy moved the multisampled depth buffer out of the
+  layout it is rendered in and straight back, which on the reference GPU cost
+  far more than the copy itself. The buffer now stays where it is.
+- **What it changes.** GPU time per frame on the reference laptop, hidden
+  window, 2538x1312. At 8 samples (the 0.13.2 Ultra settings) each capture's
+  resolve fell from 0.60 ms to 0.12 ms; outdoor scenes take two a frame (the
+  sky and the main view), so about 1 ms a frame, and indoor scenes about
+  0.5 ms. At today's Ultra (4 samples) it fell from 0.31 ms to 0.08 ms, three
+  times a frame in Air Defense 1. The picture is identical, pixel for pixel,
+  in the four scenes compared.
+- **What is not shown yet.** Frame rates. No fullscreen comparison against
+  0.13.2 has been run, so no frame-rate figure is claimed. OpenGL is
+  unchanged.
+- **For comparison.** `r_vkDepthCaptureLayoutReference 1` restores the old
+  behaviour, and `r_vkGpuPhaseProfile` now reports `feedbackDepthResolve`,
+  `feedbackDepthCopy` and `feedbackColor`.
+- **Checks.** The Vulkan validation layer reports nothing in five scenes; the
+  GPU frame timing contract pins the new phases and the kept layout.
+- **Developer detail:** [performance report, section 19](performance-report.md#19-the-vulkan-depth-capture-fps-06-22-november-2026)
+  and FPS-06 in the [roadmap](roadmap.md).
+
+## The Strogg HUD draws without offscreen passes, 22 November 2026
+
+- **The static on the Strogg gauges costs far less to draw.** After the
+  player's conversion, the HUD's ammo, health and armor gauges carry a moving
+  grain. It was built as a sheet of ten sliding tiles under each gauge's
+  outline, which made the HUD render every gauge through three offscreen
+  targets each frame and rebuild itself every frame. It is now one fixed
+  panel whose texture scrolls, as the heartbeat trace already was. The picture
+  and its motion are the same.
+- **What it changes.** In Storage Terminal 2 a frame with the new HUD now
+  carries 7 two-dimensional views and 18 render-target commands, against 17
+  and 34 before and the classic HUD's 7 and 17; the Marine HUD was already
+  there. The HUD's own share of the main thread fell from 0.37-0.94 ms to
+  0.19-0.33 ms a frame in a hidden-window profile on a shared machine.
+- **What is not shown yet.** Frame rates. The fullscreen comparison against
+  0.13.2 that FPS-06 closes on needs the measurement machine to itself and
+  has not been run, so no frame-rate figure is claimed.
+- **Checks.** The Remastered HUD document test covers the grain's rectangle,
+  texture, tint, scroll rate and reduced-motion rest on both Strogg documents;
+  captures on OpenGL and Vulkan agree with each other pixel for pixel and with
+  the tiled sheet within seven levels of 255.
+- **Developer detail:** [performance report, section 18](performance-report.md#18-the-retained-huds-composition-fps-06-22-november-2026)
+  and FPS-06 in the [roadmap](roadmap.md).
+
+## Server bans that work, mutes and chat limits, 22 November 2026
+
+- **A ban now keeps the player out.** In Quake 4, and in openQ4 up to 0.15.0,
+  the ban list stored an ID the game never sends, and the Admin page's **Ban**
+  button only kicked. `ban` now bans a player's network address, or a whole
+  range of addresses, for a set time or for good, with a reason. The player is
+  removed, and their next connection is refused with "You have been banned
+  from this server." `unban` and `banlist` manage the list, and the Admin
+  page's **Ban** does the same as the command.
+- **Mute a player instead of removing them.** `mute` stops a player's text
+  chat and voice-menu lines reaching anyone, for a set time or until `unmute`.
+  The player is told, can keep playing, and stays muted if they leave and
+  join again. Players can do it themselves with `callvote mute <name>`, for
+  ten minutes by default (`g_voteMuteMinutes`), even on a server that
+  forbids kick votes.
+- **Stop a server without cutting a match short.** `serverShutdown match`
+  tells the players, waits for the match to end, says goodbye and stops the
+  server; `serverShutdown 5m` does the same after a time, with reminders,
+  and `serverShutdown cancel` calls it off. A dedicated server's program
+  exits, so a script can update and restart it.
+- **Chat flooding stops itself.** A player may send four chat lines in any
+  four seconds; one more silences them for ten seconds, and they are told
+  why. `g_chatFloodMessages`, `g_chatFloodSeconds` and `g_chatFloodWait`
+  change the numbers, and `g_chatFloodMessages 0` turns the limit off.
+- **Names that cannot mislead.** Nobody can take `admin`, `console`, `referee`
+  or any name in `g_reservedNames`, whatever colours they add. A name can no
+  longer copy another player's by changing its colours, hold control
+  characters, or show more than 32 characters.
+- **See who is connected.** `status` lists each player's slot, ping, address,
+  and whether they are muted.
+- **A record of every action.** Kicks, bans, lifted bans, mutes, chat-limit
+  silences, refused connections and shutdowns are written to
+  `logs/admin.ndjson` in the server's save folder, one line of JSON each.
+  `g_adminLog 0` turns it off.
+- **A record of every match, if you want one.** `g_matchLog 1` makes the
+  server keep who joined and left, every kill, the scores and the final
+  standings in `logs/match.ndjson`, in the format the broadcast overlay
+  stream already uses. It is off by default and holds no network addresses.
+- **The ban list survives a crash.** It is written to a second file and
+  swapped into place in one step, so an interrupted write cannot leave a
+  list cut short.
+- **An optional limit on players from one address.**
+  `net_serverMaxClientsPerAddress` stops one address filling the server. It is
+  off by default, because players behind one router share an address.
+- **Admins: trusted players who can moderate without rcon.** Give the server
+  a second password (`net_serverAdminPassword`) and a player who knows it can
+  log in with `admin`, then kick, mute and ban connected players from their own
+  console. An admin's ban lasts a day at most (`g_adminMaxBanMinutes`), and
+  an admin cannot lift bans, see addresses, ban a range or stop the server.
+  The password is never sent over the network, and everything an admin does
+  is in the admin log beside their name.
+- **The referee password stays private.** `g_refPassword` is now kept out of
+  the console history and the server's log, as the rcon password already
+  was. Before, a password typed at a console was saved in the history file,
+  and one given on the command line could appear in the log.
+- **Commands do what you typed.** `ban`, `unban`, `mute` and `serverShutdown`
+  read the line as it was typed, at the console and through `rcon`. An IPv6
+  address needs no brackets, a reason can begin with a digit, and an address
+  is banned exactly as written.
+- **IPv6 players cannot step round a ban.** Banning or muting a connected
+  IPv6 player covers their whole `/64`, and the per-address limit counts it
+  as one address.
+- **The ban list is never overwritten by mistake.** If the server cannot use
+  `banlist.txt` (too large, more than 512 bans, saved in the wrong
+  encoding), it says so, leaves the file as it is and keeps the bans it
+  already holds.
+- **A mute cannot be talked round.** A muted player keeps the name and clan
+  tag they had, and names can no longer hide a reserved word behind colour
+  codes, icons or invisible characters.
+- **Admins stay logged in across map changes**, and the host can list them
+  (`admin`), end a login (`admin revoke`) or turn admin logins off
+  (`admin off`). An admin password must be at least 8 bytes and is taken as
+  soon as it is set.
+- **What to do.** Server hosts need to change nothing. Bans made before this
+  never worked; a ban list left by Quake 4 is kept as comment lines in the new
+  `banlist.txt`. Run the commands at the server's console, as the host of a
+  server started from the game, or with `rcon` in front. Players will notice
+  only the chat limit.
+- **Limits.** A ban follows the address, not the person: a changed address
+  gets back in, and a shared address bans everyone behind it. Bans tied to the
+  player wait for player identity. The mute vote is typed at the console: the
+  Vote page has no row for it yet, and players still on 0.15.0 do not see it.
+  An admin role below rcon is still to come. Checked on Windows over loopback
+  only.
+- **Guide:** [bans, mutes and chat limits](../user/server-security.md#bans-mutes-and-chat-limits).
+- **Evidence:** `tools/tests/mp_moderation.py` compiles and runs the
+  engine-free core (addresses and ranges, the ban list and its file lines,
+  mutes, the flood window, names, log lines) and pins each command and call
+  site; `network_security.py` pins the caps. `mp_moderation_smoke.py` ran a
+  pure dedicated server with two bots and five hidden clients in turn on
+  Windows: 77 checks, all passing, ending with the server waiting for
+  its match and exiting by itself. `mp_map_rotation_smoke.py` still passes
+  on the same build (44 checks).
+- **Developer detail:** [server administration and moderation](mp-moderation.md).
+
+## The mouse works on the campaign's difficulty and CHAPTERS pages again, 22 November 2026
+
+- **You can click the difficulty, TURBO MODE, START GAME and BACK again.**
+  Since the campaign's NEW GAME and CHAPTERS became pages of their own (0.15.0),
+  the mouse lit and clicked nothing on them; only the keyboard and controllers
+  worked. The page's title sat over the whole page and caught every click.
+  CHAPTERS' levels, START CHAPTER and BACK had the same fault and work again
+  too, in both Quake 4 and The Awakening.
+- **What to do.** Nothing.
+- **Developer detail:** the fourth-level frame's `titles` group ignores the
+  pointer, and `UiRetainedScreensTest`'s pointer-reach group now probes both
+  pages and the Campaign page with The Awakening available.
+
+## Volume settings that match Quake 4, 22 November 2026
+
+- **Master volume goes up to 2 again.** Quake 4's own slider runs from 0 to 2,
+  but openQ4 stopped at 1, so anyone who had turned the game up past that lost
+  the extra loudness. Both openQ4 menus now offer the full range. The retained
+  menu shows it as 0 to 200%, and the default is still 0.5 (50%).
+- **Ambient drones sound as they did in Quake 4.** The low musical drones in
+  levels such as Hub 1, Tram 1, Dispersal and the Waste Facility were treated as
+  music. They played 6 dB quieter than in the original, followed the Music
+  slider and ignored slow motion. They are level sounds again, as in Quake 4.
+  The score itself still follows the Music slider.
+- **What to do.** Nothing, unless you want it louder: openQ4 had already
+  saved any higher setting as 1, so raise it again in the Audio settings.
+  Players who type `s_volume_dB` in the console: it never did anything in
+  openQ4 and is gone; use `s_volume`.
+- **Developer detail:** [audio volume parity](audio-volume-parity.md).
+
+## Texture recovery keeps every setting it watches, 21 November 2026
+
+- **No more out-of-bounds write when textures reload.** Texture recovery
+  remembers the image settings that were in force so it can tell whether a
+  restart may reuse them. `f2fe81753` (18 November) added two settings to
+  that list (`image_useCompression` and `image_useNormalCompression`, 13 in
+  all), but the record kept room for 11, so preparing a recovery wrote two
+  entries past its end. The record now holds all 13, and a compile-time check
+  fails the build if the list and the record drift apart again. No release
+  shipped the overrun.
+- **What to do.** Nothing. A recovery record left by an earlier development
+  build no longer decodes, and the renderer then loads textures from scratch.
+- Found by the address sanitizer in `renderer_image_recovery_owner.py`, whose
+  fixture had been failing to compile since `735878f06`.
+
+## Smooth startup and loading screens, 21 November 2026
+
+- **The startup and loading screens no longer stutter.** While the game
+  starts and while a level loads, both screens now animate at your display's
+  refresh rate (60 frames a second on a 60 Hz display, 72 on a 144 Hz one) in
+  even steps. They used to manage about 25 frames a second on average, with
+  pauses, and loading Air Defense 1 froze the screen for up to three seconds
+  while the level's opening cinematic was skipped; it now keeps moving
+  throughout. On a slow computer the screens drop to half the rate rather
+  than slow the load down.
+- **No black screen between startup and the first level.** Starting the game
+  straight into a level (a shortcut or launcher with `+map`) used to fade the
+  startup screen to black and hold black for up to half a second before the
+  loading screen appeared. The startup screen now stays up and animating until
+  the loading screen takes over.
+- **No pause between the loading screen and the level.** The last loading
+  frame used to hold for a quarter to a third of a second before the level
+  faded in, longer in multiplayer. The fade now starts at once: the game no
+  longer empties its memory working set after a load, the level's opening
+  autosave is written in the background, and the level's first view is drawn
+  once, unseen, before the loading screen hands over.
+- **No slower to start or load.** Drawing more frames takes time, so work
+  the screens used to wait on is quicker now: the game's scripts compile in
+  about half the time, fonts are drawn on all processor cores, and the maps of
+  which material a shot hits no longer search every material for every pixel.
+  Startup and level loads take about as long as before.
+- **What to do.** Nothing. If a load still stutters for you,
+  `com_loadingFrameTrace 1` writes how smoothly each load presented to the
+  console and log, which helps with a bug report.
+
+## The game no longer vanishes while it starts, 21 November 2026
+
+- **The splash stays until the game has something to show (Windows).** When the game
+  opened its window it closed the splash at once, but drew nothing in the new
+  window for a second or more while the renderer finished loading. For that
+  moment the game looked as if it had disappeared, or another program came to
+  the front, before the startup screen appeared. The splash now stays above the
+  game window until the startup screen's first frame is on screen, and the game
+  window keeps the focus it had when you launched it.
+- **What to do.** Nothing.
+
+## A smooth glow on the loading screen's bands, 21 November 2026
+
+- **No more stripes under the loading bands.** On the new interface
+  (`ui_retained 1`), the green light that spills from the top and bottom bands
+  into the level picture now fades evenly, instead of in a stack of visible
+  steps. It keeps the same colour and brightness at the edge and is gone at the
+  same distance, and it takes less drawing than before.
+- **What to do.** Nothing.
+
+## Shadowed volumetric lighting, 21 November 2026
+
+- **Light shafts that stop at their shadows.** With the experimental
+  volumetric lighting on (`r_rendererFroxelVolumetrics 1`), every light in view
+  lights the haze with its own colour, shape and fall-off, and with shadow maps
+  on its beams are blocked by what blocks its light: a pillar leaves a dark
+  shaft behind it and the sun's haze follows the buildings. It replaces the
+  plain haze, is drawn before glass, smoke and fire, and works on OpenGL and
+  Vulkan.
+- **What to do.** Nothing: it stays off by default, and turning it off leaves
+  the picture exactly as before. Try it with the Quality or Ultra preset, which
+  turn shadow maps on.
+- Details: [advanced screen-space lighting](../user/advanced-screen-space-lighting.md#volumetric-lighting),
+  [roadmap REN-09](roadmap.md#ren-task-evidence-and-acceptance).
+
+## Volumetric lighting with mirrors, in VR and in motion, 23 November 2026
+
+- **Smoother next to mirrors and camera screens.** With the experimental
+  volumetric lighting on, a room with a mirror or a security screen no longer
+  rebuilds the haze's working images several times in every frame.
+- **Checked where it moves.** Beams follow doors as they open and close, the
+  flashlight's beam keeps up with a fast turn, nothing trails behind under
+  temporal AA, the haze keeps its place at any resolution scale and with
+  dynamic resolution, mirrors and camera screens show it, and in VR both eyes
+  get it. This holds on OpenGL and Vulkan.
+- **What to do.** Nothing: it stays off by default and its settings are
+  unchanged. `rendererVolumetricStatus` now also says how many views, and how
+  many mirrors and screens among them, drew the haze.
+- Details: [volumetric lighting evidence](volumetric-lighting.md),
+  [roadmap REN-09](roadmap.md#ren-task-evidence-and-acceptance).
+
+## One place to start for multiplayer, 21 November 2026
+
+- **A multiplayer guide.** The new [multiplayer guide](../user/multiplayer.md)
+  is the front door for players and hosts: what everyone needs before playing,
+  joining, bot matches, hosting for friends, the twelve game types, the
+  in-match menu's tabs, match rules, spectating, voting, timeouts, bot orders,
+  troubleshooting and a list of every multiplayer guide by task.
+- **Each topic lives in one place.** Casual spectating, voting, timeouts and
+  match rules moved out of the competitive guide, and bot orders out of the
+  server guide, so the competitive guide is about managed matches only. The
+  version and retail-compatibility rules are stated once, and every
+  multiplayer guide links back to the new one.
+- **What to do.** Nothing. Old links to the moved sections land on the guides
+  they came from, which point to the new places.
+
+## Height maps that give PBR surfaces real depth, 21 November 2026
+
+- **Parallax occlusion for mod materials.** A PBR material can now carry a
+  `heightMap`: with `r_parallaxOcclusion 1`, raised parts of a flat surface
+  hide what lies behind them at grazing angles, tiles sink into their grooves,
+  and with `r_parallaxShadows 1` the relief shadows itself from each light.
+  Lights, reflections and shadows stay on the relief, on OpenGL and Vulkan
+  alike.
+- **Tunable cost.** `r_parallaxSamples` trades smoothness for speed, and the
+  relief fades back to the flat surface by `r_parallaxDistance`, where it
+  costs almost nothing.
+- **Nothing changes unless you ask.** It is off by default, and off draws every
+  material exactly as before. No shipped Quake 4 or Awakening map uses height
+  maps, so the stock campaigns look and run the same either way.
+- **What to do.** Nothing, unless you make materials: see
+  [height and parallax](../user/pbr-materials.md#height-and-parallax).
+- Evidence: [parallax occlusion](parallax-occlusion.md#qualification-21-november-2026).
+
+## Quicker texture setting changes, 21 November 2026
+
+- **Texture settings apply without freezing the game.** Changing texture
+  quality on the Display page, through a Performance Preset or from the
+  console used to stop the picture for 4 to 7 seconds in Air Defense 1 while
+  every texture reloaded. Now only the textures the change affects reload
+  (318 of 1,942 for a normal-map change), a few each frame, so the game and
+  the menu keep running and the new textures appear over a few seconds. The
+  menus, the HUD and their fonts are no longer reloaded by a texture-quality
+  change at all. To have it all in one pause instead, set
+  `image_reloadFrameMsec 0`.
+- **Decoded textures load on other cores.** With precompressed textures off,
+  or for textures the game builds from several images, the decoding and
+  compression now run on two background threads, so the main thread does about
+  half the work it did and the game stays smoother while they load. The
+  textures come out exactly as before. `image_reloadWorkers 0` turns this off.
+- **A change made while a level loads is no longer lost.** Textures kept from
+  before the load, such as the interface and your own models, used to keep
+  their old size or compression until the renderer restarted; they now follow
+  the new setting as soon as the load ends.
+- **What to do.** Nothing: update openQ4 as usual.
+- Details: [applying display settings without a device restart](ui/settings-live-apply.md#stage-7-reload-only-what-a-texture-change-reaches).
+
+## Quicker menu responses, 21 November 2026
+
+- **Menus answer a press sooner.** Moving along a list, switching a tab or
+  opening a dialog in the new interface did milliseconds of work before the
+  next frame, more on the larger pages: 1.5 to 3 ms for each step down Join
+  Game's server list, 2.5 to 5 ms for a Controls tab and 4 to 9 ms to open
+  the multiplayer Escape card. The same steps now take a tenth of a
+  millisecond or less, a third of one on the Escape card, so holding an
+  arrow key or a stick through a long list stays smooth.
+- **The new HUD is lighter in a match.** The Remastered HUD's updates (health,
+  voice transmit, the scoreboard) cost a tenth to a twentieth of what they did.
+- **Large menus use less memory.** An animated page no longer keeps a second
+  copy of its artwork's settings once it starts moving: the multiplayer
+  Escape card holds about 15 MB less, the match summary 10 MB less.
+- **What to do.** Nothing: update openQ4 as usual.
+- Details: [event costs](ui/event-costs.md).
+
+## Smooth ambient occlusion instead of dither, 21 November 2026
+
+- **SSAO no longer shows a dither pattern.** The soft shading SSAO adds in
+  corners and creases had turned into a visible grain, worst on the Quality
+  and Enhanced presets where it is drawn at half resolution. It is now
+  filtered so the shading is smooth, at every preset and on both OpenGL and
+  Vulkan, while keeping crisp edges where a wall meets a floor or a model
+  stands in front of a wall. The overall strength of the shading is
+  unchanged.
+- **PBR surfaces on Quality and Enhanced use the cheaper half-resolution
+  SSAO too**, like everything else on those presets.
+- **New: two more kinds of ambient occlusion, picked in the menu.**
+  **Settings → Display → Effects → Ambient Occlusion** now offers **Off**,
+  **SSAO**, **HBAO** and **GTAO** (the console's `r_ssao` and `r_ssaoMethod`).
+  GTAO (ground-truth ambient occlusion) follows how light
+  really reaches a surface: it is measurably closer to a brute-force
+  reference than SSAO, keeps the outlines of objects free of dark halos, and
+  gives PBR surfaces coloured bounce light and reflections that dim in
+  creases. HBAO (horizon-based ambient occlusion) is the familiar look of
+  many games, about as accurate as SSAO. Both cost about the same as SSAO, or
+  less on the higher presets. SSAO stays the default, and the presets turn
+  ambient occlusion on or off while keeping the kind you picked.
+- **What to do.** Nothing: update openQ4 as usual; your settings are kept.
+- Details: [filtered SSAO occlusion](presentation-owners.md#filtered-ssao-occlusion-21-november-2026),
+  [GTAO](presentation-owners.md#ground-truth-ambient-occlusion-ren-10-21-november-2026).
 
 ## Smoother menus, especially The Awakening's, 20 November 2026
 
@@ -251,6 +1057,20 @@ does not restore the withdrawn release. See
   On a machine shared with other builds the switch took 2.4 to 3.8 s, against
   5.6 to 8.8 s for the engine reload it replaces, and 22 s for the reload's
   first entry into The Awakening.
+
+## Tak fights again in The Awakening, 21 November 2026
+
+- **Tak returns fire.** After repairing (or setting off to repair) your armour,
+  Tak could stop fighting for the rest of the level: he followed you through
+  firefights without shooting while every other marine fought on. A repair
+  that a scene interrupted, by sending him somewhere or playing an animation,
+  never gave back the "ignore enemies" stance a repair puts him in. Every way
+  a repair ends now gives it back, and a scene that deliberately keeps him out
+  of a fight still does.
+- **What to do.** Replace the single-player game module. A save made while
+  Tak was already ignoring enemies keeps him that way until the level's script
+  next sends him into combat; load an earlier save or restart the level.
+- Details: [Tak ignores enemies after an interrupted repair](awakening-missions.md#tak-ignores-enemies-after-an-interrupted-repair--21-november-2026).
 
 ## The Awakening's Cryofac opening, door seals and ice wall, 18 November 2026
 
@@ -653,7 +1473,7 @@ does not restore the withdrawn release. See
   length.
 - **What to do.** Replace the engine and the multiplayer game module on the
   server and on clients. The network protocol is unchanged (2.42).
-- Guides: [competitive matches](../user/competitive-matches.md#voting-on-casual-servers)
+- Guides: [multiplayer guide](../user/multiplayer.md#vote)
   and [server setup](../user/server-setup.md#server-settings).
 - Evidence and what is still open: [multiplayer audit, 17 November](mp-audit-2026-11-17.md).
   The 125 static multiplayer tests pass; the kept limit, the ruleset change,
@@ -1381,7 +2201,7 @@ does not restore the withdrawn release. See
   All three are off unless the operator turns them on.
 - **Fix:** the HUD clock on a client no longer runs on through a timeout or
   pause; it stops with the match, as the host's did.
-- Guides: [competitive matches](../user/competitive-matches.md#voting-on-casual-servers)
+- Guides: [multiplayer guide](../user/multiplayer.md#vote)
   and [server setup](../user/server-setup.md#server-settings).
 - Evidence: on 15 November (OpenGL, q4dm1, two paused bots) it passed all eleven checkpoints: a coin-toss vote, a team timeout that expired into the resume countdown and back to play, a second ended early by `timein`, a refused third with the server reason printed at the console, a `roundlimit 5` vote once the cooldown (game time, which the pauses hold) had passed, `si_spectatorLock 2` holding the host in play, and `g_inactivity` moving it to spectators, which ended the match as abandoned with no human left. Contracts: `mp_casual_match_flow_contract.py`,
   `mp_vote_security_contract.py`, `mp_match_vote_electorate_contract.py`,
@@ -1500,7 +2320,7 @@ does not restore the withdrawn release. See
 - **Spectators are told when players cannot hear them.** While a match is live
   and the server keeps spectator chat among spectators, the server now says so.
 - Players: nothing to reinstall or rebind. The new commands are listed in the
-  [competitive matches guide](../user/competitive-matches.md#spectate).
+  [multiplayer guide](../user/multiplayer.md#spectate).
 - Development: `mp_match_spectator_follow_contract.py` runs the production
   follow, auto-follow and caster request paths against the real disclosure
   policy; `mp_spectator_casting_contract.py` runs the caster grant and every

@@ -379,7 +379,8 @@ bool idAsyncClient::CheckResume( void ) {
 }
 
 int idAsyncClient::GetLocalClientNum( void ) const {
-	return idAsyncNetwork::multiViewDemo.IsPlaying() ? MAX_ASYNC_CLIENTS : clientNum;
+	// openQ4 MP-22: a recording of a player's own view plays as that player's slot
+	return idAsyncNetwork::multiViewDemo.IsPlaying() ? idAsyncNetwork::multiViewDemo.GetPlaybackLocalClient() : clientNum;
 }
 
 /*
@@ -649,6 +650,9 @@ void idAsyncClient::DisconnectFromServer( void ) {
 	idBitMsg	msg;
 	byte		msgBuf[MAX_MESSAGE_SIZE];
 
+	// openQ4 MP-22: a recording of this player's view ends with the connection
+	idAsyncNetwork::multiViewDemo.OnClientGameEnded( "disconnected" );
+
 	// openQ4: the pure lock is taken while still connecting, when the server's
 	// pak list arrives. It was only released from a full connection, so an
 	// attempt that ended first - a full server, a refusal, a cancelled download
@@ -817,6 +821,9 @@ void idAsyncClient::GetNETServers( void ) {
 	msg.WriteBits( 0, 2 );
 	msg.WriteBits( 0, 2 );
 	msg.WriteBits( 0, 2 );
+
+	// openQ4 MP-19: the HTTPS list as well, where the player has one; the two merge
+	serverListFallback.Start( cvarSystem->GetCVarString( "net_serverListUrl" ) );
 
 	netadr_t adr;
 	if ( idAsyncNetwork::GetMasterAddress( 0, adr ) ) {
@@ -1368,6 +1375,8 @@ void idAsyncClient::SendUsercmdsToServer( void ) {
 	userCmds[index][clientNum] = usercmdGen->GetDirectUsercmd();
 	userCmds[index][clientNum].gameFrame = gameFrame;
 	userCmds[index][clientNum].gameTime = gameTime;
+	// openQ4 MP-22: the command a recording of this view replays its prediction with
+	idAsyncNetwork::multiViewDemo.CaptureClientUsercmd( userCmds[index][clientNum] );
 
 	// send the user commands to the server
 	msg.Init( msgBuf, sizeof( msgBuf ) );
@@ -1449,6 +1458,8 @@ void idAsyncClient::ProcessUnreliableServerMessage( const idBitMsg &msg ) {
 	idDict serverSI;
 	usercmd_t *last;
 	bool pureWait;
+	// openQ4 MP-22: where the message starts, after the channel's own header
+	const int messageStart = msg.GetReadCount();
 
 	if ( msg.GetRemainingReadBits() < 32 + 8 ) {
 		common->Warning( "server sent a truncated unreliable message; disconnecting safely" );
@@ -1509,6 +1520,9 @@ void idAsyncClient::ProcessUnreliableServerMessage( const idBitMsg &msg ) {
 				AsyncClient_StopAfterProtocolError();
 				return;
 			}
+			// openQ4 MP-22: a recording of this player's view belongs to one map
+			idAsyncNetwork::multiViewDemo.OnClientGameEnded( "the server changed map" );
+
 			// openQ4: the game-init message a deferred connect reply promised
 			// completes that connect. Its pure checks passed before the reply, and
 			// its roster already names the players, so neither starts again.
@@ -1734,6 +1748,8 @@ void idAsyncClient::ProcessUnreliableServerMessage( const idBitMsg &msg ) {
 			if ( numDuplicatedUsercmds && ( idAsyncNetwork::verbose.GetInteger() == 2 ) ) {
 				common->Printf( "server duplicated %d user commands before snapshot %d\n", numDuplicatedUsercmds, snapshotGameFrame );
 			}
+			// openQ4 MP-22: the whole message, and the frame this client went on from
+			idAsyncNetwork::multiViewDemo.CaptureClientSnapshot( msg, messageStart, gameFrame );
 			break;
 		}
 		default: {
@@ -1888,6 +1904,7 @@ void idAsyncClient::ProcessReliableServerMessages( void ) {
 					cvarSystem->ClearModifiedFlags( CVAR_USERINFO ); // don't emit back
 				}
 				game->SetUserInfo( clientNum, info, true );
+				idAsyncNetwork::multiViewDemo.CaptureClientUserInfo( clientNum, info );
 				break;
 			}
 			case SERVER_RELIABLE_MESSAGE_SYNCEDCVARS: {
@@ -1932,6 +1949,7 @@ void idAsyncClient::ProcessReliableServerMessages( void ) {
 					idAsyncNetwork::ShowClientDisconnectMessage(
 						sessLocal.mapSpawnData.userInfo[ clientNum ].GetString( "ui_name" ), string );
 					sessLocal.mapSpawnData.userInfo[ clientNum ].Clear();
+					idAsyncNetwork::multiViewDemo.CaptureClientUserInfo( clientNum, sessLocal.mapSpawnData.userInfo[ clientNum ] );
 				}
 				break;
 			}
@@ -1946,6 +1964,7 @@ void idAsyncClient::ProcessReliableServerMessages( void ) {
 					session->Stop();
 					common->Error( "couldn't apply snapshot %d", sequence );
 				}
+				idAsyncNetwork::multiViewDemo.CaptureClientApplySnapshot( sequence );
 				break;
 			}
 			case SERVER_RELIABLE_MESSAGE_PURE: {
@@ -1966,12 +1985,14 @@ void idAsyncClient::ProcessReliableServerMessages( void ) {
 				}
 				SendUserInfoToServer();
 				game->SetUserInfo( clientNum, sessLocal.mapSpawnData.userInfo[ clientNum ], true );
+				idAsyncNetwork::multiViewDemo.CaptureClientUserInfo( clientNum, sessLocal.mapSpawnData.userInfo[ clientNum ] );
 				cvarSystem->ClearModifiedFlags( CVAR_USERINFO );
 				break;
 			}
 			default: {
 				// pass reliable message on to game code
 				if ( gameInitId != GAME_INIT_ID_INVALID ) {
+					idAsyncNetwork::multiViewDemo.CaptureClientReliable( msg );
 					game->ClientProcessReliableMessage( clientNum, msg );
 				}
 				break;
@@ -3047,6 +3068,21 @@ void idAsyncClient::RunFrame( bool allowBlocking ) {
 
 	// update server list
 	serverList.RunFrame();
+	// openQ4 MP-19: what the HTTPS server list named, once it has arrived
+	{
+		std::vector<std::string> listed;
+		std::string listUrl, listError;
+		if ( serverListFallback.Poll( listed, listUrl, listError ) ) {
+			if ( !listError.empty() ) {
+				common->Printf( "server list: %s: %s\n", listUrl.c_str(), listError.c_str() );
+			} else {
+				for ( size_t i = 0; i < listed.size(); i++ ) {
+					serverList.AddServer( serverList.Num(), listed[ i ].c_str() );
+				}
+				common->Printf( "server list: %d server(s) from %s\n", static_cast<int>( listed.size() ), listUrl.c_str() );
+			}
+		}
+	}
 
 	if ( clientState == CS_DISCONNECTED ) {
 		usercmdGen->GetDirectUsercmd();
@@ -3089,6 +3125,7 @@ void idAsyncClient::RunFrame( bool allowBlocking ) {
 		game->ThrottleUserInfo( );
 		SendUserInfoToServer( );
 		game->SetUserInfo( clientNum, sessLocal.mapSpawnData.userInfo[ clientNum ], true );
+		idAsyncNetwork::multiViewDemo.CaptureClientUserInfo( clientNum, sessLocal.mapSpawnData.userInfo[ clientNum ] );
 		cvarSystem->ClearModifiedFlags( CVAR_USERINFO );
 	}
 

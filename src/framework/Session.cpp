@@ -62,6 +62,7 @@ If you have questions concerning this license or the applicable additional terms
 #include <memory>
 #include <chrono>
 #include "DurableFile.h"
+#include "LoadingPresentation.h"
 #include "SaveGameTransaction.h"
 #include <filesystem>
 #if defined( USE_SDL3 )
@@ -104,6 +105,10 @@ idCVar	com_showLevelLoadTimes( "com_showLevelLoadTimes", "1", CVAR_SYSTEM | CVAR
 static idCVar com_saveGameProfile( "com_saveGameProfile", "0", CVAR_SYSTEM | CVAR_INTEGER, "save profiling: 0 off, 1 phase timings, 2 per-class detail, 3 dictionary and commit detail", 0, 3 );
 static idCVar com_saveGameCommitOnWorker( "com_saveGameCommitOnWorker", "0", CVAR_SYSTEM | CVAR_BOOL, "experimental checkpoint file transaction on a worker; frame-time qualification pending" );
 static idCVar com_saveGameCopyOnWorker( "com_saveGameCopyOnWorker", "0", CVAR_SYSTEM | CVAR_BOOL, "experimental checkpoint copy on storage worker; overall frame-time qualification pending" );
+static idCVar com_loadingWarmFirstFrame( "com_loadingWarmFirstFrame", "1", CVAR_SYSTEM | CVAR_BOOL,
+	"single player: draw a level's first view once, unseen, before the loading screen hands over, so the first frame of play does no one-time work" );
+static idCVar com_saveGameAutosaveOnWorker( "com_saveGameAutosaveOnWorker", "1", CVAR_SYSTEM | CVAR_BOOL,
+	"write a level's start autosave on the checkpoint storage worker and finish it on a later frame, so the hand-off from the loading screen does not wait for the disk" );
 idCVar	com_skipLogoVideos( "com_skipLogoVideos", "1", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_BOOL, "skip startup logo videos and go straight to the main menu" );
 idCVar	com_showLevelshotBounds( "com_showLevelshotBounds", "0", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_BOOL, "draw a centered 4:3 frame guide for levelshot composition" );
 idCVar	s_muteUnfocused( "s_muteUnfocused", "1", CVAR_ARCHIVE | CVAR_BOOL, "mute all audio when the application is out of focus" );
@@ -146,22 +151,16 @@ static int Session_FindPresentationCap( void ) {
 	return openQ4_GetRequestedPresentationCap();
 }
 
-// A blocking-load progress animation gains nothing from redrawing at the gameplay
-// presentation cap, and every redraw is wall clock stolen from the load itself.
-// Never redraw the loading screen faster than this, however high com_maxfps goes.
+#ifdef ID_DEDICATED
+// A dedicated map load presents nothing; its pacifier only keeps connected
+// clients alive, and gains nothing from running faster than this, however high
+// com_maxfps goes. (Client loading screens are paced by LoadingFramePacer.)
 static const float SESSION_MAX_BLOCKING_LOAD_REDRAW_HZ = 60.0f;
 
-// Back the pacifier interval off to at least this multiple of the last redraw's
-// measured cost, bounding loading-screen presentation at 1/(1+ratio) of load wall
-// clock on any present path.
-static const float SESSION_PACIFIER_DRAW_BUDGET_RATIO = 4.0f;
-
 static float Session_GetBlockingLoadFrameIntervalMsec( void ) {
-	// Honour a *lower* gameplay cap - the user asked for fewer frames - but never let
-	// a high cap drive the loading screen faster than the ceiling above. Tying this
-	// directly to com_maxfps made load wall clock scale as W / (1 - R/P), which
-	// diverges as the cap rises and stops converging entirely once one redraw costs
-	// more than the interval it is throttled by.
+	// Honour a *lower* cap, but never let a high cap drive the pacifier faster
+	// than the ceiling above: tying it directly to com_maxfps made load wall
+	// clock scale as W / (1 - R/P).
 	const float ceilingMsec = 1000.0f / SESSION_MAX_BLOCKING_LOAD_REDRAW_HZ;
 	const int presentationCap = Session_FindPresentationCap();
 	if ( presentationCap > 0 ) {
@@ -172,6 +171,7 @@ static float Session_GetBlockingLoadFrameIntervalMsec( void ) {
 	// Keep the legacy one-tic pacing as the conservative fallback in that mode.
 	return Max( ceilingMsec, common->GetUserCmdMsecFloat() );
 }
+#endif
 
 static void Session_BeginBlockingLoadPresentationFrame( void ) {
 	if ( Session_FindPresentationCap() > 0 ) {
@@ -4189,6 +4189,7 @@ void idSessionLocal::Clear() {
 	
 	insideUpdateScreen = false;
 	insidePacifierUpdate = false;
+	startupLoadingHandoff = false;
 	openq4::NativeInputBeforeSessionChange();
 	insideExecuteMapChange = false;
 	stopDepth = 0;
@@ -4365,6 +4366,11 @@ void idSessionLocal::Clear() {
 	retainedGameParent = NULL;
 	retainedGameParentHandle = NULL;
 	guiRetainedControls = NULL;
+	guiOnScreenKeyboard = NULL;
+	oskOwner = NULL;
+	oskLayer = 0;
+	oskShift = false;
+	oskEnding = false;
 	retainedControlsParent = NULL;
 	retainedControlsParentHandle = NULL;
 	retainedControlsCapture = -1;
@@ -4413,7 +4419,7 @@ void idSessionLocal::Clear() {
 	timeDemo = TD_NO;
 	waitingOnBind = false;
 	lastPacifierTime = 0;
-	lastPacifierDrawMsec = 0;
+	loadingFramePacer.Reset();
 	loadingAssetQueueActive = false;
 	loadingAssetQueueTotal = 0;
 	loadingAssetQueueLoaded = 0;
@@ -4810,6 +4816,37 @@ void idSessionLocal::StartWipe( const char *_wipeMaterial, bool hold ) {
 
 /*
 ================
+idSessionLocal::WarmFirstGameFrame
+
+Draws the player's view once into a capture, as a save preview does, while the
+loading screen still owns the screen: nothing is presented, and the next
+loading frame draws over it. Single player only; a network client has no
+snapshot to draw yet.
+================
+*/
+int idSessionLocal::WarmFirstGameFrame() {
+#ifdef ID_DEDICATED
+	return 0;
+#else
+	if ( IsDedicatedServer() || !com_loadingWarmFirstFrame.GetBool() || idAsyncNetwork::IsActive() || IsMultiplayer() ||
+			readDemo || timeDemo != TD_NO || com_skipGameDraw.GetBool() || renderSystem == NULL || !renderSystem->IsOpenGLRunning() ) {
+		return 0;
+	}
+	const int start = Sys_Milliseconds();
+	{
+		sessionCaptureDrawGuard_t warmDraw( *this );
+		sessionRenderCropGuard_t warmCrop( renderSystem->GetScreenWidth(), renderSystem->GetScreenHeight() );
+		common->SetRenderableGameFrame( true );
+		game->Draw( 0 );
+		// Runs the queued view through the back end without a present.
+		renderSystem->CaptureRenderToImage( "_scratch" );
+	}
+	return Max( 1, Sys_Milliseconds() - start );
+#endif
+}
+
+/*
+================
 idSessionLocal::CompleteWipe
 ================
 */
@@ -5149,6 +5186,8 @@ static void Session_OpenQ4GuiFocus_f( const idCmdArgs &args ) {
 	common->Printf( "GUI_FOCUS %s\n", report.c_str() );
 }
 
+void Session_OnScreenKeyboard_f( const idCmdArgs &args );	// Session_menu.cpp
+
 static void Session_RetainedGui_f( const idCmdArgs &args ) {
 #ifndef ID_DEDICATED
 	// While a retained home screen covers the legacy menu, or the multiplayer
@@ -5396,6 +5435,11 @@ Session_TimeDemo_f
 */
 static void Session_TimeDemo_f( const idCmdArgs &args ) {
 	if ( args.Argc() >= 2 ) {
+		// openQ4 MP-22: a multi-view demo, or a recording of one player's view, times as well
+		if ( idStr( args.Argv( 1 ) ).CheckExtension( ".mvd" ) ) {
+			idAsyncNetwork::multiViewDemo.StartTimeDemo( args.Argv( 1 ), false );
+			return;
+		}
 		sessLocal.TimeRenderDemo( va( "demos/%s", args.Argv(1) ), ( args.Argc() > 2 ) );
 	}
 }
@@ -5406,6 +5450,10 @@ Session_TimeDemoQuit_f
 ================
 */
 static void Session_TimeDemoQuit_f( const idCmdArgs &args ) {
+	if ( args.Argc() >= 2 && idStr( args.Argv( 1 ) ).CheckExtension( ".mvd" ) ) {
+		idAsyncNetwork::multiViewDemo.StartTimeDemo( args.Argv( 1 ), true );
+		return;
+	}
 	sessLocal.TimeRenderDemo( va( "demos/%s", args.Argv(1) ) );
 	if ( sessLocal.timeDemo == TD_YES ) {
 		// this allows hardware vendors to automate some testing
@@ -7915,8 +7963,10 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 	ClearRetainedLoadingHold();
 
 	// Start each load from a clean pacifier budget so a hitch recorded during the
-	// previous map change cannot keep throttling this one.
-	lastPacifierDrawMsec = 0;
+	// previous map change cannot keep throttling this one, on the display the
+	// window is on now.
+	loadingFramePacer.Configure( openQ4_GetDisplayRefreshHz(), Session_FindPresentationCap() );
+	loadingFramePacer.Reset();
 
 	// close console and remove any prints from the notify lines
 	console->Close();
@@ -7933,7 +7983,18 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 		sw->UnPause();
 	}
 
-	if ( !noFadeWipe ) {
+	// A map change from the startup screen (a +map launch, a map command before
+	// any menu) hands that screen straight to the loading screen. It used to
+	// fade to black and hold black, the window unanswered, while the previous
+	// level unloaded and the loading screen built; the startup view now keeps
+	// presenting through that until the loading screen's first frame.
+	struct startupHandoffScope_t {
+		bool &active;
+		explicit startupHandoffScope_t( bool &flag ) : active( flag ) {}
+		~startupHandoffScope_t() { active = false; }
+	} startupHandoffScope( startupLoadingHandoff );
+	startupLoadingHandoff = !mapSpawned && guiActive == NULL && !IsDedicatedServer() && RetainedUI_HasInitializationView();
+	if ( !noFadeWipe && !startupLoadingHandoff ) {
 		// capture the current screen and start a wipe
 		StartWipe( "gfx/wipes/fade", true );
 
@@ -8022,6 +8083,8 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 	// and draw the loading gui instead of game draws
 	openq4::NativeInputBeforeSessionChange();
 	insideExecuteMapChange = true;
+	startupLoadingHandoff = false;
+	LoadingPresentation_Begin( "map" );
 
 	// if this works out we will probably want all the sizes in a def file although this solution will 
 	// work for new maps etc. after the first load. we can also drop the sizes into the default.cfg
@@ -8165,6 +8228,15 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 	Sys_ReleaseFreeHeapMemory();
 	const int heapReleaseMsec = Sys_Milliseconds() - phaseStart;
 
+	// The first frame of play does one-time work: programs linked and render
+	// targets made on first use, the driver's first draws, the HUD's first
+	// raster. Done here, behind the loading screen, it no longer stalls the
+	// hand-off into the level.
+	const int warmFrameMsec = WarmFirstGameFrame();
+	if ( warmFrameMsec > 0 ) {
+		PacifierUpdate();
+	}
+
 	common->Printf ("-----------------------------------\n");
 
 	int	msec = Sys_Milliseconds() - start;
@@ -8203,6 +8275,7 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 				settleFrameMsec[9] );
 		}
 		common->Printf( "Map heap release: %d msec\n", heapReleaseMsec );
+		common->Printf( "Map first-frame warm-up: %d msec\n", warmFrameMsec );
 	}
 
 	// let the game trigger interaction generation after the first game frame
@@ -8358,6 +8431,8 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 		Sys_ClearInputEvents();
 	}
 
+	LoadingPresentation_End();
+
 	// capture the current screen and start a wipe, unless a multiplayer join
 	// keeps the loading screen up for the Welcome card: its fade replaces it
 	if ( !BeginRetainedLoadingHold() ) {
@@ -8383,7 +8458,11 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 	insideExecuteMapChange = false;
 	retainedLoadingActive = false;
 
-	Sys_SetPhysicalWorkMemory( -1, -1 );
+	// openQ4: Doom 3 raised the process's working set for the load and reset it
+	// here with Sys_SetPhysicalWorkMemory( -1, -1 ). Only the reset survived,
+	// and on Windows it empties the working set: 100 ms of trimming between the
+	// loading screen and the level, then page faults through the first frames.
+	// The heap release above already returns what the load freed.
 
 	// set the game sound world for playback
 	SetPlayingSoundWorld( sw );
@@ -9128,6 +9207,12 @@ bool idSessionLocal::SaveGame( const char *saveName, saveType_t saveType ) {
 	profile.Mark( "setup" );
 	// Write screenshot
 	const bool deferredPreview = saveType == ST_CHECKPOINT && renderSystem->BeginSavePreview();
+	// The autosave a level starts with goes the checkpoint's way: the payload is
+	// written, flushed and read back on the storage worker, and the save
+	// finishes on a later frame. Its flush used to hold the hand-off from the
+	// loading screen to the level. Named autosaves (a renderer restart, an app
+	// going to the background) stay synchronous: their callers need them done.
+	const bool deferredAutosave = saveType == ST_AUTO && !explicitSaveName && com_saveGameAutosaveOnWorker.GetBool();
 	const auto previewStorage = deferredPreview ? std::make_shared<sessionSavePreviewJob_t>() : nullptr;
 	if ( previewStorage ) previewStorage->path = fileSystem->RelativePathToOSPath( tempPreviewFile.c_str(), "fs_savepath" );
 	if ( saveType != ST_AUTO && !deferredPreview ) {
@@ -9237,7 +9322,7 @@ bool idSessionLocal::SaveGame( const char *saveName, saveType_t saveType ) {
 	game->SaveGame( fileOut, saveType );
 	profile.Mark( "serialize" );
 	std::shared_ptr<sessionSaveStorageJob_t> storage;
-	if ( deferredPreview && jobSystem.IsInitialized() && !jobSystem.IsSynchronous() &&
+	if ( ( deferredPreview || deferredAutosave ) && jobSystem.IsInitialized() && !jobSystem.IsSynchronous() &&
 		fileOut->Length() > 0 && static_cast<size_t>( fileOut->Length() ) <=
 		openq4::DurableFileMaxBytes - SESSION_OPENQ4_SAVEGAME_INTEGRITY_BYTES ) {
 		storage = std::make_shared<sessionSaveStorageJob_t>();
@@ -9429,7 +9514,8 @@ bool idSessionLocal::SaveGame( const char *saveName, saveType_t saveType ) {
 			if ( !previewReady && !commit ) Session_RemoveRelativeSaveFile( previewFile );
 			if ( com_saveGameProfile.GetInteger() >= 3 ) profile.Mark( "commit-preview" );
 
-			if ( !deferredPreview ) syncNextGameFrame = true;
+			// A deferred save never held a frame, so there is no gap to resync.
+			if ( !deferredPreview && !( deferredAutosave && storage ) ) syncNextGameFrame = true;
 			soundSystem->SetMute( insideExecuteMapChange );
 			if ( com_saveGameProfile.GetInteger() >= 3 ) profile.Mark( "commit-sound" );
 
@@ -9451,6 +9537,17 @@ bool idSessionLocal::SaveGame( const char *saveName, saveType_t saveType ) {
 		}
 		return complete();
 	};
+	if ( deferredAutosave && storage ) {
+		// Nothing to capture: the save finishes once its storage job has.
+		sessionPendingCheckpointPreview.Clear();
+		sessionPendingCheckpointSince = Sys_Milliseconds();
+		sessionPendingCheckpointPreviewReady = true;
+		sessionPendingCheckpointStorage = storage;
+		sessionPendingCheckpointPreviewStorage = nullptr;
+		sessionPendingCheckpoint = finish;
+		soundSystem->SetMute( insideExecuteMapChange );
+		return true;
+	}
 	if ( deferredPreview ) {
 		sessionPendingCheckpointPreview = tempPreviewFile;
 		sessionPendingCheckpointSince = Sys_Milliseconds();
@@ -9823,8 +9920,12 @@ bool idSessionLocal::ProcessEvent( const sysEvent_t *event ) {
 	// hitting escape anywhere brings up the menu
 	// openQ4: except with the console down, where Escape first puts away the
 	// console (idConsoleLocal::KeyDownEvent); a second press brings up the menu
+	// The controller's Menu button does the same whatever it is bound to, so a
+	// pad can always reach the menu. The View button does not (PAD-06): in play
+	// it follows its binding, the scoreboard or the objectives while held, as
+	// the shipped layout and section 13.5 have it; inside a menu it goes back.
 	if ( !guiActive && !guiTest && !RetainedUI_IsOpen() && event->evType == SE_KEY && event->evValue2 == 1 &&
-		( ( event->evValue == K_ESCAPE && !console->Active() ) || event->evValue == K_JOY7 || event->evValue == K_JOY8 ) ) {
+		( ( event->evValue == K_ESCAPE && !console->Active() ) || event->evValue == K_JOY7 ) ) {
 		console->Close();
 		if (!NativeInput_SessionCurrent()) return true;
 		if ( IsDemoPlaybackActive() ) {
@@ -10250,7 +10351,7 @@ idSessionLocal::PacifierUpdate
 */
 void idSessionLocal::PacifierUpdate() {
 	if ( openQ4_UpdateInitialization() ) return;
-	if ( !insideExecuteMapChange || insidePacifierUpdate ) {
+	if ( !( insideExecuteMapChange || startupLoadingHandoff ) || insidePacifierUpdate ) {
 		return;
 	}
 	// Printing from a loading redraw or network send offers another pacifier
@@ -10280,28 +10381,32 @@ void idSessionLocal::PacifierUpdate() {
 	if ( insideUpdateScreen ) {
 		return;
 	}
-
-	const int time = Sys_Milliseconds();
-	const float minPacifierIntervalMs = Session_GetBlockingLoadFrameIntervalMsec();
-
-	// Charge the previous redraw's own cost against the interval. lastPacifierTime is
-	// stamped after the redraw completes, so this gate measures loading work only; a
-	// slow present path therefore stretches the gap between redraws instead of
-	// consuming the load. Without both halves the gate is already satisfied the
-	// instant a redraw finishes whenever a redraw outlasts its interval, and every
-	// asset read then presents a full frame.
-	const float pacifierIntervalMs = Max( minPacifierIntervalMs,
-		static_cast<float>( lastPacifierDrawMsec ) * SESSION_PACIFIER_DRAW_BUDGET_RATIO );
-
-	int elapsedMs = time - lastPacifierTime;
-	if ( lastPacifierTime != 0 && static_cast<float>( elapsedMs ) < pacifierIntervalMs ) {
+	// Before its loading screen exists, a map change from the startup screen
+	// presents the startup view, only where the interface can draw it now
+	// (not inside another document's build).
+	if ( startupLoadingHandoff && !insideExecuteMapChange && !RetainedUI_CanUpdateInitialization() ) {
 		return;
 	}
 
-	Session_BeginBlockingLoadPresentationFrame();
+	// Most offers come between items of loading work and end here. The pacer
+	// presents on a steady cadence at the display's rate and charges each
+	// redraw's measured cost, from the offer to the end of the present, so a
+	// slow present path slows the cadence instead of consuming the load.
+	const double offerMsec = LoadingPresentation_Now();
+	if ( !loadingFramePacer.Due( offerMsec ) ) {
+		return;
+	}
+	const float pacifierIntervalMs = static_cast<float>( loadingFramePacer.Interval() );
+
+	// The pacer admitted this frame; the frame limiter must not sleep on it.
+	if ( Session_FindPresentationCap() > 0 ) {
+		openQ4_BeginPacedPresentationFrame();
+	} else {
+		com_frameRealTime = Sys_Milliseconds();
+	}
 
 	const int presentationTime = common->GetPresentationTime();
-	elapsedMs = presentationTime - lastPacifierTime;
+	int elapsedMs = presentationTime - lastPacifierTime;
 	if ( static_cast<float>( elapsedMs ) < pacifierIntervalMs ) {
 		elapsedMs = static_cast<int>( idMath::Ceil( pacifierIntervalMs ) );
 	}
@@ -10357,12 +10462,8 @@ void idSessionLocal::PacifierUpdate() {
 
 	Sys_GenerateEvents();
 
-	const int drawStartMsec = Sys_Milliseconds();
 	UpdateScreen();
-	lastPacifierDrawMsec = Max( 0, Sys_Milliseconds() - drawStartMsec );
-
-	// Stamp after the redraw, on the same clock the gate above reads, so the redraw's
-	// own cost is never counted as part of the interval it is throttled by.
+	loadingFramePacer.Presented( offerMsec, LoadingPresentation_Now() );
 	lastPacifierTime = Sys_Milliseconds();
 
 	idAsyncNetwork::client.PacifierUpdate();
@@ -10551,7 +10652,8 @@ void idSessionLocal::Draw() {
 		Session_DrawFallbackLoadingScreen();
 		if ( firstFallback ) {
 			fallbackMenuStartTime = Sys_Milliseconds();
-		} else if ( guiMainMenu != NULL && ( Sys_Milliseconds() - fallbackMenuStartTime ) >= fallbackMenuDelayMs ) {
+		} else if ( guiMainMenu != NULL && !startupLoadingHandoff && ( Sys_Milliseconds() - fallbackMenuStartTime ) >= fallbackMenuDelayMs ) {
+			// A map change already under way owns what comes next.
 			StartMenu();
 		}
 #endif
@@ -10602,6 +10704,9 @@ void idSessionLocal::Draw() {
 		guiLoadingHold->Redraw( presentationTime );
 	}
 
+	// the on-screen keyboard stands over whichever screen holds the field it types into
+	DrawOnScreenKeyboard( presentationTime );
+
 	// draw the wipe material on top of this if it hasn't completed yet
 	RetainedUI_Draw();
 	DrawWipeModel();
@@ -10651,6 +10756,7 @@ void idSessionLocal::UpdateScreen( bool outOfSequence ) {
 	renderSystem->SetLoadingScreenSwapIntervalBypass( insideExecuteMapChange );
 
 	UI_SettingsRenderFrame settingsFrame;
+	const double presentStart = LoadingPresentation_Now();
 	// a running VR session paces this update on the headset and hands the
 	// renderer this frame's swapchain images
 	vrSystem->BeginFrame();
@@ -10668,6 +10774,7 @@ void idSessionLocal::UpdateScreen( bool outOfSequence ) {
 	}
 	settingsFrame.Presented();
 	RetainedUI_FrameSubmitted();
+	LoadingPresentation_Presented( presentStart, LoadingPresentation_Now() );
 	vrSystem->EndFrame();
 
 	insideUpdateScreen = false;
@@ -11099,9 +11206,15 @@ Declare them here instead, with the same defaults game_mp uses so its later
 static registration matches. That registration keeps the current value and only
 adopts the reset value and range, so whatever the player picked in the menu is
 what the match starts with.
+
+Common::Init declares them before it executes the configs, so a saved value
+lands on this declaration. Declared afterwards, the config's seta created a bare
+console cvar first, this function skipped the name, and the setting lost its
+kind: the retained menu could not read it (23 November 2026, REL-01 clean-install
+run). Session::Init still calls it for any path that skipped that step.
 ===============
 */
-static void Session_DeclareMultiplayerMenuGameCVars( void ) {
+void Session_DeclareMultiplayerMenuGameCVars( void ) {
 	struct menuGameCVar_t {
 		const char *name;
 		const char *value;
@@ -11124,6 +11237,8 @@ static void Session_DeclareMultiplayerMenuGameCVars( void ) {
 		{ "si_maxBrightskin",		"1",	CVAR_FLOAT | CVAR_SERVERINFO },
 		{ "si_forcedModels",		"1",	CVAR_BOOL | CVAR_SERVERINFO },
 		{ "ui_weaponOrder",			"",		CVAR_USERINFO },
+		// MP-17: Player Setup's Player Identity, on unless the player turns it off
+		{ "ui_identity",			"1",	CVAR_BOOL | CVAR_USERINFO },
 		{ "g_inactivity",			"0",	CVAR_INTEGER },
 		{ "hud_hitSound",			"1",	CVAR_INTEGER },
 		{ "hud_crosshairAmmo",		"0",	CVAR_BOOL },
@@ -11136,11 +11251,19 @@ static void Session_DeclareMultiplayerMenuGameCVars( void ) {
 	};
 
 	for ( int i = 0; i < (int)( sizeof( menuGameCVars ) / sizeof( menuGameCVars[0] ) ); i++ ) {
-		if ( cvarSystem->Find( menuGameCVars[i].name ) != NULL ) {
+		const int flags = CVAR_GAME | CVAR_ARCHIVE | menuGameCVars[i].flags;
+		const idCVar *existing = cvarSystem->Find( menuGameCVars[i].name );
+		if ( existing == NULL ) {
+			cvarSystem->SetCVarString( menuGameCVars[i].name, menuGameCVars[i].value, flags );
 			continue;
 		}
-		cvarSystem->SetCVarString( menuGameCVars[i].name, menuGameCVars[i].value,
-			CVAR_GAME | CVAR_ARCHIVE | menuGameCVars[i].flags );
+		// A launch option's +set made a console cvar first. Give it this
+		// declaration's kind and archive flag and keep its value; without the
+		// kind the retained menu cannot read it.
+		if ( ( existing->GetFlags() & flags ) != flags ) {
+			const idStr value = existing->GetString();
+			cvarSystem->SetCVarString( menuGameCVars[i].name, value.c_str(), flags );
+		}
 	}
 }
 #endif
@@ -11210,6 +11333,7 @@ void idSessionLocal::Init() {
 	cmdSystem->AddCommand( "testGUI", Session_TestGUI_f, CMD_FL_SYSTEM, "tests a gui" );
 #ifndef ID_DEDICATED
 	cmdSystem->AddCommand( "openq4_retainedGui", Session_RetainedGui_f, CMD_FL_SYSTEM, "inspect a normal retained GUI or submit semantic diagnostics without device input" );
+	cmdSystem->AddCommand( "openq4_onScreenKeyboard", Session_OnScreenKeyboard_f, CMD_FL_SYSTEM, "report the on-screen keyboard or press its keys without device input" );
 	cmdSystem->AddCommand( "openq4_summaryChat", Session_SummaryChat_f, CMD_FL_SYSTEM, "type, move the caret in, stop or send the match summary card's chat entry without device input" );
 	cmdSystem->AddCommand( "openq4_system", Session_SystemSettings_f, CMD_FL_SYSTEM, "open, return or inspect the opt-in normal SYSTEM child without device input" );
 	cmdSystem->AddCommand( "ui_retainedStatus", Session_RetainedStatus_f, CMD_FL_SYSTEM, "report the ui_retained gate and the live retained screens" );

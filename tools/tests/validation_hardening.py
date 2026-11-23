@@ -9,6 +9,7 @@ import importlib.util
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import uuid
@@ -552,10 +553,26 @@ def validate_windows_pdb_architecture_match() -> None:
     for path in (
         install_root / "openQ4-client_x64.pdb",
         install_root / "openQ4-ded_x64.pdb",
+        install_root / "openQ4-updater_x64.pdb",
+        install_root / "renderer-gl_x64.pdb",
         game_dir / "game-sp_x64.pdb",
         game_dir / "game-mp_x64.pdb",
     ):
         write_file(path)
+
+    # The renderer modules' and the updater's symbols are required too: a crash
+    # in a renderer module is symbolized from the release's symbols archive.
+    with_host_flags(
+        True,
+        False,
+        False,
+        lambda: expect_validation_error(
+            lambda: VALIDATOR.validate_windows_symbols(root, install_root, game_dir, {"x64"}),
+            "renderer-vk_x64.pdb",
+            "missing renderer module PDB",
+        ),
+    )
+    write_file(install_root / "renderer-vk_x64.pdb")
 
     with_host_flags(
         True,
@@ -688,6 +705,8 @@ def validate_validation_wiring() -> None:
     smoke_wiring_allowlist = {
         # Runtime probes require staged binaries/assets; generators feed Meson native tests.
         "airdefense_performance.py",
+        # Regenerates the reference digests in native/Bc7CodecTest.cpp; needs pip packages.
+        "bc7_reference.py",
         "checkpoint_performance.py",
         "generate_capture_resample_test.py",
         "generate_checkpoint_commit_test.py",
@@ -695,6 +714,15 @@ def validate_validation_wiring() -> None:
         "generate_checkpoint_storage_test.py",
         "generate_dict_identity_test.py",
         "generate_save_dict_test.py",
+        # Hidden listen-server smokes and hardware-bound capture harnesses: they
+        # launch the staged client, so the argument-free suite cannot run them.
+        "mp_casual_flow_smoke.py",
+        "mp_client_options_smoke.py",
+        # Generates PngFixtures.inc and runs the openq4-png-codec native test.
+        "png_codec.py",
+        "renderer_ao_reference.py",
+        "renderer_parallax_occlusion.py",
+        "renderer_pbr_showcase.py",
         # The update core's committed fixtures, and the helper test the
         # openq4-updater-helper-apply Meson test runs against the built helper.
         "update_core_fixtures.py",
@@ -720,6 +748,26 @@ def validate_validation_wiring() -> None:
         # The map database's rotation, queue and pick on a staged dedicated
         # server with bots and one client; mp_map_database_contract.py is wired.
         "mp_map_rotation_smoke.py",
+        # Bans, mutes, the chat flood window and the per-address limit on a staged
+        # dedicated server with a bot and two clients; mp_moderation.py is wired.
+        "mp_moderation_smoke.py",
+        # Identities, a returning player by identity and by ghost code, rankings,
+        # history and identity bans on a staged dedicated server with three
+        # clients; mp_identity.py is wired.
+        "mp_identity_smoke.py",
+        # Internet discovery through tools/master/openq4_master.py on loopback: a
+        # staged dedicated server and a hidden client; master_protocol.py and
+        # mp_server_discovery.py are wired.
+        "mp_master_smoke.py",
+        # A player's recording of their own view on a cheats-off dedicated server,
+        # played back by a second hidden game; mp_client_demo.py is wired.
+        "mp_client_demo_smoke.py",
+        # Autoaction on a cheats-off dedicated server and a hidden client;
+        # mp_autoaction.py is wired.
+        "mp_autoaction_smoke.py",
+        # The modifier, arena, preset and spectator chat votes on a staged hidden
+        # listen server; mp_casual_match_flow_contract.py pins their wiring.
+        "mp_vote_extensions_smoke.py",
         # A 12-player match over a simulated small path MTU.
         "mp_path_mtu_soak.py",
         "mp_mod_admission_smoke.py",
@@ -861,6 +909,8 @@ def validate_validation_wiring() -> None:
         # Campaign runtime checks require user-supplied retail/expansion assets.
         "campaign_runtime.py",
         "campaign_selection_runtime.py",
+        # Controller runtime checks drive SDL virtual controllers in the staged client on retail assets.
+        "controller_runtime.py",
         "awakening_m01_cinematic.py",
         "awakening_status_runtime.py",
         "monster_hit_materials.py",
@@ -932,6 +982,7 @@ def validate_validation_wiring() -> None:
         "openxr_vr_stereo_cost.py",
         "openxr_vr_stereo_share_smoke.py",
         "openxr_vr_temporal_smoke.py",
+        "openxr_vr_volumetric_smoke.py",
         # Benchmark and engine-capture drivers need a staged client, a GPU and
         # retail assets.
         "performance_suite.py",
@@ -943,8 +994,12 @@ def validate_validation_wiring() -> None:
         "renderer_hdr_stock_fallback.py",
         "renderer_motion_blur_qualification.py",
         "renderer_screen_space_effects_qualification.py",
+        "renderer_volumetric_lighting.py",
+        "renderer_volumetric_motion.py",
+        "renderer_volumetric_tiers.py",
         "renderer_shared_domain_qualification.py",
         "renderer_shadow_motion_qualification.py",
+        "renderer_shadow_stencil_parity_scan.py",
         "renderer_temporal_qualification.py",
         "renderer_temporal_stability.py",
         "renderer_vulkan_descriptor_pressure.py",
@@ -1063,10 +1118,12 @@ def workflow_jobs(text: str) -> dict[str, str]:
 
 
 def validate_ci_job_scope() -> None:
-    # script-smoke runs the validator's Python checks once. Build jobs repeat
-    # them only on Windows x64 and arm64 macOS OpenGL, and none waits for the
-    # smoke job. Pull requests run Commit Validation, so Push Verification
-    # runs on pushes to main only.
+    # script-smoke runs the validator's Python checks once, in two interleaved
+    # halves. Dedicated jobs repeat them on Windows x64 (two halves) and arm64
+    # macOS beside the builds; no build job runs them or waits for any check
+    # job. One Linux x64 lane per workflow runs the 'locales' native suite.
+    # Pull requests run Commit Validation, so Push Verification runs on pushes
+    # to main only.
     push = (ROOT / ".github" / "workflows" / "push-verification.yml").read_text(encoding="utf-8")
     commit = (ROOT / ".github" / "workflows" / "commit-validation.yml").read_text(encoding="utf-8")
     if "\non:\n  push:\n    branches:\n      - main\n  workflow_dispatch:\n" not in push:
@@ -1078,36 +1135,140 @@ def validate_ci_job_scope() -> None:
     commit_jobs = workflow_jobs(commit)
     for workflow, jobs in (("push", push_jobs), ("commit", commit_jobs)):
         for name, body in jobs.items():
-            if "needs: script-smoke" in body:
-                raise AssertionError(f"{workflow} job {name} waits for script-smoke")
+            if re.search(r"^    needs:", body, re.MULTILINE):
+                raise AssertionError(f"{workflow} job {name} waits for another job")
+            if "python_tests" in body:
+                raise AssertionError(f"{workflow} job {name} still selects Python checks per matrix entry")
 
     skip = "--skip-python-tests"
-    full_suite = {("push", "windows-build"), ("commit", "windows-x64")}
-    skipped = {("push", "windows-arm64-build"), ("commit", "linux-arm64"), ("commit", "windows-arm64"),
-               ("commit", "linux-sanitizer"), ("commit", "linux-wayland")}
-    for workflow, name in full_suite | skipped:
-        body = (push_jobs if workflow == "push" else commit_jobs)[name]
-        if ((workflow, name) in skipped) != (skip in body):
-            raise AssertionError(f"{workflow} job {name} has the wrong Python check scope")
-    for workflow, name, entry in (("push", "posix-builds", "name: macOS OpenGL Push Verification"),
-                                  ("commit", "macos-arm64", "bridge_label: OpenGL")):
-        body = (push_jobs if workflow == "push" else commit_jobs)[name]
-        if body.count("python_tests: true") != 1:
-            raise AssertionError(f"{workflow} job {name} must run the Python checks in exactly one entry")
-        entry_start = body.index(entry)
-        entry_end = body.find("\n          - ", entry_start)
-        if "python_tests: true" not in body[entry_start:entry_end if entry_end != -1 else len(body)]:
-            raise AssertionError(f"{workflow} job {name} runs the Python checks outside its {entry!r} entry")
-        if 'if [[ "${{ matrix.python_tests }}" != "true" ]]; then' not in body or skip not in body:
-            raise AssertionError(f"{workflow} job {name} does not skip Python checks for the other entries")
-
+    builds = {
+        "push": ("posix-builds", "windows-build", "windows-arm64-build"),
+        "commit": ("windows-x64", "linux-arm64", "windows-arm64", "linux-sanitizer", "linux-wayland", "macos-arm64"),
+    }
+    checks = {
+        "push": {"windows-python-checks": 2, "macos-python-checks": 1},
+        "commit": {"windows-x64-python-checks": 2, "macos-arm64-python-checks": 1},
+    }
     for workflow, jobs in (("push", push_jobs), ("commit", commit_jobs)):
+        expected = {"script-smoke", *builds[workflow], *checks[workflow]}
+        if set(jobs) != expected:
+            raise AssertionError(f"{workflow} jobs changed: {sorted(set(jobs) ^ expected)}; update this scope check")
+        for name in builds[workflow]:
+            if skip not in jobs[name]:
+                raise AssertionError(f"{workflow} build job {name} runs the Python checks")
+        for name, shards in checks[workflow].items():
+            body = jobs[name]
+            if skip in body or "--skip-build" not in body or "--fail-on-dirty" not in body:
+                raise AssertionError(f"{workflow} job {name} must run only the Python checks")
+            runner = "runs-on: windows-" if name.startswith("windows") else "runs-on: macos-15\n"
+            if runner not in body:
+                raise AssertionError(f"{workflow} job {name} runs on the wrong toolchain")
+            sharded = "--python-shard ${{ matrix.shard }}/2" in body and "shard: [1, 2]" in body
+            if sharded != (shards == 2) or (shards == 1 and "--python-shard" in body):
+                raise AssertionError(f"{workflow} job {name} must run {shards} shard(s) of the Python checks")
+
         smoke = jobs["script-smoke"]
+        if ("shard: [1, 2]" not in smoke or "OPENQ4_SMOKE_SHARD: ${{ matrix.shard }}/2" not in smoke
+                or "run_parallel_commands.py --shard \"${OPENQ4_SMOKE_SHARD}\" <<'OPENQ4_CHECKS'" not in smoke):
+            raise AssertionError(f"{workflow} script-smoke must split its checks into two halves")
+        # GitHub evaluates a run block that holds an expression as one
+        # expression, and refuses the workflow past 21000 characters.
+        for job_name, job_body in jobs.items():
+            for block in re.findall(r"run: \|\n((?:          .*\n|\n)+)", job_body + "\n"):
+                if len(block) > 20000 and "${{" in block:
+                    raise AssertionError(f"{workflow} job {job_name} has an expression in a run block over 20000 characters")
         commands = [line.strip() for line in smoke.splitlines() if line.strip().startswith("python tools/")]
         repeated = sorted({command for command in commands if commands.count(command) > 1})
         if repeated:
             raise AssertionError(f"{workflow} script-smoke repeats {repeated}")
 
+    # The 'locales' suite runs on exactly one Linux x64 lane per workflow.
+    locale_skip = "--skip-test-suite locales"
+    posix = push_jobs["posix-builds"]
+    if posix.count("native_locales: true") != 1:
+        raise AssertionError("push must run the locales suite in exactly one matrix entry")
+    entry = posix.index("          - name: Linux Push Verification\n")
+    entry_end = posix.find("\n          - ", entry + 1)
+    if "native_locales: true" not in posix[entry:entry_end]:
+        raise AssertionError("push runs the locales suite outside the Linux x64 entry")
+    if 'if [[ "${{ matrix.native_locales }}" != "true" ]]; then' not in posix or locale_skip not in posix:
+        raise AssertionError("push posix-builds does not skip the locales suite elsewhere")
+    for name in ("windows-build", "windows-arm64-build"):
+        if locale_skip not in push_jobs[name]:
+            raise AssertionError(f"push job {name} runs the locales suite")
+    wayland = commit_jobs["linux-wayland"]
+    if wayland.count('native_locales: "1"') != 1:
+        raise AssertionError("commit must run the locales suite in exactly one Wayland entry")
+    clang = wayland.index("artifact_suffix: x64-clang-no-libdecor-wayland-only\n")
+    if 'native_locales: "1"' not in wayland[clang:wayland.find("\n          - ", clang)]:
+        raise AssertionError("commit runs the locales suite outside the x64 Clang Wayland entry")
+    if 'if [ "${{ matrix.native_locales }}" != "1" ]; then' not in wayland or locale_skip not in wayland:
+        raise AssertionError("commit linux-wayland does not skip the locales suite elsewhere")
+    for name in ("windows-x64", "linux-arm64", "windows-arm64", "linux-sanitizer", "macos-arm64"):
+        if locale_skip not in commit_jobs[name]:
+            raise AssertionError(f"commit job {name} runs the locales suite")
+
+
+def validate_check_shards_and_suites() -> None:
+    # Shards of the Python checks are disjoint and together run every check.
+    original_captured = VALIDATOR.run_python_check_captured
+    runs: dict[int, list[str]] = {}
+
+    def recorder(index: int):
+        def fake_captured(test_script, test_args, root, env):
+            runs[index].append(f"{Path(test_script).name} {' '.join(test_args)}")
+            return 0, "", 0.0
+        return fake_captured
+
+    try:
+        everything: list[str] = []
+        runs[0] = everything
+        VALIDATOR.run_python_check_captured = recorder(0)
+        VALIDATOR.run_python_tests(argparse.Namespace(dry_run=False, python_jobs=2), ROOT, {})
+        for index in (1, 2, 3):
+            runs[index] = []
+            VALIDATOR.run_python_check_captured = recorder(index)
+            VALIDATOR.run_python_tests(
+                argparse.Namespace(dry_run=False, python_jobs=2, python_shard=(index, 3)), ROOT, {}
+            )
+    finally:
+        VALIDATOR.run_python_check_captured = original_captured
+    repeated = sorted({check for check in everything if everything.count(check) > 1})
+    if repeated:
+        raise AssertionError(f"the validator lists Python checks more than once: {repeated}")
+    sharded = runs[1] + runs[2] + runs[3]
+    if sorted(sharded) != sorted(everything) or len(set(sharded)) != len(sharded):
+        raise AssertionError("Python check shards must be disjoint and cover every check")
+    if min(len(runs[i]) for i in (1, 2, 3)) < len(everything) // 3:
+        raise AssertionError("Python check shards are unbalanced")
+
+    for bad in ("0/2", "3/2", "2", "a/b"):
+        try:
+            VALIDATOR.shard_spec(bad)
+        except argparse.ArgumentTypeError:
+            continue
+        raise AssertionError(f"shard specification {bad!r} was accepted")
+
+    parsed = VALIDATOR.parse_args(["push", "--skip-test-suite", "locales", "--skip-test-suite", "slow"])
+    if VALIDATOR.suite_filter_args(parsed) != ["--no-suite", "locales", "--no-suite", "slow"]:
+        raise AssertionError("--skip-test-suite must reach meson test as --no-suite")
+    if VALIDATOR.suite_filter_args(argparse.Namespace()) != []:
+        raise AssertionError("native tests must run every suite by default")
+
+    # The script-smoke runner shards its command list the same way.
+    runner = ROOT / "tools" / "validation" / "run_parallel_commands.py"
+    lines = "".join(f"python -c \"print('shard-check-{n}')\"\n" for n in range(5))
+    seen: list[str] = []
+    for shard in ("1/2", "2/2"):
+        completed = subprocess.run(
+            [sys.executable, str(runner), "--jobs", "2", "--shard", shard],
+            input=lines, capture_output=True, text=True, check=False,
+        )
+        if completed.returncode != 0:
+            raise AssertionError(f"run_parallel_commands.py --shard {shard} failed: {completed.stdout}{completed.stderr}")
+        seen += re.findall(r"^shard-check-(\d)$", completed.stdout, re.MULTILINE)
+    if sorted(seen) != [str(n) for n in range(5)]:
+        raise AssertionError(f"run_parallel_commands.py shards ran {seen}, not each command once")
 
 def main() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
@@ -1128,6 +1289,7 @@ def main() -> None:
         validate_validation_wiring()
         validate_workflow_wrap_paths()
         validate_ci_job_scope()
+        validate_check_shards_and_suites()
     finally:
         shutil.rmtree(WORK, ignore_errors=True)
     print("validation_hardening: ok")

@@ -860,7 +860,8 @@ The following recovered-content gaps remain distinct from verified code fixes:
 - Complete physical traversal, normal weapon balance, the cold hazard
   sequence, escape timing, extraction framing/audio, and cross-platform runtime
   qualification remain Q4-04 gates. Focused callbacks and forced damage cannot
-  establish those results.
+  establish those results. The frost's timing and damage were later confirmed
+  at runtime; see [M09 frost hazard](#m09-frost-hazard--21-november-2026).
 - The Vulkan boss restore reported an unrelated renderer fallback for light
   498 (`lights/round`): a required shadow resource was unavailable and its
   receivers rendered without that shadow. This audit does not qualify Vulkan
@@ -1581,3 +1582,131 @@ Limits. Saves made in Cryofac before this change keep their own entity state:
 their marines are wherever the save left them, their seals stay focusable and
 the west of the ice wall stays inert until the map is restarted. No scene was
 watched with a player moving; Linux and macOS were not run.
+
+## Tak ignores enemies after an interrupted repair — 21 November 2026
+
+Reported by the user: across the campaign Tak wanders while monsters attack
+and never returns fire, while every other marine fights.
+
+Tak is the squad's tech: `char_q4x_marine_tech` takes `spawnclass rvAIMedic`
+from `char_marine_tech_extras` but, unlike stock's unarmed techs, inherits
+`char_q4x_marine`'s machinegun (m01, m02, m04 and m08; m03's Tak is a plain
+marine). `rvAIMedic::TakePatient` makes the healer `becomePassive( 1 )`: not
+aware, ignoring enemies, enemy cleared. It remembered the stance from before,
+but the stock code handed it back only from `DropPatient` while the healer was
+unscripted. Two ordinary ways for a heal to end skipped that:
+
+- a scripted move (`aiScriptedMove`) starts a move, `OnStartMoving` calls
+  `DropPatient`, and the healer is already scripted;
+- a scripted face or animation calls `SetState`, and `OnStateThreadClear`
+  forgot the patient without calling `DropPatient` at all.
+
+The healer then stayed passive and blind to enemies for good. It also meant
+`SituationAllowsPatient` always passed (it returns true while ignoring
+enemies), so the next armour repair remembered the leaked stance as the one to
+restore. The Awakening's scripts move Tak constantly and repair armour at 35 or
+less, so a repair interrupted by the next scene was routine. Stock never showed
+it: its medics and techs carry no weapon.
+
+The fix (`src/game/ai/AI_Medic.cpp`, mirrored in `src/mpgame/`):
+
+- `patientPassive` records that the current passivity is the heal's.
+  `RestorePatientCombatFlags` gives the remembered awareness and ignore-enemies
+  back once; `DropPatient` calls it scripted or not, and `OnStateThreadClear`
+  calls it when another state takes the healer from its patient.
+- A script's or `trigger_ai`'s own `becomePassive`/`becomeAggressive` clears
+  the flag (rvAIMedic overrides both events and chains to idAI), so a scene
+  that makes Tak passive during a heal, as m01's trench script does, stays in
+  control.
+- A heal taken over another keeps the stance from before the first.
+- The flag is not saved: `Restore` derives it from the patient, so the save
+  payload is unchanged.
+
+### Validation
+
+Windows x64 OpenGL, hidden, no input, `developer 1`, the user-supplied alpha
+content, m02 Trianfac 12 s after the start with god and notarget. Each probe
+spawns a Strogg marine in clear view about 260 units from Tak and samples
+`$tak.getEnemy()` every 0.5 s. Before: the staged `.install` build. After:
+`.tmp/runtime/awakening-missions` (client, GL renderer and single-player module
+built from one tree, with `.install`'s packs).
+
+| Probe | Before | After |
+| --- | --- | --- |
+| No repair (control) | Enemy after 3 s; the Strogg dies | — |
+| `takePatient`, then `scriptedFace` 1.5 s later | Never an enemy in 12 s; the other marines kill the Strogg | Enemy at once; Tak kills it within 3 s |
+| `takePatient`, then `scriptedMove` to a mark | — | Enemy throughout (the scripted move holds his fire, as it does without a repair) |
+| `takePatient` left to finish, armour 0 | — | Enemy at once after the repair; the Strogg dies within 4 s |
+
+`tools/tests/ai_medic_combat_stance_restore.py` pins the fix in both trees.
+
+Limits. A save made while Tak already ignored enemies keeps that stance until a
+script makes him aggressive (m01's trench script does; m02, m04 and m08 never
+do), so restart the level or load an earlier save. The armour a full repair
+gives was not read back, and no level was played through with a player moving;
+Linux and macOS were not run.
+
+## M09 frost hazard — 21 November 2026
+
+The user asked what M09's strategy is meant to be. The recovered map and script
+answer it: the level's pressure is a freezing fog that follows the player down
+each descent and then times the boss fight. It is three slabs, `fog01_hurt`,
+`fog02_hurt` and `fog03_hurt`, each a `trigger_hurt` 1,296 units square and 512
+thick, bound with its fog light to a mover (`mvr_fog01`–`03`). The damage def
+is `damage_triggerhurt_toxin`: 5 points a tick, `noArmor`. A slab is a band,
+not a fill: once it has passed, the space above it is safe again.
+
+| Stage | Started by | Movement | Then |
+| --- | --- | --- | --- |
+| First shaft | `main` (`moveIceCubeDown` → `navajasPlantsBomb`) | Lower edge 1,808 → 904 over 120 s | `trigger_once_99` (z 632) takes it down to 344 over another 120 s |
+| Second shaft | `animateNavajas`, after Navajas falls | Lower edge 584 → −448 over 120 s | `trigger_once_100` (z −640) takes it to −1,392, the floor's level, over 120 s; the exit door unlocks at `trigger_once_105` |
+| Finale | `initValk` | Lower edge −4,072 → −4,736 over 180 s | Stops 64 units above the −4,800 arena floor; the script's comment calls it the three minutes allowed for the boss |
+
+The first shaft's floors are about 256 units apart (z 1,408, 1,152, 896, 640,
+320). With the player's fall thresholds (`soft`/`hard`/`fatal_fall_delta` 30,
+45 and 65; delta is 0.2132 per unit dropped at the default gravity), a drop of
+more than about 141 units costs 10, more than 211 costs 30 and more than 305
+kills. One floor straight down is a hard fall and the 320-unit last drop is
+fatal, so the descent is the beam, pipe and machinery route recorded above, not
+a staircase. Nothing in the map signposts it.
+
+### Validation
+
+Windows x64 OpenGL, hidden, no input, `developer 1`, the user-supplied alpha
+content, default skill, `notarget`. The staged `.install` client, single-player
+module and GL renderer had the same hashes before and after the runs
+(`e36d2210…`, `51e7863c…`, `560e659b…`). One console script per run teleports
+the player onto static world floor inside the slab's footprint, fires the map's
+own triggers, and samples the mover's origin and the player's health every
+second; `g_debugDamage` logs each hit. The first shaft starts naturally. The
+second starts from `trigger_once_9`, the egg sequence that ends in Navajas's
+death, and the finale from its two intro triggers.
+
+| Check | Expected from the map | Observed |
+| --- | --- | --- |
+| First shaft, starting floor | Hurt once the lower edge reaches head height (feet + 77) | Moves at 7.7 units/s from about 2 s in; damage from about 42 s |
+| First shaft, z 640 floor | Safe while the slab rests at its first stop | No damage until `trigger_once_99`; it then moves at 4.7 units/s, with damage about 40 s later |
+| Second shaft, z 64 floor | Hurt about 52 s after the fog starts | Fog starts about 33 s into the egg sequence, moves at 8.7 units/s; damage about 52 s later |
+| Second shaft, bottom floor | Hurt about 110 s after `trigger_once_100` | Moves at 7.9 units/s; damage about 110 s later, and it stays |
+| Finale, main floor standing | Hurt about three minutes in | Starts about 12 s after the intro; damage from about 186 s |
+| Finale, crouching (`openq4_testInput … crouch`) | Below the slab | No damage for the 15 s crouch; it resumes on standing |
+| Finale, entrance ledge (−3,808, 736, −4,672) | Outside the footprint, though inside the band's height | No damage |
+
+Each hit cost 4 health and no armour. The fog's trigger is not the world, so
+`CalcDamagePoints` applies the skill scale (none on Normal), and on Easy and
+Normal `g_useDynamicProtection` then scales player damage down from 1.0. By the
+same code Hard multiplies it by 1.7 and turns dynamic protection off: about 8 a
+tick, not measured. Logs: `.tmp/awk/runs/m09frost_s1`, `m09frost_s2` and
+`m09frost_fin`.
+
+Two failed attempts are not results. Two probes sharing one savepath raced on
+the settings-recovery file lease and the second exited with a fatal error
+(OS error 32), so the runs were made one at a time. A first second-shaft spot at
+(−2,584, −112, 140) was not static floor and the player fell to z −2,617; the
+rerun used the cryo floor at (−2,688, −440, 64). Starting the second shaft early
+also logs a null `$mover_icecube` warning from the first shaft's still-running
+opening thread; that is the probe's shortcut, not a map fault.
+
+Limits. This confirms the hazard's timing, reach and damage, not a descent made
+with player movement against it, the Valkaryne's attacks, or balance. Hard and
+Nightmare were not run, and neither were Vulkan, Linux or macOS.

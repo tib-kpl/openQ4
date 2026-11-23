@@ -508,10 +508,32 @@ void Sys_ShowSplash(void) {
 	UpdateWindow(s_wcd.hWndSplash);
 }
 
+// The game window is shown while the splash still holds the foreground, so the
+// game window takes it over instead of Windows handing it to another program,
+// and the splash is then owned by the game window: an owned window always sits
+// above its owner, so the splash stays visible over the not yet drawn game
+// window without being raised above other programs.
+void Sys_KeepSplashAboveWindow(void *nativeWindow) {
+	if (!s_wcd.hWndSplash || !IsWindow(s_wcd.hWndSplash)) {
+		return;
+	}
+	HWND owner = static_cast<HWND>(nativeWindow);
+	if (owner != NULL && !IsWindow(owner)) {
+		owner = NULL;
+	}
+	SetWindowLongPtr(s_wcd.hWndSplash, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(owner));
+	if (owner != NULL) {
+		SetWindowPos(s_wcd.hWndSplash, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+	}
+}
+
 void Sys_DestroySplash(void) {
 	if (s_wcd.hWndSplash) {
-		ShowWindow(s_wcd.hWndSplash, SW_HIDE);
-		DestroyWindow(s_wcd.hWndSplash);
+		// Windows destroys an owned splash along with its owner.
+		if (IsWindow(s_wcd.hWndSplash)) {
+			ShowWindow(s_wcd.hWndSplash, SW_HIDE);
+			DestroyWindow(s_wcd.hWndSplash);
+		}
 		s_wcd.hWndSplash = NULL;
 	}
 }
@@ -1244,6 +1266,32 @@ void Conbuf_AppendText(const char* pMsg)
 	SendMessage(s_wcd.hwndBuffer, EM_LINESCROLL, 0, 0xffff);
 	SendMessage(s_wcd.hwndBuffer, EM_SCROLLCARET, 0, 0);
 	SendMessage(s_wcd.hwndBuffer, EM_REPLACESEL, 0, (LPARAM)buffer);
+}
+
+/*
+** Conbuf_WriteText
+**
+** Writes the console log window's text to an open file, for the fatal error
+** record. It runs after engine shutdown, so it allocates from the process
+** heap rather than the engine's allocator.
+*/
+bool Conbuf_WriteText(HANDLE file) {
+	if (file == INVALID_HANDLE_VALUE || s_wcd.hwndBuffer == NULL) {
+		return false;
+	}
+	const int length = GetWindowTextLengthA(s_wcd.hwndBuffer);
+	if (length <= 0) {
+		return false;
+	}
+	char* text = static_cast<char*>(HeapAlloc(GetProcessHeap(), 0, static_cast<SIZE_T>(length) + 1));
+	if (text == NULL) {
+		return false;
+	}
+	const int copied = GetWindowTextA(s_wcd.hwndBuffer, text, length + 1);
+	DWORD written = 0;
+	const bool ok = copied > 0 && WriteFile(file, text, static_cast<DWORD>(copied), &written, NULL) && written == static_cast<DWORD>(copied);
+	HeapFree(GetProcessHeap(), 0, text);
+	return ok;
 }
 
 /*

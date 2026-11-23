@@ -737,9 +737,24 @@ void idGameLocal::Init( void ) {
 // jnewquist: Tag scope and callees to track allocations using "new".
 	MEM_SCOPED_TAG(tag,MA_RENDER);
 // shouchard:  make sure ban list starts out in a known state
+	modBans = NULL;
 	banListLoaded = false;
 	banListChanged = false;
 	memset( clientGuids, 0, sizeof( clientGuids ) );
+	memset( clientModAddress, 0, sizeof( clientModAddress ) );
+	memset( modTextMuteUntil, 0, sizeof( modTextMuteUntil ) );
+	memset( &modMutes, 0, sizeof( modMutes ) );
+	memset( modChatFlood, 0, sizeof( modChatFlood ) );
+	memset( modNoticeTime, 0, sizeof( modNoticeTime ) );
+	modRefusalWindowStart = 0;
+	modRefusalWindowCount = 0;
+	modBanFileWarned = false;
+	modShutdownRun = 0;
+	modShutdownMode = 0;
+	modActorClient = -1;
+	modShutdownAt = 0;
+	modShutdownNextNotice = -1;
+	modShutdownStopTime = 0;
 // RAVEN END
 
 // RAVEN BEGIN
@@ -1404,8 +1419,56 @@ const idDict* idGameLocal::SetUserInfo( int clientNum, const idDict &userInfo, b
 		// server sanity
 		if ( !isClient ) {
 
+			// openQ4 MP-18: the name policy. No control characters, at most
+			// MP_MOD_NAME_VISIBLE_MAX characters that show, never empty, and none
+			// of the names g_reservedNames keeps for the people who run the server.
+			{
+				char cleanName[ MP_MOD_NAME_BYTES ];
+				if ( MPModCleanName( idGameLocal::userInfo[ clientNum ].GetString( "ui_name" ), cleanName, sizeof( cleanName ), MP_MOD_NAME_VISIBLE_MAX ) ) {
+					idGameLocal::userInfo[ clientNum ].Set( "ui_name", cleanName );
+					modifiedInfo = true;
+				}
+				// The clan tag is shown beside the name in every score list, so it answers to
+				// the same rules; it may be empty, and a reserved name is no clan tag either.
+				char cleanClan[ MP_MOD_NAME_BYTES ];
+				const bool clanChanged = MPModCleanText( idGameLocal::userInfo[ clientNum ].GetString( "ui_clan" ), cleanClan, sizeof( cleanClan ), MP_MOD_NAME_VISIBLE_MAX );
+				if ( !botManager.IsBot( clientNum ) && MPModNameIsReserved( cleanClan, g_reservedNames.GetString() ) ) {
+					idGameLocal::userInfo[ clientNum ].Set( "ui_clan", "" );
+					modifiedInfo = true;
+				} else if ( clanChanged ) {
+					idGameLocal::userInfo[ clientNum ].Set( "ui_clan", cleanClan );
+					modifiedInfo = true;
+				}
+				// A muted player keeps the name and the clan tag the mute found them under.
+				// Both are shown to everyone, in the score list and in every kill message,
+				// and would otherwise carry the words the mute stopped.
+				if ( IsClientTextMuted( clientNum ) ) {
+					if ( modMutedName[ clientNum ].Length() == 0 ) {
+						modMutedName[ clientNum ] = idGameLocal::userInfo[ clientNum ].GetString( "ui_name" );
+						modMutedClan[ clientNum ] = idGameLocal::userInfo[ clientNum ].GetString( "ui_clan" );
+					} else {
+						if ( modMutedName[ clientNum ].Cmp( idGameLocal::userInfo[ clientNum ].GetString( "ui_name" ) ) != 0 ) {
+							idGameLocal::userInfo[ clientNum ].Set( "ui_name", modMutedName[ clientNum ].c_str() );
+							modifiedInfo = true;
+						}
+						if ( modMutedClan[ clientNum ].Cmp( idGameLocal::userInfo[ clientNum ].GetString( "ui_clan" ) ) != 0 ) {
+							idGameLocal::userInfo[ clientNum ].Set( "ui_clan", modMutedClan[ clientNum ].c_str() );
+							modifiedInfo = true;
+						}
+					}
+				} else if ( modMutedName[ clientNum ].Length() > 0 ) {
+					modMutedName[ clientNum ].Clear();
+					modMutedClan[ clientNum ].Clear();
+				}
+				if ( !botManager.IsBot( clientNum ) && MPModNameIsReserved( idGameLocal::userInfo[ clientNum ].GetString( "ui_name" ), g_reservedNames.GetString() ) ) {
+					idGameLocal::userInfo[ clientNum ].Set( "ui_name", va( "%s_", idGameLocal::userInfo[ clientNum ].GetString( "ui_name" ) ) );
+					modifiedInfo = true;
+				}
+			}
+
 			// don't let numeric nicknames, it can be exploited to go around kick and ban commands from the server
-			if ( idStr::IsNumeric( this->userInfo[ clientNum ].GetString( "ui_name" ) ) ) {
+			// openQ4 MP-18: what counts is what the name shows; "^13" reads as slot 3 on every score list
+			if ( MPModNameIsNumeric( this->userInfo[ clientNum ].GetString( "ui_name" ) ) ) {
 #if UI_DEBUG
 				common->Printf( "SetUserInfo: client %d changed name from %s to %s_\n", 
 					clientNum, idGameLocal::userInfo[ clientNum ].GetString( "ui_name" ), idGameLocal::userInfo[ clientNum ].GetString( "ui_name" ) );
@@ -1431,7 +1494,8 @@ const idDict* idGameLocal::SetUserInfo( int clientNum, const idDict &userInfo, b
 // jnewquist: Use accessor for static class type 
 				if ( entities[ i ] && entities[ i ]->IsType( idPlayer::GetClassType() ) ) {
 // RAVEN END
-					if ( !idStr::Icmp( idGameLocal::userInfo[ clientNum ].GetString( "ui_name" ), idGameLocal::userInfo[ i ].GetString( "ui_name" ) ) ) {
+					// openQ4 MP-18: one name whatever its colours; "^1Bob" used to pass beside "Bob"
+					if ( !idStr::IcmpNoEscape( idGameLocal::userInfo[ clientNum ].GetString( "ui_name" ), idGameLocal::userInfo[ i ].GetString( "ui_name" ) ) ) {
 #if UI_DEBUG
 						common->Printf( "SetUserInfo: client %d changed name from %s to %s_ because of client %d\n", 
 							clientNum, idGameLocal::userInfo[ clientNum ].GetString( "ui_name" ), idGameLocal::userInfo[ clientNum ].GetString( "ui_name" ), i );
@@ -1455,6 +1519,9 @@ const idDict* idGameLocal::SetUserInfo( int clientNum, const idDict &userInfo, b
 		if ( !isClient ) {
 			// now mark this client in game
 			mpGame.EnterGame( clientNum );
+			// openQ4 MP-17: the userinfo that offers an identity can arrive after the
+			// player has the map; the challenge goes out then
+			mpGame.IdentityUserInfoChanged( clientNum );
 		}
 	}
 
@@ -2099,6 +2166,16 @@ void idGameLocal::MapRestart( int instance ) {
 		SetGameType();
 		LocalMapRestart( instance );
 	} else {
+		// openQ4 MP-18: a shutdown that waited for this match takes the place of
+		// whatever map would come next, whether the match ran out, a vote passed
+		// or an operator asked for the next map
+		if ( RunServerShutdown( true ) ) {
+			return;
+		}
+		// the chat flood window holds game times, and a restart starts the clock again
+		for ( int slot = 0; slot < MAX_CLIENTS; slot++ ) {
+			MPModFloodReset( modChatFlood[ slot ] );
+		}
 
 		if ( mpGame.PickMap( "", true ) ) {
 			common->Warning( "map %s and gametype %s are incompatible, aborting map change", si_map.GetString(), si_gameType.GetString() );
@@ -3115,6 +3192,10 @@ idGameLocal::MapShutdown
 ============
 */
 void idGameLocal::MapShutdown( void ) {
+	// openQ4 (PAD-03): no aim assistance outlives the map
+	cvarSystem->SetCVarFloat( "in_aimAssistSlow", 1.0f );
+	cvarSystem->SetCVarFloat( "in_aimAssistYaw", 0.0f );
+	cvarSystem->SetCVarFloat( "in_aimAssistPitch", 0.0f );
 	idSaveGame::ClearDictionaryCache();
 	ClearEntityDefCache();
 	Printf( "------------ Game Map Shutdown --------------\n" );
@@ -3124,6 +3205,8 @@ void idGameLocal::MapShutdown( void ) {
 		// openQ4: a server that stops gives the map's settings back; a change
 		// of map already settled them in ValidateServerSettings
 		mpMapHost.ServerMapShutdown();
+		// openQ4 MP-18: a server that stopped itself (serverShutdown) is gone now
+		ServerShutdownMapEnded();
 	}
 	gamestate = GAMESTATE_SHUTDOWN;
 	idRestoreGame::PrepareMapShutdown();
@@ -4737,6 +4820,13 @@ TIME_THIS_SCOPE("idGameLocal::RunFrame - gameDebug.BeginFrame()");
 		ret.consistencyHash = 0;
 		ret.sessionCommand[0] = 0;
 
+		// openQ4 MP-18: the game state's eight-hour restart, a limit vote, a ruleset
+		// change and a series handing on its next map all ask the engine for the
+		// next map here, and none of them passes through MapRestart. A server that
+		// waits to stop when its match ends stops instead of loading that map.
+		if ( sessionCommand.Length() && isMultiplayer && isServer && RunServerShutdown( true ) ) {
+			sessionCommand = "";
+		}
 		// see if a target_sessionCommand has forced a changelevel
 		if ( sessionCommand.Length() ) {
 			idStr::Copynz( ret.sessionCommand, sessionCommand, sizeof( ret.sessionCommand ) );
@@ -4760,6 +4850,13 @@ TIME_THIS_SCOPE("idGameLocal::RunFrame - gameDebug.BeginFrame()");
 		// bdube: let gameDebug know that its not in a game frame anymore
 		gameDebug.EndFrame( );
 		gameLogLocal.EndFrame( );
+
+		// openQ4: skipping a cinematic runs thousands of frames in this call
+		// (the settle frames of a level load among them); between two of them
+		// the loading screen keeps presenting.
+		if ( skipCinematic ) {
+			common->LoadingCheckpoint();
+		}
 
 	} while( ( inCinematic || ( time < cinematicStopTime ) ) && skipCinematic );
 
@@ -6564,6 +6661,8 @@ void idGameLocal::SpawnMapEntities( int instance, unsigned short* entityNumIn, u
 	}
 
 	for ( i = 1 ; i < numEntities ; i++ ) {
+		// openQ4: the loading screen keeps presenting between map entities.
+		common->LoadingCheckpoint();
 
 		if ( profileMapSpawn ) {
 			mapCopyTimer.Start();

@@ -3,6 +3,7 @@
 
 #include "../framework/PresentationClock.h"
 #include "../framework/PresentationLook.h"
+#include "../framework/ControllerAimAssist.h"
 
 // RAVEN BEGIN
 // jsinger: attempt to eliminate cross-DLL allocation issues
@@ -366,6 +367,14 @@ enum {
 	// openQ4: a player's request to the map database, client to server: the
 	// map queue (mymap) and the end-of-match pick (mappick).
 	GAME_RELIABLE_MESSAGE_MAPDB,
+	// openQ4 (MP-18): a logged-in admin's request to kick, mute or ban a
+	// connected player, client to server (mp/Moderation.h).
+	GAME_RELIABLE_MESSAGE_MODERATION,
+	// openQ4 (MP-17): player identity (mp/Identity.h). Server to client, the
+	// challenge, sent only to a client whose userinfo has ui_identity 1, so an
+	// older client never sees it; client to server, the signed proof or a
+	// returning player's ghost code.
+	GAME_RELIABLE_MESSAGE_IDENTITY,
 	// Insert future wire messages before this sentinel; never serialize COUNT.
 	GAME_RELIABLE_MESSAGE_COUNT,
 };
@@ -413,6 +422,10 @@ typedef enum {
 	RELIABLE_FLOOD_EMOTE,
 	// a queued map is announced to every client
 	RELIABLE_FLOOD_MAPDB,
+	// an admin's request writes the admin log and can rewrite the ban list
+	RELIABLE_FLOOD_MODERATION,
+	// MP-17: a proof costs the server a signature check
+	RELIABLE_FLOOD_IDENTITY,
 
 	RELIABLE_FLOOD_NUM
 } reliableFloodClass_t;
@@ -425,6 +438,8 @@ const int RELIABLE_FLOOD_VOTEMAPS_DELAY	= 2000;
 const int RELIABLE_FLOOD_EVENT_DELAY	= 5000;
 const int RELIABLE_FLOOD_EMOTE_DELAY	= 500;
 const int RELIABLE_FLOOD_MAPDB_DELAY	= 1000;
+const int RELIABLE_FLOOD_MODERATION_DELAY	= 500;
+const int RELIABLE_FLOOD_IDENTITY_DELAY	= 250;
 
 // "has never sent one of these".  It cannot be 0: gameLocal.time starts at 0 on
 // every map load, so a zero stamp reads as "sent just now" and swallows each
@@ -1545,22 +1560,58 @@ public:
 	int						RemoteExtrapolationMS( int clientNum, int leadMS ) const;
 	void					UpdateAdvertisedRemoteExtrapolation( void );
 
+	// openQ4 MP-18: bans are address ranges with an expiry and a reason, kept in
+	// banlist.txt (mp/Moderation.h, mp/ModerationFile.h)
 	void					LoadBanList();
 	void					SaveBanList();
 	void					FlushBanList();
-	bool					IsPlayerBanned( const char *name );
-	bool					IsGuidBanned( const char *guid );
-	void					AddGuidToBanList( const char *guid );
+	const mpModBan_t *		FindBan( const mpModAddress_t &address );
+	int						AddBan( const mpModAddress_t &address, int prefixBits, mpModTime_t durationSeconds, const char *name, const char *reason );
+	bool					RemoveBan( int index );
+	// the menus name a ban by its range text, where Quake 4 passed a GUID
 	void					RemoveGuidFromBanList( const char *guid );
+	void					AddGuidToBanList( const char *guid );
 	virtual void			RegisterClientGuid( int clientNum, const char *guid );
 
 	int						GetBanListCount();
-	const mpBanInfo_t*		GetBanListEntry( int entry );	// returns client name
+	const mpModBan_t *		GetBan( int entry );
+	const mpBanInfo_t*		GetBanListEntry( int entry );	// the row as the menus read it
 	const char*				GetGuidByClientNum( int clientNum );	// returns GUID
-	int						GetClientNumByGuid( const char* );		// returns clientNum
 
-// mekberg: get and send ban list
-	void					ServerSendBanList( int clientNum );
+	// a connected client's address; family 0 for a bot or the listen server's own player
+	const mpModAddress_t &	GetClientModAddress( int clientNum ) const;
+	void					ModerationClientConnect( int clientNum );
+	void					ModerationClientDisconnect( int clientNum );
+	bool					ModerationRefuseBanned( const char *endpoint );
+	int						ServerBan( const mpModAddress_t &address, int prefixBits, mpModTime_t durationSeconds, const char *name, const char *reason, const char *by );
+	// openQ4 MP-17: a ban on a player identity, which removes whoever holds it;
+	// and a connected player's ban, by the range they hold and their identity
+	int						ServerBanIdentity( const char *identity, mpModTime_t durationSeconds, const char *name, const char *reason, const char *by );
+	int						ServerBanClient( int clientNum, mpModTime_t durationSeconds, const char *reason, const char *by );
+	const mpModBan_t *		FindIdentityBan( const char *identity );
+	bool					IsClientTextMuted( int clientNum );
+	bool					SetClientTextMute( int clientNum, bool mute, mpModTime_t durationSeconds, const char *by );
+	bool					ModerationAllowChat( int clientNum, bool fromNetwork );
+	void					ModerationWriteLog( mpModLogLine_t &line );
+	void					ModerationLogClient( const char *event, const char *by, int clientNum, const char *reason, mpModTime_t seconds );
+	void					ModerationLogBan( const char *event, const char *by, const mpModBan_t &ban );
+	static void				Ban_f( const idCmdArgs &args );
+	static void				Unban_f( const idCmdArgs &args );
+	static void				BanList_f( const idCmdArgs &args );
+	static void				Mute_f( const idCmdArgs &args );
+	// admins (net_serverAdminPassword): the typed request a logged-in client sends
+	void					ServerModerationRequest( int clientNum, const idBitMsg &msg );
+	bool					ClientModerationRequest( int verb, int clientNum, mpModTime_t seconds, const char *reason );
+	static void				Admin_f( const idCmdArgs &args );
+	static void				ClientKick_f( const idCmdArgs &args );
+	static void				Status_f( const idCmdArgs &args );
+	// graceful shutdown: tell the players, let the match end or a time run out, stop
+	void					ScheduleServerShutdown( bool afterMatch, mpModTime_t seconds, const char *reason, const char *by );
+	bool					CancelServerShutdown( const char *by );
+	bool					RunServerShutdown( bool matchEnded );
+	void					ServerShutdownMapEnded( void );
+	void					ModerationLogShutdown( const char *event, const char *by, const char *when, mpModTime_t seconds );
+	static void				Shutdown_f( const idCmdArgs &args );
 
 // jscott: made public
 	pvsHandle_t				GetClientPVS( idPlayer *player, pvsType_t type );
@@ -1573,9 +1624,29 @@ public:
 
 private:
 	char					clientGuids[ MAX_CLIENTS ][ CLIENT_GUID_LENGTH ];
-	idList<mpBanInfo_t>		banList;
+	mpModBanList_t *		modBans;				// NULL until the list is first needed
+	idStrList				modBanKeptLines;		// lines of banlist.txt that are not bans this build reads
 	bool					banListLoaded;
 	bool					banListChanged;
+	mpModAddress_t			clientModAddress[ MAX_CLIENTS ];
+	mpModTime_t				modTextMuteUntil[ MAX_CLIENTS ];	// 0 not muted, -1 until lifted, else when it ends
+	mpModMuteList_t			modMutes;				// mutes by address, so a reconnect keeps one
+	mpModFlood_t			modChatFlood[ MAX_CLIENTS ];
+	int						modNoticeTime[ MAX_CLIENTS ];	// game time of the next "you are muted" notice
+	int						modActorClient;			// the admin whose request is being carried out, or -1
+	// the name and clan tag a muted player is held to; both empty until the first
+	// name the server accepts from a connection whose mute came with its address
+	idStr					modMutedName[ MAX_CLIENTS ];
+	idStr					modMutedClan[ MAX_CLIENTS ];
+	mpModTime_t				modRefusalWindowStart;	// the minute in which refused connections are being counted
+	int						modRefusalWindowCount;	// how many of them reached the admin log in it
+	bool					modBanFileWarned;		// said once that an unusable banlist.txt is not written over
+	int						modShutdownRun;			// the server (net_serverRunId) a waiting shutdown was asked of
+	int						modShutdownMode;		// MOD_SHUTDOWN_* in Game_network.cpp
+	mpModTime_t				modShutdownAt;			// when a timed shutdown stops the server
+	int						modShutdownNextNotice;	// seconds left at which players are told again; -1 none
+	int						modShutdownStopTime;	// game time the stop command runs, once the goodbye is sent
+	idStr					modShutdownReason;
 // RAVEN END
 };
 

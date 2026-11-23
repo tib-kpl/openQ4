@@ -237,10 +237,17 @@ def test_texture_usage_and_lifecycle_contracts() -> None:
     require(declared_usage, "declaredUsage != TD_PBR_COLOR", "PBR color image-program usage preservation")
     require(declared_usage, "declaredUsage != TD_MATERIAL_DATA", "PBR data image-program usage preservation")
     load_image = function_body(image_load, "void idImage::ActuallyLoadImage(")
-    if load_image.count("R_LoadImageProgramForDeclaredUsage(") != 5:
+    # Five decodes plus the settings reload's tape-recording probe for the
+    # worker decode route (a8426388c).
+    if load_image.count("R_LoadImageProgramForDeclaredUsage(") != 6:
         raise AssertionError("every image-program decode in ActuallyLoadImage must preserve declared PBR usage")
     if "R_LoadImageProgram(" in load_image:
         raise AssertionError("ActuallyLoadImage must not bypass declared PBR usage preservation")
+    # The worker replays the same decode off the main thread; it must keep the
+    # declared usage too, or a published PBR result would carry an inferred one.
+    worker_decode = function_body(image_load, "bool R_RunImageDecodeJob(")
+    if worker_decode.count("R_LoadImageProgramForDeclaredUsage(") != 1 or "R_LoadImageProgram(" in worker_decode:
+        raise AssertionError("the worker image-program decode must preserve declared PBR usage")
 
     require(image_header, "textureUsage_t GetUsage() const", "PBR image usage runtime introspection")
     material = read(ROOT / "src/renderer/Material.cpp")
@@ -1090,10 +1097,10 @@ def test_vulkan_pbr_support_stays_narrow_and_fail_closed() -> None:
         "PBRDistributionGGX(ndoth, roughness)",
         "PBRVisibilitySmithGGX(ndotv, ndotl, roughness)",
         "vec3 diffuse = (vec3(1.0) - fresnel) * (1.0 - metallic)",
-        "vec3 orm = texture(specularMap, dataTexCoord).rgb",
+        "vec3 orm = PBRDataTexture(specularMap, dataTexCoord).rgb",
         "materialData = orm.bg",
-        "texture(specularTableMap, dataTexCoord).r",
-        "texture(specularMap, dataTexCoord).r",
+        "PBRDataTexture(specularTableMap, dataTexCoord).r",
+        "PBRDataTexture(specularMap, dataTexCoord).r",
         "value.agb",
         "sqrt(max(1.0 - dot(xy, xy), 0.0))",
     ):
@@ -1171,7 +1178,7 @@ def test_vulkan_environment_mip_chain_sampler() -> None:
                   "if ( !explicitMipChain && ( filter != TF_DEFAULT || !defaultFilter.usesMipmaps ) )",
                   "vkSamplerKeys[ i ].explicitMipChain == explicitMipChain",
                   "explicitMipChain ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST",
-                  "VK_Image_GetSampler( filter, repeat, entry->numMips > 1, entry->explicitMipChain )",
+                  "VK_Image_GetSampler( filter, repeat, entry->numMips > 1, entry->explicitMipChain,",
                   "bool VK_Image_UseExplicitMipChain( unsigned int texnum )"):
         require(image, token, "explicit mip-chain sampler")
     probes = read(ROOT / "src/renderer/Vulkan/vk_PBRProbes.cpp")
@@ -1320,9 +1327,11 @@ def test_gl_classic_loop_native_pbr_contract() -> None:
         "GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA | depthBits",
         "GL_State( GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE | GLS_DEPTHMASK | GLS_DEPTHFUNC_LESS );",
         "RB_GLPBR_SurfaceIdentity( lightSurf ) != identity",
-        "clamp( texture2D( uDiffuseMap, vDiffuseTexCoord ).a * uPBRTransparent.x, 0.0, 1.0 ) : 0.0;",
+        "clamp( PBR_ALBEDO_TEXTURE( uDiffuseMap, vDiffuseTexCoord ).a * uPBRTransparent.x, 0.0, 1.0 ) : 0.0;",
         "RB_GLSLSurfaceUsesGPUPosedGeometry( surf )",
         "glPBRFragmentLibrary += OPENQ4_PBR_SCALAR_GLSL;",
+        # REN-11: without OPENQ4_PBR_PARALLAX every material sample is the plain texture2D call.
+        "#define PBR_ALBEDO_TEXTURE( map, uv ) texture2D( map, uv )\\n",
         "PBRClassicLightIrradianceColor(",
         "PBREnergyCompensationColor( f0, PBRSpecularAlbedo( ndotv, roughness ) )",
         "PBRUniformEnvironmentLight( radiance, albedo, metallic, roughness, PBRScreenAO( data.z ),",
@@ -1432,7 +1441,9 @@ def test_pbr_production_environment_contract() -> None:
     for token in ('if (!token.Icmp("packORM")) {', 'if (src.ReadToken(&source) && !source.Icmp("_white")) {',
                   "(*pic)[p * 4 + c] = sources[c] != NULL ? sources[c][p * 4] : 255;"):
         require(program, token, "packORM image program")
-    require(read(ROOT / "src/imagetools/Image_files.cpp"), '!token.Icmp( "packORM" );', "packORM is a program operator")
+    image_files = read(ROOT / "src/imagetools/Image_files.cpp")
+    require(image_files, '!token.Icmp( "packORM" ) ||', "packORM is a program operator")
+    require(image_files, '!token.Icmp( "packORMH" );', "packORMH (REN-11 height in ORM alpha) is a program operator")
     material = read(ROOT / "src/renderer/Material.cpp")
     for token in ('pbrMaterialTexture_t *channels[3] = { &pbrInfo.ao, &pbrInfo.roughness, &pbrInfo.metallic };',
                   'idStr program = "packORM( ";', "pbrInfo.packedSeparateData = true;"):
@@ -1530,7 +1541,7 @@ def test_pbr_ssao_indirect_contract() -> None:
                   "bool RB_SSAOIndirectField( idImage **image, float invSize[2] ) {",
                   "rendered = RB_STD_FillDepthBufferFiltered( drawSurfs, numDrawSurfs, RB_SSAOClassicWorldDepthSurfFilter );",
                   "RB_PrepareSSAOIndirectField();\n\tRB_PrepareLightGridDepthTexture();",
-                  "RB_DrawSSAOPass( field ? 2.0f : 0.0f, sceneImage, depthImage, finalDepthImage, NULL,"):
+                  "RB_DrawSSAOPass( 2.0f, sceneImage, depthImage, finalDepthImage, NULL,\n\t\t\trbSSAOFieldImage,"):
         require(common, token, "OpenGL SSAO field")
     owner = read(ROOT / "src/renderer/draw_pbr.cpp")
     for token in ("static const int GL_PBR_UNIT_SCREEN_AO = 14;",

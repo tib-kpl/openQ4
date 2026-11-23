@@ -1018,6 +1018,7 @@ void idGameLocal::Init( void ) {
 // jnewquist: Tag scope and callees to track allocations using "new".
 	MEM_SCOPED_TAG(tag,MA_RENDER);
 // shouchard:  make sure ban list starts out in a known state
+	modBans = NULL;
 	banListLoaded = false;
 	banListChanged = false;
 	memset( clientGuids, 0, sizeof( clientGuids ) );
@@ -3140,6 +3141,10 @@ void idGameLocal::InstanceClear( void ) {
 ====idGameLocal::MapShutdown
 =====*/
 void idGameLocal::MapShutdown( void ) {
+	// openQ4 (PAD-03): no aim assistance outlives the map
+	cvarSystem->SetCVarFloat( "in_aimAssistSlow", 1.0f );
+	cvarSystem->SetCVarFloat( "in_aimAssistYaw", 0.0f );
+	cvarSystem->SetCVarFloat( "in_aimAssistPitch", 0.0f );
 	idSaveGame::ClearDictionaryCache();
 	Printf( "------------ Game Map Shutdown --------------\n" );
 	
@@ -5020,6 +5025,13 @@ TIME_THIS_SCOPE("idGameLocal::RunFrame - gameDebug.BeginFrame()");
 		gameDebug.EndFrame( );
 		gameLogLocal.EndFrame( );
 
+		// openQ4: skipping a cinematic runs thousands of frames in this call
+		// (the settle frames of a level load among them); between two of them
+		// the loading screen keeps presenting.
+		if ( skipCinematic ) {
+			common->LoadingCheckpoint();
+		}
+
 	} while( ( inCinematic || ( time < cinematicStopTime ) ) && skipCinematic );
 
 	ret.syncNextGameFrame = skipCinematic;
@@ -6864,6 +6876,8 @@ void idGameLocal::SpawnMapEntities( int instance, unsigned short* entityNumIn, u
 	}
 
 	for ( i = 1 ; i < numEntities ; i++ ) {
+		// openQ4: the loading screen keeps presenting between map entities.
+		common->LoadingCheckpoint();
 
 		if ( profileMapSpawn ) {
 			mapCopyTimer.Start();

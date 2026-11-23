@@ -331,10 +331,9 @@ void R_AdvanceFrameData( void ) {
 R_ShutdownFrameData
 =====================
 */
-void R_ClearRetainedSnapshotIndexes();
 void R_ShutdownFrameData( void ) {
 	R_RenderThread_Sync( "frame shutdown" );
-	R_ClearRetainedSnapshotIndexes();
+	R_ClearRetainedSnapshotStreams();
 	R_FreeDeferredFrameSurfaces();
 	frameData = NULL;
 	R_SetBackEndFrameData( NULL );
@@ -411,12 +410,15 @@ renderer keeps its performance counters through these installed hooks.
 =================
 */
 static void R_ImageToolsOnStaticAlloc( size_t bytes ) {
+	// image workers decode off both threads; their allocations are not a frame's
+	if ( R_ImageFileTapeReplaying() ) { return; }
 	if ( R_RenderThread_OnRenderThread() ) { R_BackEndFrameData()->backendAllocCount++; R_BackEndFrameData()->backendStaticAllocBytes += bytes; return; }
 	tr.pc.c_alloc++;
 	tr.staticAllocCount += bytes;
 }
 
 static void R_ImageToolsOnStaticFree( void ) {
+	if ( R_ImageFileTapeReplaying() ) { return; }
 	if ( R_RenderThread_OnRenderThread() ) { R_BackEndFrameData()->backendFreeCount++; return; }
 	tr.pc.c_free++;
 }
@@ -603,6 +605,33 @@ void *R_FrameAlloc( int bytes ) {
 	block->used = bytes;
 
 	return block->base;
+}
+
+/*
+==================
+R_FrameMemoryContains
+
+True when data was handed out by R_FrameAlloc from the arena the calling
+thread currently allocates from: frame-temporary geometry, never a model's.
+==================
+*/
+bool R_FrameMemoryContains( const void *data ) {
+	const frameData_t *frame = R_BackEndFrameData();
+	if ( frame == NULL || data == NULL ) {
+		return false;
+	}
+	const uintptr_t address = reinterpret_cast<uintptr_t>( data );
+	for ( const frameMemoryBlock_t *block = frame->memory; block != NULL; block = block->next ) {
+		const uintptr_t base = reinterpret_cast<uintptr_t>( block->base );
+		if ( address >= base && address - base < static_cast<uintptr_t>( block->used ) ) {
+			return true;
+		}
+		if ( block == frame->alloc ) {
+			// later blocks hold nothing from this frame
+			break;
+		}
+	}
+	return false;
 }
 
 /*
@@ -983,6 +1012,10 @@ void R_SetViewMatrix( viewDef_t *viewDef ) {
 	world->modelMatrix[0*4+0] = 1;
 	world->modelMatrix[1*4+1] = 1;
 	world->modelMatrix[2*4+2] = 1;
+	// including its last row: a shadow-map caster pass multiplies whole model
+	// matrices, and a caster drawn in world space (the prelight front caps)
+	// came out with w = 0 and wrote no depth at all
+	world->modelMatrix[3*4+3] = 1;
 
 	// transform by the camera placement
 	origin = viewDef->renderView.vieworg;

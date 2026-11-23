@@ -69,6 +69,9 @@
 #include "vk_Image.h"
 #include "shaders/post_shaders_spv.h"
 #include "shaders/hdr_luminance_spv.h"
+#include "shaders/volumetric_shaders_spv.h"
+#include "vk_ShadowMap.h"
+#include "../VolumetricLighting.h"
 
 extern idCVar r_skipPostProcess;
 extern idCVar r_crt;
@@ -153,7 +156,9 @@ enum vkPostPassKind_t {
 	VK_POST_HDR_LUMINANCE,
 	VK_POST_MOTION_VECTORS_PREVIOUS,
 	VK_POST_MOTION_VECTORS_REACTIVE,
-	VK_POST_SKY_MASK
+	VK_POST_SKY_MASK,
+	VK_POST_VOLUMETRIC_INJECT,
+	VK_POST_VOLUMETRIC_COMPOSITE
 };
 
 // scene shader modules, created the first time a pass needs one
@@ -273,9 +278,12 @@ typedef struct vkPostSceneState_s {
 	int					ssaoFieldFrame;
 	bool				ssaoFieldFlip;		// its rows run opposite to the view's target
 
-	// Half-resolution classic AO (VK_Post_DrawSSAOHalf): r AO, g view depth
-	idImage *			ssaoHalf;
-	idRenderTexture *	ssaoHalfTarget;
+	// The occlusion target (VK_Post_DrawSSAOOcclusion): r AO, g view depth, ba its slope
+	idImage *			ssaoOcclusion;
+	idRenderTexture *	ssaoOcclusionTarget;
+	// The horizontal filter pass's output, the vertical pass's input
+	idImage *			ssaoFilter;
+	idRenderTexture *	ssaoFilterTarget;
 
 	// The main view's world depth drawn single-sample before its portal-sky
 	// backdrop (VK_PostProcess_PortalSkyMask); its capture is ssaoWorldDepth.
@@ -569,8 +577,11 @@ Called first thing in VK_GuiExecutor_Shutdown. The images belong to the
 image manager, which frees them on its own; the render textures are ours.
 ====================
 */
+static void VK_Post_ShutdownVolumetrics( void );
+
 void VK_PostProcess_Shutdown( void ) {
 	memset( &vkLinearCapture, 0, sizeof( vkLinearCapture ) );
+	VK_Post_ShutdownVolumetrics();
 	VK_SceneEffects_Shutdown();
 	VK_DebugTools_Shutdown();
 	for ( int i = 0; i < VK_HDR_MAX_LEVELS; ++i ) {
@@ -597,7 +608,8 @@ void VK_PostProcess_Shutdown( void ) {
 	}
 	delete vkPostScene.motionVectorTarget;
 	delete vkPostScene.ssaoFieldTarget;
-	delete vkPostScene.ssaoHalfTarget;
+	delete vkPostScene.ssaoOcclusionTarget;
+	delete vkPostScene.ssaoFilterTarget;
 	delete vkPostScene.earlyWorldTarget;
 	delete vkTemporalMotionTarget;
 	vkTemporalMotionTarget = NULL;
@@ -1536,9 +1548,10 @@ typedef struct vkPostSSAOBlock_s {
 	float	projection[ 4 ];
 	float	depthInfo[ 4 ];
 	float	params[ 4 ];
-	float	params2[ 4 ];
-	float	modeInfo[ 4 ];		// x mode (0 classic, 1 field, 2 apply, 3 half, 4 upsample), y field rows flipped
-	float	halfInfo[ 4 ];		// xy half-resolution target size, zw view size
+	float	params2[ 4 ];		// x max distance, y sample count, zw the filter pass's texel step
+	float	modeInfo[ 4 ];		// x mode (0 unfiltered, 1 field, 2 apply, 3 occlusion, 4 resolve, 5 filter), y field rows flipped
+	float	halfInfo[ 4 ];		// xy occlusion target size, zw view size
+	float	methodInfo[ 4 ];	// R_SSAOMethodInfo: x method, y temporal pattern turn, z classic multi-bounce albedo
 } vkPostSSAOBlock_t;
 
 static void VK_Post_FillSSAOBlock( vkPostSSAOBlock_t &block, const viewDef_t *viewDef,
@@ -1560,6 +1573,7 @@ static void VK_Post_FillSSAOBlock( vkPostSSAOBlock_t &block, const viewDef_t *vi
 	block.modeInfo[ 0 ] = mode;
 	block.modeInfo[ 1 ] = flip ? 1.0f : 0.0f;
 	block.modeInfo[ 3 ] = r_vkSSAODeferredNormal.GetBool() ? 1.0f : 0.0f;
+	R_SSAOMethodInfo( viewDef, block.methodInfo );
 }
 
 static bool VK_Post_SSAOFieldValid( const viewDef_t *viewDef ) {
@@ -1584,37 +1598,40 @@ static bool VK_Post_EnsureColorTarget( idImage *&image, idRenderTexture *&target
 
 /*
 ====================
-VK_Post_DrawSSAOHalf
+VK_Post_DrawSSAOOcclusion
 
-The classic multiply pass at half resolution (R_SSAOHalfResolution). The AO
-of the even pixel of each 2x2 block goes into a half-size target, computed as
-the full-resolution pass computes it there; a full-resolution pass then
-multiplies the scene by a depth-aware upsample of it. Sky and foreground
-pixels stay untouched exactly as before. With debug set (r_ssaoDebug) the
-upsample writes the AO itself instead, white where no AO applies. The
-reference composition and native PBR's occlusion field keep the
-full-resolution pass.
+Mode 3 of post_ssao.frag into the occlusion target: the raw AO of each view
+pixel, or with R_SSAOHalfResolution of the even pixel of each 2x2 block, with
+that pixel's view depth and depth slope. Each texel samples one of sixteen
+interleaved patterns, which two passes of mode 5 (a horizontal then a
+vertical tent, through the filter target) average away, so a low sample count
+reads as smooth occlusion instead of dither. The resolve and the field (modes
+4 and 1) then read the filtered occlusion target. block is filled for those
+passes; the active target is restored. The same draws as OpenGL's
+RB_DrawSSAOOcclusion.
 ====================
 */
-static bool VK_Post_DrawSSAOHalf( const viewDef_t *viewDef, VkShaderModule fragModule, idImage *worldDepth,
-		idImage *finalDepth, int width, int height, bool debug ) {
+static bool VK_Post_DrawSSAOOcclusion( const viewDef_t *viewDef, VkShaderModule fragModule, idImage *worldDepth,
+		idImage *finalDepth, int width, int height, vkPostSSAOBlock_t &block ) {
 	idRenderTexture *sceneTarget = VK_Exec_ActiveRenderTexture();
 	const int sceneFace = VK_Exec_ActiveCubeFace();
-	const int halfWidth = ( width + 1 ) / 2;
-	const int halfHeight = ( height + 1 ) / 2;
-	if ( !VK_Post_EnsureColorTarget( vkPostScene.ssaoHalf, vkPostScene.ssaoHalfTarget, "_vkSSAOHalf",
-			halfWidth, halfHeight, TF_NEAREST, "SSAO half resolution" ) ) {
-		vkPostFailReason = "the half-resolution target could not be created";
+	const bool half = R_SSAOHalfResolution();
+	const int targetWidth = half ? ( width + 1 ) / 2 : width;
+	const int targetHeight = half ? ( height + 1 ) / 2 : height;
+	if ( !VK_Post_EnsureColorTarget( vkPostScene.ssaoOcclusion, vkPostScene.ssaoOcclusionTarget, "_vkSSAOOcclusion",
+			targetWidth, targetHeight, TF_NEAREST, "SSAO occlusion" )
+		|| !VK_Post_EnsureColorTarget( vkPostScene.ssaoFilter, vkPostScene.ssaoFilterTarget, "_vkSSAOOcclusionFilter",
+			targetWidth, targetHeight, TF_NEAREST, "SSAO occlusion filter" ) ) {
+		vkPostFailReason = "the occlusion target could not be created";
 		return false;
 	}
-	vkPostSSAOBlock_t block;
 	VK_Post_FillSSAOBlock( block, viewDef, width, height, 3.0f, false );
-	block.halfInfo[ 0 ] = (float)halfWidth;
-	block.halfInfo[ 1 ] = (float)halfHeight;
+	block.halfInfo[ 0 ] = (float)targetWidth;
+	block.halfInfo[ 1 ] = (float)targetHeight;
 	block.halfInfo[ 2 ] = (float)width;
 	block.halfInfo[ 3 ] = (float)height;
 	bool drawn = false;
-	if ( VK_Exec_SetRenderTarget( vkPostScene.ssaoHalfTarget, 0, r_vkPostDepthTransitionReference.GetBool() ) ) {
+	if ( VK_Exec_SetRenderTarget( vkPostScene.ssaoOcclusionTarget, 0, r_vkPostDepthTransitionReference.GetBool() ) ) {
 		const VkDescriptorSet sets[ 5 ] = {
 			VK_Post_Descriptor( globalImages->whiteImage ), VK_Post_Descriptor( worldDepth ),
 			VK_Post_Descriptor( finalDepth ), VK_Post_Descriptor( finalDepth ),
@@ -1625,21 +1642,33 @@ static bool VK_Post_DrawSSAOHalf( const viewDef_t *viewDef, VkShaderModule fragM
 				GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO );
 		drawn = VK_Post_DrawTarget( pipeline, sets, 5, uniformOffset );
 	}
+	// The separable tent: horizontally into the filter target, vertically back.
+	// The brute-force reference (r_ssaoMethod 3) stays unfiltered.
+	for ( int axis = 0; axis < 2 && drawn && R_SSAOFiltered(); axis++ ) {
+		idRenderTexture *target = axis == 0 ? vkPostScene.ssaoFilterTarget : vkPostScene.ssaoOcclusionTarget;
+		idImage *source = axis == 0 ? vkPostScene.ssaoOcclusion : vkPostScene.ssaoFilter;
+		drawn = false;
+		if ( VK_Exec_SetRenderTarget( target, 0, r_vkPostDepthTransitionReference.GetBool() ) ) {
+			vkPostSSAOBlock_t filter = block;
+			filter.modeInfo[ 0 ] = 5.0f;
+			filter.params2[ 2 ] = axis == 0 ? 1.0f : 0.0f;
+			filter.params2[ 3 ] = axis == 0 ? 0.0f : 1.0f;
+			const VkDescriptorSet sets[ 5 ] = {
+				VK_Post_Descriptor( globalImages->whiteImage ), VK_Post_Descriptor( worldDepth ),
+				VK_Post_Descriptor( finalDepth ), VK_Post_Descriptor( finalDepth ),
+				VK_Post_Descriptor( source )
+			};
+			const int uniformOffset = VK_Exec_InteractionUniformAlloc( &filter, sizeof( filter ) );
+			const VkPipeline pipeline = VK_Exec_PostPipeline( VK_POST_SSAO, vkPost.fullscreenVert, fragModule,
+					GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO );
+			drawn = VK_Post_DrawTarget( pipeline, sets, 5, uniformOffset );
+		}
+	}
 	if ( !VK_Exec_SetRenderTarget( sceneTarget, sceneFace ) || !drawn ) {
-		vkPostFailReason = "the half-resolution pass failed";
+		vkPostFailReason = "the occlusion pass failed";
 		return false;
 	}
-	block.modeInfo[ 0 ] = 4.0f;
-	block.modeInfo[ 2 ] = 1.0f;
-	const VkDescriptorSet sets[ 5 ] = {
-		VK_Post_Descriptor( globalImages->whiteImage ), VK_Post_Descriptor( worldDepth ),
-		VK_Post_Descriptor( finalDepth ), VK_Post_Descriptor( finalDepth ),
-		VK_Post_Descriptor( vkPostScene.ssaoHalf )
-	};
-	const int uniformOffset = VK_Exec_InteractionUniformAlloc( &block, sizeof( block ) );
-	const VkPipeline pipeline = VK_Exec_PostPipeline( VK_POST_SSAO, vkPost.fullscreenVert, fragModule,
-			( debug ? GLS_SRCBLEND_ONE : GLS_SRCBLEND_DST_COLOR ) | GLS_DSTBLEND_ZERO );
-	return VK_Post_DrawSceneRect( viewDef, pipeline, sets, 5, uniformOffset );
+	return true;
 }
 
 static bool VK_Post_DrawSSAO( const viewDef_t *viewDef ) {
@@ -1661,14 +1690,16 @@ static bool VK_Post_DrawSSAO( const viewDef_t *viewDef ) {
 	}
 	// AO is a scalar multiplier. Blend it into each existing scene sample,
 	// preserving alpha, instead of resolving/copying the whole scene only to
-	// multiply that copy in the shader. Keep the reference for debug views and
-	// targets whose color domain is not explicitly known here.
+	// multiply that copy in the shader. Keep the reference for targets whose
+	// color domain is not explicitly known here. The debug view writes the AO
+	// itself and needs no copy.
 	const idRenderTexture *target = VK_Exec_ActiveRenderTexture();
 	const idImage *color = target != NULL && target->GetNumColorImages() == 1 ? target->GetColorImage( 0 ) : NULL;
 	const bool field = VK_Post_SSAOFieldValid( viewDef );
+	const bool debug = r_ssaoDebug.GetBool();
 	const bool composable = !field && !r_vkSSAOReferenceComposition.GetBool() && color != NULL
 		&& ( color->GetOpts().format == FMT_RGBA8 || color->GetOpts().format == FMT_RGBA16F );
-	const bool multiply = composable && !r_ssaoDebug.GetBool();
+	const bool multiply = composable && !debug;
 	// the world-only snapshot when the prepass took one at this size,
 	// otherwise the finished depth, like OpenGL's _currentDepth fallback
 	idImage *worldDepth = finalDepth;
@@ -1676,13 +1707,8 @@ static bool VK_Post_DrawSSAO( const viewDef_t *viewDef ) {
 			&& vkPostScene.ssaoWorldDepthWidth == width && vkPostScene.ssaoWorldDepthHeight == height ) {
 		worldDepth = vkPostScene.ssaoWorldDepth;
 	}
-	if ( composable && R_SSAOHalfResolution() ) {
-		// The debug view shows the half-resolution AO the scene would receive.
-		vkGpuPhaseScope drawTiming(VK_Exec_ActiveCmd(),VK_GPU_PHASE_SSAO_DRAW);
-		return VK_Post_DrawSSAOHalf( viewDef, fragModule, worldDepth, finalDepth, width, height, !multiply );
-	}
 	idImage *scene = globalImages->whiteImage;
-	if ( !multiply )
+	if ( !multiply && !debug )
 	{
 		vkGpuPhaseScope timing(VK_Exec_ActiveCmd(),VK_GPU_PHASE_SSAO_COLOR);
 		scene = VK_Post_CaptureScene( viewDef );
@@ -1691,9 +1717,31 @@ static bool VK_Post_DrawSSAO( const viewDef_t *viewDef ) {
 		vkPostFailReason = "the scene copy failed";
 		return false;
 	}
-	// A view with an occlusion field only applies its classic factor.
 	vkGpuPhaseScope drawTiming(VK_Exec_ActiveCmd(),VK_GPU_PHASE_SSAO_DRAW);
+	const int blend = ( multiply ? GLS_SRCBLEND_DST_COLOR : GLS_SRCBLEND_ONE ) | GLS_DSTBLEND_ZERO;
 	vkPostSSAOBlock_t block;
+	if ( !field ) {
+		// Classic views resolve the filtered occlusion target.
+		if ( VK_Post_DrawSSAOOcclusion( viewDef, fragModule, worldDepth, finalDepth, width, height, block ) ) {
+			block.modeInfo[ 0 ] = 4.0f;
+			block.modeInfo[ 2 ] = multiply ? 1.0f : 0.0f;
+			const VkDescriptorSet sets[ 5 ] = {
+				VK_Post_Descriptor( scene ), VK_Post_Descriptor( worldDepth ),
+				VK_Post_Descriptor( finalDepth ), VK_Post_Descriptor( finalDepth ),
+				VK_Post_Descriptor( vkPostScene.ssaoOcclusion )
+			};
+			const int uniformOffset = VK_Exec_InteractionUniformAlloc( &block, sizeof( block ) );
+			const VkPipeline pipeline = VK_Exec_PostPipeline( VK_POST_SSAO, vkPost.fullscreenVert, fragModule, blend );
+			return VK_Post_DrawSceneRect( viewDef, pipeline, sets, 5, uniformOffset );
+		}
+		static bool loggedUnfiltered = false;
+		if ( !loggedUnfiltered ) {
+			loggedUnfiltered = true;
+			common->Printf( "Vulkan: SSAO drew unfiltered (%s)\n", vkPostFailReason );
+		}
+	}
+	// A view with an occlusion field only applies its classic factor; without
+	// an occlusion target a classic view takes the unfiltered single pass.
 	VK_Post_FillSSAOBlock( block, viewDef, width, height, field ? 2.0f : 0.0f, field && vkPostScene.ssaoFieldFlip );
 	block.modeInfo[ 2 ] = multiply ? 1.0f : 0.0f;
 
@@ -1702,8 +1750,7 @@ static bool VK_Post_DrawSSAO( const viewDef_t *viewDef ) {
 		VK_Post_Descriptor( finalDepth ), VK_Post_Descriptor( field ? vkPostScene.ssaoField : globalImages->whiteImage )
 	};
 	const int uniformOffset = VK_Exec_InteractionUniformAlloc( &block, sizeof( block ) );
-	const VkPipeline pipeline = VK_Exec_PostPipeline( VK_POST_SSAO, vkPost.fullscreenVert, fragModule,
-			( multiply ? GLS_SRCBLEND_DST_COLOR : GLS_SRCBLEND_ONE ) | GLS_DSTBLEND_ZERO );
+	const VkPipeline pipeline = VK_Exec_PostPipeline( VK_POST_SSAO, vkPost.fullscreenVert, fragModule, blend );
 	return VK_Post_DrawSceneRect( viewDef, pipeline, sets, 5, uniformOffset );
 }
 
@@ -1744,15 +1791,19 @@ bool VK_PostProcess_PrepareSSAOField( const viewDef_t *viewDef ) {
 			VK_Exec_ActiveFramebufferWidth(), VK_Exec_ActiveFramebufferHeight(), TF_NEAREST, "SSAO field" ) ) {
 		return false;
 	}
+	// The field filters the same occlusion target the classic resolve does.
+	vkPostSSAOBlock_t block;
+	if ( !VK_Post_DrawSSAOOcclusion( viewDef, fragModule, vkPostScene.ssaoWorldDepth, depth, width, height, block ) ) {
+		return false;
+	}
 	bool drawn = false, fieldLowerOrigin = false;
 	if ( VK_Exec_SetRenderTarget( vkPostScene.ssaoFieldTarget, 0, r_vkPostDepthTransitionReference.GetBool() ) ) {
 		fieldLowerOrigin = VK_Exec_ActiveLowerOrigin();
-		vkPostSSAOBlock_t block;
-		VK_Post_FillSSAOBlock( block, viewDef, width, height, 1.0f, false );
+		block.modeInfo[ 0 ] = 1.0f;
 		const VkDescriptorSet sets[ 5 ] = {
 			VK_Post_Descriptor( globalImages->whiteImage ), VK_Post_Descriptor( vkPostScene.ssaoWorldDepth ),
 			VK_Post_Descriptor( depth ), VK_Post_Descriptor( vkPostScene.ssaoClassicDepth ),
-			VK_Post_Descriptor( globalImages->whiteImage )
+			VK_Post_Descriptor( vkPostScene.ssaoOcclusion )
 		};
 		const int uniformOffset = VK_Exec_InteractionUniformAlloc( &block, sizeof( block ) );
 		const VkPipeline pipeline = VK_Exec_PostPipeline( VK_POST_SSAO, vkPost.fullscreenVert, fragModule,
@@ -3831,6 +3882,529 @@ bool VK_PostProcess_DrawDebugView( const viewDef_t *viewDef, int mode ) {
 		return false;
 	}
 	backEnd.currentRenderCopied = false;
+	return true;
+}
+
+/*
+===============================================================================
+
+	Shadowed volumetric lighting (REN-09)
+
+	VK_PostProcess_DrawVolumetricLights runs right after the view's lights,
+	while every light's shadow map is still resident (vk_ShadowMap.cpp keeps
+	them until the next view prepares its own): each admitted light stage
+	marches the view through its map into the scattering target.
+	VK_PostProcess_CompositeVolumetrics lays the target over the opaque scene
+	before fog and translucent surfaces. The OpenGL twin is draw_volumetric.cpp
+	and the shared policy VolumetricLighting.h.
+
+===============================================================================
+*/
+
+VkPipelineLayout VK_Exec_ShadowInteractionPipelineLayout( void );
+VkDescriptorSet VK_Exec_ShadowDescriptorSet( void );
+int VK_Exec_ShadowUniformAlloc( const void *data, int bytes );
+VkPipeline VK_Exec_VolumetricShadowPipeline( bool pointLight, VkShaderModule vertModule,
+	VkShaderModule fragModule );
+
+// shaders/volumetric_inject.glsl VolumetricBlock (set 6)
+typedef struct vkVolumetricBlock_s {
+	float	clipToWorld[ 16 ];
+	float	eye[ 4 ];			// w: march offset
+	float	forward[ 4 ];		// w: steps
+	float	targetInfo[ 4 ];	// xy: divisor / scene size
+	float	params0[ 4 ];
+	float	lightOrigin[ 4 ];
+	float	projS[ 4 ];
+	float	projT[ 4 ];
+	float	projQ[ 4 ];
+	float	falloffS[ 4 ];
+	float	lightColor[ 4 ];
+	float	boundsMin[ 4 ];
+	float	boundsMax[ 4 ];
+} vkVolumetricBlock_t;
+
+// VolumetricShadowBlock (set 7, binding 1)
+typedef struct vkVolumetricShadowBlock_s {
+	float	row0[ 4 ][ 4 ];
+	float	row1[ 4 ][ 4 ];
+	float	row2[ 4 ][ 4 ];
+	float	row3[ 4 ][ 4 ];
+	float	atlasRects[ 4 ][ 4 ];
+	float	splitDepths[ 4 ];
+	float	depthBias[ 4 ];
+	float	info[ 4 ];			// cascade count, union flag, union uv offset
+	float	point[ 4 ];			// far, bias
+	float	pointOrigin[ 4 ];
+} vkVolumetricShadowBlock_t;
+
+// volumetric_composite.frag VolumetricCompositeBlock (set 6)
+typedef struct vkVolumetricCompositeBlock_s {
+	float	clipToWorld[ 16 ];
+	float	eye[ 4 ];
+	float	sceneInfo[ 4 ];
+	float	params0[ 4 ];
+	float	params1[ 4 ];
+} vkVolumetricCompositeBlock_t;
+
+static_assert( sizeof( vkVolumetricBlock_t ) <= 256, "the volumetric block must fit the set-6 slice" );
+static_assert( sizeof( vkVolumetricShadowBlock_t ) <= 512, "the volumetric shadow block must fit the set-7 slice" );
+
+enum {
+	VK_VOLUMETRIC_MODULE_UNSHADOWED,
+	VK_VOLUMETRIC_MODULE_PROJECTED,
+	VK_VOLUMETRIC_MODULE_POINT,
+	VK_VOLUMETRIC_MODULE_COMPOSITE,
+	VK_VOLUMETRIC_MODULE_COUNT
+};
+
+static const vkPostModuleSource_t vkVolumetricModuleSources[ VK_VOLUMETRIC_MODULE_COUNT ] = {
+	{ vk_volumetric_inject_frag_spv, vk_volumetric_inject_frag_spv_size, "volumetric march fragment" },
+	{ vk_volumetric_inject_projected_frag_spv, vk_volumetric_inject_projected_frag_spv_size, "volumetric projected-shadow march fragment" },
+	{ vk_volumetric_inject_point_frag_spv, vk_volumetric_inject_point_frag_spv_size, "volumetric point-shadow march fragment" },
+	{ vk_volumetric_composite_frag_spv, vk_volumetric_composite_frag_spv_size, "volumetric composite fragment" }
+};
+
+typedef struct vkVolumetricState_s {
+	VkShaderModule		modules[ VK_VOLUMETRIC_MODULE_COUNT ];
+	bool				moduleFailed[ VK_VOLUMETRIC_MODULE_COUNT ];
+	// one depth copy and scattering target per view size (VolumetricLighting.h)
+	volumetricTargetPool_t pool;
+	idImage *			depth[ VOLUMETRIC_TARGET_SLOTS ];
+	idImage *			scatter[ VOLUMETRIC_TARGET_SLOTS ];
+	idRenderTexture *	scatterTarget[ VOLUMETRIC_TARGET_SLOTS ];
+	// the view being drawn
+	int					slot;
+	const viewDef_t *	view;
+	volumetricViewSettings_t settings;
+	volumetricViewStats_t stats;
+	bool				began;
+	bool				depthCopied;
+	bool				targetCleared;
+	int					sceneWidth;
+	int					sceneHeight;
+	int					targetWidth;
+	int					targetHeight;
+	int					budgetUsed;
+	float				clipToWorld[ 16 ];
+	float				eye[ 4 ];
+	float				forward[ 4 ];
+} vkVolumetricState_t;
+
+static vkVolumetricState_t vkVolumetric;
+
+static VkShaderModule VK_Post_VolumetricModule( int which ) {
+	if ( vkVolumetric.modules[ which ] == VK_NULL_HANDLE && !vkVolumetric.moduleFailed[ which ]
+			&& vkCtx.device != VK_NULL_HANDLE ) {
+		const vkPostModuleSource_t &source = vkVolumetricModuleSources[ which ];
+		vkVolumetric.modules[ which ] = VK_Post_CreateModule( source.code, source.size, source.name );
+		vkVolumetric.moduleFailed[ which ] = vkVolumetric.modules[ which ] == VK_NULL_HANDLE;
+	}
+	return vkVolumetric.modules[ which ];
+}
+
+static void VK_Post_ShutdownVolumetrics( void ) {
+	for ( int i = 0; i < VK_VOLUMETRIC_MODULE_COUNT; i++ ) {
+		VK_Post_DestroyModule( vkVolumetric.modules[ i ] );
+	}
+	for ( int i = 0; i < VOLUMETRIC_TARGET_SLOTS; i++ ) {
+		delete vkVolumetric.scatterTarget[ i ];
+	}
+	memset( &vkVolumetric, 0, sizeof( vkVolumetric ) );
+}
+
+// The depth capture the march and the composite read, taken once per view
+// while the scene target is active: interactions draw at depth EQUAL without
+// writing, so the prepass serves every light. MSAA depth resolves to one sample.
+static bool VK_Post_VolumetricDepth( const viewDef_t *viewDef ) {
+	vkVolumetricState_t &state = vkVolumetric;
+	if ( state.depthCopied ) {
+		return true;
+	}
+	if ( state.depth[ state.slot ] == NULL || state.depth[ state.slot ]->GetUploadWidth() != VK_Post_ViewWidth( viewDef )
+			|| state.depth[ state.slot ]->GetUploadHeight() != VK_Post_ViewHeight( viewDef ) ) {
+		R_Volumetric_NoteTargetAllocation();
+	}
+	if ( VK_Post_EnsureImage( state.depth[ state.slot ], va( "_vkVolumetricDepth%d", state.slot ), VK_Post_DepthImage ) == NULL
+			|| !VK_Post_CaptureDepth( state.depth[ state.slot ], viewDef ) ) {
+		return false;
+	}
+	state.depthCopied = true;
+	return true;
+}
+
+static bool VK_Post_VolumetricTarget( void ) {
+	vkVolumetricState_t &state = vkVolumetric;
+	if ( state.scatterTarget[ state.slot ] == NULL || state.scatterTarget[ state.slot ]->GetWidth() != state.targetWidth
+			|| state.scatterTarget[ state.slot ]->GetHeight() != state.targetHeight ) {
+		R_Volumetric_NoteTargetAllocation();
+	}
+	return VK_Post_EnsureColorTarget( state.scatter[ state.slot ], state.scatterTarget[ state.slot ],
+		va( "_vkVolumetricScatter%d", state.slot ),
+		state.targetWidth, state.targetHeight, TF_NEAREST, "volumetric scattering" );
+}
+
+static void VK_Post_VolumetricClear( void ) {
+	static const float black[ 4 ] = { 0.0f, 0.0f, 0.0f, 0.0f };
+	VK_Exec_ClearRenderTarget( true, false, 1.0f, black );
+	vkVolumetric.targetCleared = true;
+}
+
+static const char *VK_Post_VolumetricDecline( const viewDef_t *viewDef, bool classicLights ) {
+	if ( !classicLights ) {
+		return "shared-interaction-stream";
+	}
+	if ( r_skipPostProcess.GetBool() ) {
+		return "post-process-skipped";
+	}
+	if ( VK_HDRScene_Accumulating() ) {
+		// The laboratory linear scene accumulates into its own targets.
+		return "hdr-laboratory-scene";
+	}
+	if ( !VK_Post_EnsureModules() || !VK_Exec_MainRenderingScopeOpen() ) {
+		return "shader-unavailable";
+	}
+	if ( VK_Post_ViewWidth( viewDef ) <= 0 || VK_Post_ViewHeight( viewDef ) <= 0 ) {
+		return "empty-viewport";
+	}
+	return NULL;
+}
+
+// The light's resident shadow map as the volumetric shader reads it.
+static bool VK_Post_VolumetricShadow( const viewLight_t *vLight, volumetricShadowKind_t &kind,
+		VkDescriptorSet &set, vkVolumetricShadowBlock_t &block ) {
+	kind = VOLUMETRIC_SHADOW_NONE;
+	set = VK_NULL_HANDLE;
+	memset( &block, 0, sizeof( block ) );
+	const vkShadowLightState_t *lightState = VK_ShadowMap_LightState( vLight );
+	if ( lightState == NULL || !lightState->valid ) {
+		return false;
+	}
+	const vkShadowPassState_t *global = VK_ShadowMap_PassState( lightState, VK_SHADOW_RECEIVER_GLOBAL );
+	const vkShadowPassState_t *local = VK_ShadowMap_PassState( lightState, VK_SHADOW_RECEIVER_LOCAL );
+	if ( lightState->pointLight ) {
+		// A point light's GLOBAL cube holds global and local casters.
+		const vkShadowPassState_t *pass = global != NULL ? global : local;
+		if ( pass == NULL || pass->pointSet == VK_NULL_HANDLE || lightState->pointFar <= 0.0f ) {
+			return false;
+		}
+		kind = VOLUMETRIC_SHADOW_POINT;
+		set = pass->pointSet;
+		block.point[ 0 ] = lightState->pointFar;
+		// no surface slope in the medium: the receivers' constant and texel terms
+		block.point[ 1 ] = Max( Max( lightState->constantBias, 0.0f ), lightState->texelDepthBias );
+		block.pointOrigin[ 0 ] = lightState->pointLightOrigin[ 0 ];
+		block.pointOrigin[ 1 ] = lightState->pointLightOrigin[ 1 ];
+		block.pointOrigin[ 2 ] = lightState->pointLightOrigin[ 2 ];
+		block.pointOrigin[ 3 ] = 1.0f;
+		return true;
+	}
+	const vkShadowPassState_t *pass = global != NULL ? global : local;
+	bool unionLocal = false;
+	if ( pass == global && global != NULL && global->unionLocalDepth ) {
+		// A fresh PCSS GLOBAL block holds only the local casters; the LOCAL
+		// block beside it in the same atlas holds the global ones.
+		if ( local != NULL && local->residentSet == VK_NULL_HANDLE && global->residentSet == VK_NULL_HANDLE ) {
+			unionLocal = true;
+		} else if ( local != NULL ) {
+			pass = local;
+		}
+	}
+	if ( pass == NULL ) {
+		return false;
+	}
+	set = pass->residentSet != VK_NULL_HANDLE ? pass->residentSet : VK_Exec_ShadowDescriptorSet();
+	if ( set == VK_NULL_HANDLE ) {
+		return false;
+	}
+	volumetricShadowParams_t params;
+	memset( &params, 0, sizeof( params ) );
+	R_Volumetric_FillProjectedShadow( lightState->projectedState, pass->atlasRects, params );
+	for ( int c = 0; c < VOLUMETRIC_MAX_CASCADES; c++ ) {
+		memcpy( block.row0[ c ], params.rows[ c ][ 0 ], sizeof( block.row0[ c ] ) );
+		memcpy( block.row1[ c ], params.rows[ c ][ 1 ], sizeof( block.row1[ c ] ) );
+		memcpy( block.row2[ c ], params.rows[ c ][ 2 ], sizeof( block.row2[ c ] ) );
+		memcpy( block.row3[ c ], params.rows[ c ][ 3 ], sizeof( block.row3[ c ] ) );
+		memcpy( block.atlasRects[ c ], params.atlasRects[ c ], sizeof( block.atlasRects[ c ] ) );
+		block.splitDepths[ c ] = params.splitDepths[ c ];
+		block.depthBias[ c ] = params.depthBias[ c ];
+	}
+	block.info[ 0 ] = (float)params.cascadeCount;
+	if ( unionLocal ) {
+		block.info[ 1 ] = 1.0f;
+		block.info[ 2 ] = local->atlasRects[ 0 ][ 0 ] - global->atlasRects[ 0 ][ 0 ];
+		block.info[ 3 ] = local->atlasRects[ 0 ][ 1 ] - global->atlasRects[ 0 ][ 1 ];
+	}
+	kind = VOLUMETRIC_SHADOW_PROJECTED;
+	return true;
+}
+
+static void VK_Post_VolumetricDrawLight( const viewLight_t *vLight, const volumetricLightRecord_t &record,
+		volumetricShadowKind_t kind, VkDescriptorSet shadowSet, const vkVolumetricShadowBlock_t &shadowBlock ) {
+	vkVolumetricState_t &state = vkVolumetric;
+	VkCommandBuffer cmd = VK_Exec_ActiveCmd();
+	const int module = kind == VOLUMETRIC_SHADOW_PROJECTED ? VK_VOLUMETRIC_MODULE_PROJECTED
+		: ( kind == VOLUMETRIC_SHADOW_POINT ? VK_VOLUMETRIC_MODULE_POINT : VK_VOLUMETRIC_MODULE_UNSHADOWED );
+	const VkShaderModule fragModule = VK_Post_VolumetricModule( module );
+	const VkPipeline pipeline = fragModule == VK_NULL_HANDLE ? VK_NULL_HANDLE
+		: ( kind == VOLUMETRIC_SHADOW_NONE
+			? VK_Exec_PostPipeline( VK_POST_VOLUMETRIC_INJECT, vkPost.fullscreenVert, fragModule,
+				GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE )
+			: VK_Exec_VolumetricShadowPipeline( kind == VOLUMETRIC_SHADOW_POINT, vkPost.fullscreenVert, fragModule ) );
+	const VkDescriptorSet depthSet = VK_Post_Descriptor( state.depth[ state.slot ] );
+	const VkDescriptorSet falloffSet = VK_Post_Descriptor( record.falloffImage );
+	if ( cmd == VK_NULL_HANDLE || pipeline == VK_NULL_HANDLE
+			|| depthSet == VK_NULL_HANDLE || falloffSet == VK_NULL_HANDLE ) {
+		return;
+	}
+	const int shadowOffset = kind != VOLUMETRIC_SHADOW_NONE
+		? VK_Exec_ShadowUniformAlloc( &shadowBlock, sizeof( shadowBlock ) ) : 0;
+	if ( shadowOffset < 0 ) {
+		return;
+	}
+
+	// The whole target with a positive viewport: rows run bottom-up like the
+	// depth capture, so the light's scissor keeps OpenGL's lower origin.
+	VkViewport viewport;
+	memset( &viewport, 0, sizeof( viewport ) );
+	viewport.width = (float)state.targetWidth;
+	viewport.height = (float)state.targetHeight;
+	viewport.maxDepth = 1.0f;
+	const int divisor = state.settings.resolutionDivisor;
+	const int x1 = idMath::ClampInt( 0, state.targetWidth - 1, vLight->scissorRect.x1 / divisor );
+	const int y1 = idMath::ClampInt( 0, state.targetHeight - 1, vLight->scissorRect.y1 / divisor );
+	const int x2 = idMath::ClampInt( 0, state.targetWidth - 1, ( vLight->scissorRect.x2 + divisor - 1 ) / divisor );
+	const int y2 = idMath::ClampInt( 0, state.targetHeight - 1, ( vLight->scissorRect.y2 + divisor - 1 ) / divisor );
+	VkRect2D scissor;
+	scissor.offset.x = x1;
+	scissor.offset.y = y1;
+	scissor.extent.width = (uint32_t)Max( 1, x2 - x1 + 1 );
+	scissor.extent.height = (uint32_t)Max( 1, y2 - y1 + 1 );
+	vkCmdSetViewport( cmd, 0, 1, &viewport );
+	vkCmdSetScissor( cmd, 0, 1, &scissor );
+	VK_Post_ResetDrawState( cmd );
+	vkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline );
+	const VkPipelineLayout layout = kind == VOLUMETRIC_SHADOW_NONE
+		? VK_Exec_InteractionPipelineLayout() : VK_Exec_ShadowInteractionPipelineLayout();
+
+	float params0[ 4 ], params1[ 4 ];
+	R_Volumetric_PackViewParams( state.settings, params0, params1 );
+	for ( int i = 0; i < record.stageCount; i++ ) {
+		const volumetricLightStage_t &stage = record.stages[ i ];
+		const VkDescriptorSet projectionSet = stage.image != NULL
+			? VK_Exec_ImageDescriptor( stage.image->GetDeviceHandle(), true ) : VK_NULL_HANDLE;
+		if ( projectionSet == VK_NULL_HANDLE ) {
+			continue;
+		}
+		vkVolumetricBlock_t block;
+		memset( &block, 0, sizeof( block ) );
+		memcpy( block.clipToWorld, state.clipToWorld, sizeof( block.clipToWorld ) );
+		memcpy( block.eye, state.eye, sizeof( block.eye ) );
+		block.eye[ 3 ] = params1[ 1 ];
+		memcpy( block.forward, state.forward, sizeof( block.forward ) );
+		block.forward[ 3 ] = params1[ 0 ];
+		block.targetInfo[ 0 ] = (float)divisor / (float)state.sceneWidth;
+		block.targetInfo[ 1 ] = (float)divisor / (float)state.sceneHeight;
+		block.targetInfo[ 2 ] = (float)divisor;
+		memcpy( block.params0, params0, sizeof( block.params0 ) );
+		memcpy( block.lightOrigin, record.origin, sizeof( block.lightOrigin ) );
+		memcpy( block.projS, stage.projectS, sizeof( block.projS ) );
+		memcpy( block.projT, stage.projectT, sizeof( block.projT ) );
+		memcpy( block.projQ, stage.projectQ, sizeof( block.projQ ) );
+		memcpy( block.falloffS, stage.falloff, sizeof( block.falloffS ) );
+		memcpy( block.lightColor, stage.color, sizeof( block.lightColor ) );
+		memcpy( block.boundsMin, record.boundsMin, sizeof( block.boundsMin ) );
+		memcpy( block.boundsMax, record.boundsMax, sizeof( block.boundsMax ) );
+		const int uniformOffset = VK_Exec_InteractionUniformAlloc( &block, sizeof( block ) );
+		if ( uniformOffset < 0 ) {
+			continue;
+		}
+		const VkDescriptorSet imageSets[ 3 ] = { depthSet, projectionSet, falloffSet };
+		vkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 3, imageSets, 0, NULL );
+		const VkDescriptorSet uniformSet = VK_Exec_InteractionUniformSet();
+		if ( kind == VOLUMETRIC_SHADOW_NONE ) {
+			const uint32_t dynamicOffset = (uint32_t)uniformOffset;
+			vkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 6, 1, &uniformSet, 1, &dynamicOffset );
+		} else {
+			// Dynamic offsets follow set order: set 6's slice, then set 7's.
+			const VkDescriptorSet sets[ 2 ] = { uniformSet, shadowSet };
+			const uint32_t dynamicOffsets[ 2 ] = { (uint32_t)uniformOffset, (uint32_t)shadowOffset };
+			vkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 6, 2, sets, 2, dynamicOffsets );
+		}
+		vkCmdDraw( cmd, 3, 1, 0, 0 );
+		state.stats.passes++;
+	}
+	VK_Exec_MarkColorOrigin( false );
+}
+
+/*
+====================
+VK_PostProcess_DrawVolumetricLights
+
+Right after the view's light pass, inside the open main rendering scope.
+classicLights is false when the shared interaction stream drew the lights.
+The active target is restored.
+====================
+*/
+void VK_PostProcess_DrawVolumetricLights( const viewDef_t *viewDef, bool classicLights ) {
+	vkVolumetricState_t &state = vkVolumetric;
+	state.view = viewDef;
+	state.began = true;
+	state.depthCopied = false;
+	state.targetCleared = false;
+	state.budgetUsed = 0;
+	R_Volumetric_BuildViewSettings( viewDef,
+		R_Volumetric_Requested() && viewDef != NULL ? VK_Post_VolumetricDecline( viewDef, classicLights ) : NULL,
+		state.settings );
+	R_Volumetric_BeginViewStats( state.stats, state.settings, viewDef );
+	if ( !state.settings.active ) {
+		return;
+	}
+	if ( !R_Volumetric_ViewTransforms( viewDef, state.clipToWorld, state.eye, state.forward ) ) {
+		state.settings.active = false;
+		state.settings.declineReason = "singular-projection";
+		state.stats.declineReason = state.settings.declineReason;
+		return;
+	}
+	state.sceneWidth = VK_Post_ViewWidth( viewDef );
+	state.sceneHeight = VK_Post_ViewHeight( viewDef );
+	R_Volumetric_TargetExtent( state.settings, state.sceneWidth, state.sceneHeight,
+		state.targetWidth, state.targetHeight );
+	state.slot = R_Volumetric_ChooseTargetSlot( state.pool, state.sceneWidth, state.sceneHeight,
+		state.settings.resolutionDivisor );
+
+	idRenderTexture *sceneTarget = VK_Exec_ActiveRenderTexture();
+	const int sceneFace = VK_Exec_ActiveCubeFace();
+	bool onTarget = false;
+	bool failed = false;
+	for ( const viewLight_t *vLight = viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
+		if ( vLight->lightShader == NULL || vLight->lightShader->IsFogLight() || vLight->lightShader->IsBlendLight() ) {
+			continue;
+		}
+		if ( vLight->localInteractions == NULL && vLight->globalInteractions == NULL
+				&& vLight->translucentInteractions == NULL ) {
+			continue;
+		}
+		if ( vLight->scissorRect.IsEmpty() ) {
+			continue;
+		}
+		volumetricLightRecord_t record;
+		// The Vulkan scene applies no overbright scale after the interactions.
+		if ( !R_Volumetric_BuildLightRecord( vLight, backEnd.lightScale, 1.0f, record ) ) {
+			if ( !vLight->lightShader->IsAmbientLight() ) {
+				R_Volumetric_CountOutcome( state.stats, VOLUMETRIC_LIGHT_SKIPPED_NO_STAGE );
+			}
+			continue;
+		}
+		volumetricShadowKind_t kind;
+		VkDescriptorSet shadowSet;
+		vkVolumetricShadowBlock_t shadowBlock;
+		const bool mapped = VK_Post_VolumetricShadow( vLight, kind, shadowSet, shadowBlock );
+		const bool stencilShadowed = !mapped && r_shadows.GetBool()
+			&& ( vLight->globalShadows != NULL || vLight->localShadows != NULL );
+		// A shadow-casting light with neither a map nor volumes would leak.
+		const bool mapExpected = !mapped && !stencilShadowed && r_shadows.GetBool()
+			&& vLight->lightShader->LightCastsShadows() && vLight->shadowMapCasterCount > 0;
+		const volumetricLightOutcome_t outcome = R_Volumetric_ClassifyLight( state.settings, viewDef, record,
+			mapped ? kind : VOLUMETRIC_SHADOW_NONE, stencilShadowed, mapExpected, state.budgetUsed );
+		if ( !R_Volumetric_OutcomeScatters( outcome ) ) {
+			R_Volumetric_CountOutcome( state.stats, outcome );
+			continue;
+		}
+		if ( failed ) {
+			R_Volumetric_CountOutcome( state.stats, VOLUMETRIC_LIGHT_SKIPPED_FAILED );
+			continue;
+		}
+		if ( !onTarget ) {
+			// The depth comes from the scene target, before switching away.
+			if ( !VK_Post_VolumetricDepth( viewDef ) || !VK_Post_VolumetricTarget()
+					|| !VK_Exec_SetRenderTarget( state.scatterTarget[ state.slot ], 0, false ) ) {
+				failed = true;
+				R_Volumetric_CountOutcome( state.stats, VOLUMETRIC_LIGHT_SKIPPED_FAILED );
+				continue;
+			}
+			onTarget = true;
+			VK_Post_VolumetricClear();
+		}
+		const int passes = state.stats.passes;
+		// r_volumetricDebug 2: the same lights with no shadow term
+		VK_Post_VolumetricDrawLight( vLight, record,
+			mapped && state.settings.debug != 2 ? kind : VOLUMETRIC_SHADOW_NONE, shadowSet, shadowBlock );
+		if ( state.stats.passes > passes ) {
+			state.budgetUsed++;
+			R_Volumetric_CountOutcome( state.stats, outcome );
+		} else {
+			R_Volumetric_CountOutcome( state.stats, VOLUMETRIC_LIGHT_SKIPPED_FAILED );
+		}
+	}
+	if ( onTarget && !VK_Exec_SetRenderTarget( sceneTarget, sceneFace ) ) {
+		state.settings.active = false;
+		state.stats.declineReason = "target-restore-failed";
+	}
+}
+
+/*
+====================
+VK_PostProcess_CompositeVolumetrics
+
+After the opaque scene and its pre-fog overlays, before fog, blend lights
+and translucent surfaces: scene * transmittance + scattering. Always records
+the view. Returns true when it drew.
+====================
+*/
+bool VK_PostProcess_CompositeVolumetrics( const viewDef_t *viewDef ) {
+	vkVolumetricState_t &state = vkVolumetric;
+	if ( !state.began || state.view != viewDef ) {
+		return false;
+	}
+	state.began = false;
+	if ( !state.settings.active ) {
+		if ( state.settings.requested ) {
+			R_Volumetric_PublishViewStats( "Vulkan", state.stats );
+		}
+		return false;
+	}
+	const VkShaderModule fragModule = VK_Post_VolumetricModule( VK_VOLUMETRIC_MODULE_COMPOSITE );
+	bool ready = fragModule != VK_NULL_HANDLE && VK_Post_VolumetricDepth( viewDef ) && VK_Post_VolumetricTarget();
+	if ( ready && !state.targetCleared ) {
+		// No light scattered: the medium still attenuates the scene.
+		idRenderTexture *sceneTarget = VK_Exec_ActiveRenderTexture();
+		const int sceneFace = VK_Exec_ActiveCubeFace();
+		ready = VK_Exec_SetRenderTarget( state.scatterTarget[ state.slot ], 0, false );
+		if ( ready ) {
+			VK_Post_VolumetricClear();
+		}
+		ready = VK_Exec_SetRenderTarget( sceneTarget, sceneFace ) && ready;
+	}
+	bool drawn = false;
+	if ( ready ) {
+		vkVolumetricCompositeBlock_t block;
+		memset( &block, 0, sizeof( block ) );
+		memcpy( block.clipToWorld, state.clipToWorld, sizeof( block.clipToWorld ) );
+		memcpy( block.eye, state.eye, sizeof( block.eye ) );
+		block.sceneInfo[ 0 ] = (float)state.sceneWidth;
+		block.sceneInfo[ 1 ] = (float)state.sceneHeight;
+		block.sceneInfo[ 2 ] = (float)state.targetWidth;
+		block.sceneInfo[ 3 ] = (float)state.targetHeight;
+		R_Volumetric_PackViewParams( state.settings, block.params0, block.params1 );
+		const VkDescriptorSet sets[ 2 ] = { VK_Post_Descriptor( state.depth[ state.slot ] ), VK_Post_Descriptor( state.scatter[ state.slot ] ) };
+		const int uniformOffset = VK_Exec_InteractionUniformAlloc( &block, sizeof( block ) );
+		const VkPipeline pipeline = VK_Exec_PostPipeline( VK_POST_VOLUMETRIC_COMPOSITE, vkPost.fullscreenVert,
+			fragModule, state.settings.debug != 0 ? ( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO )
+				: ( GLS_SRCBLEND_ONE | GLS_DSTBLEND_SRC_ALPHA ) );
+		drawn = VK_Post_DrawSceneRect( viewDef, pipeline, sets, 2, uniformOffset );
+	}
+	if ( !drawn ) {
+		static bool warned = false;
+		VK_Post_WarnOnce( warned, "volumetric lighting" );
+		state.stats.declineReason = "composite-unavailable";
+		R_Volumetric_PublishViewStats( "Vulkan", state.stats );
+		return false;
+	}
+	state.stats.composited = true;
+	state.stats.width = state.targetWidth;
+	state.stats.height = state.targetHeight;
+	R_Volumetric_PublishViewStats( "Vulkan", state.stats );
 	return true;
 }
 

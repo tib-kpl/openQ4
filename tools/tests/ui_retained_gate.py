@@ -98,6 +98,9 @@ struct idStr : std::string {
     void Append(const char* text, int length) { append(text, length); }
     int Icmp(const char* other) const { return Icmp(c_str(), other); }
     int Cmp(const char* other) const { return std::strcmp(c_str(), other); }
+    void ToLower() { for (char& c : *this) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); }
+    void StripLeadingOnce(const char* text) { const size_t n = std::strlen(text); if (n && compare(0, n, text) == 0) erase(0, n); }
+    void StripTrailingOnce(const char* text) { const size_t n = std::strlen(text); if (n && size() >= n && compare(size() - n, n, text) == 0) erase(size() - n); }
 };
 template<typename T> static T Min(T a, T b) { return a < b ? a : b; }
 namespace openq4 { static int sessionChanges = 0; static void NativeInputBeforeSessionChange() { ++sessionChanges; } }
@@ -142,6 +145,7 @@ struct Common {
     void Warning(const char* fmt, ...) { char text[2048]; va_list args; va_start(args, fmt); std::vsnprintf(text, sizeof(text), fmt, args); va_end(args); warnings.push_back(text); }
     void Quit() { ++quits; }
     const struct LanguageDict* GetLanguageDict() const;
+    const char* GetLocalizedString(const char* key) const { return key; }
 } commonObject, *common = &commonObject;
 // The installed files the session can find, and the Awakening content probe.
 struct idCampaignContentInfo { bool ready = true, present = true; idStr missing; };
@@ -151,10 +155,19 @@ static const int MAX_ASYNC_CLIENTS = 32;
 #define OPENQ4_GAMEDIR "baseoq4"
 struct idFile {};
 struct idModInfo { idStr directory, displayName, version, releaseDate, website, author, requiredopenQ4Version, listLabel, campaign; };
+struct idKeyValue { idStr key, value; const idStr& GetKey() const { return key; } const idStr& GetValue() const { return value; } };
 struct idDict {
     std::map<std::string, std::string> values;
     const char* GetString(const char* key, const char* fallback = "") const { const auto found = values.find(key); return found == values.end() ? fallback : found->second.c_str(); }
     bool GetBool(const char* key, const char* fallback = "0") const { return std::atoi(GetString(key, fallback)) != 0; }
+    void Set(const char* key, const char* value) { values[key] = value; }
+    void Clear() { values.clear(); }
+    int GetNumKeyVals() const { return static_cast<int>(values.size()); }
+    const idKeyValue* GetKeyVal(int index) const {
+        if (index < 0 || index >= GetNumKeyVals()) return nullptr;
+        static idKeyValue pair;
+        auto at = values.begin(); std::advance(at, index); pair.key = at->first; pair.value = at->second; return &pair;
+    }
 };
 struct CVarSystem {
     std::map<std::string, std::string> strings;
@@ -292,7 +305,6 @@ enum { CMD_EXEC_NOW = 4 };
 enum { K_ESCAPE = 27, K_ENTER = 13, K_JOY3 = 199, K_JOY4 = 200, K_JOY7 = 203, K_JOY8 = 204 };
 int idKeyInput::MenuControllerKey(int key) { return swapped && (key == K_JOY3 || key == K_JOY4) ? (key == K_JOY3 ? K_JOY4 : K_JOY3) : key; }
 struct sysEvent_t { int evType = SE_NONE, evValue = 0, evValue2 = 0; };
-struct idKeyValue { idStr value; const idStr& GetValue() const { return value; } };
 struct idUserInterface {
     std::string source, focused; bool active = false, failed = false; int activations = 0, deactivations = 0;
     std::vector<std::string> named; std::map<std::string, std::string> state;
@@ -369,7 +381,8 @@ struct Manager {
 struct idCmdArgs {
     std::vector<std::string> args;
     idCmdArgs() = default;
-    idCmdArgs(const char* text, bool) { std::istringstream in(text); std::string word; while(in>>word) args.push_back(word); }
+    idCmdArgs(const char* text, bool) { TokenizeString(text, false); }
+    void TokenizeString(const char* text, bool) { args.clear(); std::istringstream in(text); std::string word; while(in>>word) args.push_back(word); }
     int Argc() const { return static_cast<int>(args.size()); }
     const char* Argv(int index) const { return index>=0 && index<Argc() ? args[index].c_str() : ""; }
     void AppendArg(const char* arg) { args.push_back(arg); }
@@ -522,6 +535,9 @@ struct idServerScan {
     int GetRevision() const { return revision; }
     scan_state_t GetState() const { return state; }
     static const char* GameTypeName(const char* type) { return !std::strcmp(type, "DM") ? "Deathmatch" : type; }
+    // ServerBrowserMatchType without modifiers: the stub's servers carry none
+    // (server_browser_contract.py covers the qualified names).
+    static idStr MatchTypeName(const idDict& info) { return GameTypeName(info.GetString("si_gameType")); }
     void GUIInit() { calls.push_back("GUIInit"); ++revision; }
     void AddFavoriteServers() { calls.push_back("AddFavoriteServers"); }
     void NetScan() { calls.push_back("NetScan"); state = NET_SCAN; ++revision; }
@@ -609,6 +625,8 @@ public:
     int retainedLoadingTip = -1, retainedLoadingTipSlot = 0, retainedLoadingTipAt = 0; void PublishRetainedLoadingTip(bool);
     void BeginRetainedSubpage(idUserInterface*, bool, retainedSubpage_t = RETAINED_SUBPAGE_CAMPAIGN); void UpdateRetainedSubpage();
     bool RetainedSubpageEvent(const sysEvent_t*);
+    // PAD-05: the on-screen keyboard's requests are its own; no page of this harness shows it.
+    idUserInterface* guiOnScreenKeyboard = nullptr; void HandleOnScreenKeyboardRequest(const char*, int) {}
     void PresentRetainedSubpage(bool, retainedSubpage_t); retainedSubpage_t retainedSubpageKind = RETAINED_SUBPAGE_CAMPAIGN;
     // Single Player's Arena sub-page.
     idUserInterface* guiRetainedArena = nullptr; idUserInterface* RetainedArenaPage();
@@ -3646,6 +3664,10 @@ STOCK_SYSTEM_SESSION_ROWS = {'set_sys_screensize': 'r_mode', 'set_sys_specular':
                              'set_sys_sky': 'r_skipSky', 'set_sys_ambient': 'r_forceAmbient'}
 # Stock SYSTEM controls that navigate the page instead of changing a setting.
 STOCK_SYSTEM_PAGE_CONTROLS = {'set_sys_section_choice'}
+# Menu CVars a stock control binds in place of the settings it stands for, which
+# Session_menu.cpp keeps in step: the Ambient Occlusion choice (REN-10) is
+# r_ssao and r_ssaoMethod.
+STOCK_SYSTEM_MENU_CVARS = {'gui_set_sys_ao': ('r_ssao', 'r_ssaoMethod')}
 
 
 def stock_system_settings() -> set[str]:
@@ -3660,7 +3682,13 @@ def stock_system_settings() -> set[str]:
         span = gui[definition.end():definitions[index + 1].start() if index + 1 < len(definitions) else len(gui)]
         cvar = re.search(r'\bcvar\s+"?(\w+)"?', span)
         row = re.match(r'(set_sys_\w+?)_val', definition.group(1))
-        if cvar:
+        if cvar and cvar.group(1) in STOCK_SYSTEM_MENU_CVARS:
+            menu = (ROOT / 'src/framework/Session_menu.cpp').read_text(encoding='utf-8')
+            sync = function_body(menu, 'static void SyncMainMenuAmbientOcclusionChoice( void ) {')
+            for name in STOCK_SYSTEM_MENU_CVARS[cvar.group(1)]:
+                assert f'"{name}"' in sync, f'{cvar.group(1)} no longer keeps {name} in step'
+            settings.update(STOCK_SYSTEM_MENU_CVARS[cvar.group(1)])
+        elif cvar:
             if cvar.group(1) != 'gui_set_sys_scroll':
                 settings.add(cvar.group(1))
         elif row and row.group(1) in STOCK_SYSTEM_SESSION_ROWS:
@@ -4661,9 +4689,12 @@ def check_prompt_glyphs(compiler: str, directory: Path) -> None:
     assert 'ui_promptStyle' not in retained, 'the menus take the HUD\'s in_promptStyle'
     assert re.search(r'#if defined\(USE_SDL3\)\n[^#]*int Sys_SDL_GamepadGlyphFamily\(int faceLabels\[4\]\);\n#endif', retained)
     assert 'cvarSystem->GetCVarInteger( "in_promptStyle" )' in function_body(keys, 'bool idKeyInput::MenuConfirmSwapped(')
-    assert 'in_gamepadFamily.SetString(SDL3_GamepadFamily(pad));' in function_body(backend, 'static bool SDL3_OpenGamepad(')
-    assert 'in_gamepadFamily.SetString("generic");' in function_body(backend, 'static bool SDL3_OpenJoystick(')
-    for signature in ('static void SDL3_CloseGamepad(', 'static void SDL3_CloseJoystick('):
+    # PAD-01: the family follows the active controller, and "none" means the
+    # active one went away with no other connected.
+    activate = function_body(backend, 'static void SDL3_ActivateController(')
+    assert 'in_gamepadFamily.SetString(SDL3_GamepadFamily(controller->pad));' in activate
+    assert 'in_gamepadFamily.SetString("generic");' in activate
+    for signature in ('static void SDL3_ApplyControllerChange(', 'static void SDL3_CloseAllControllers('):
         assert 'in_gamepadFamily.SetString("none");' in function_body(backend, signature), signature
     # The adapter publishes before the frame draws, so the frame that follows
     # a change shows it.
@@ -4702,6 +4733,7 @@ def check_prompt_glyphs(compiler: str, directory: Path) -> None:
                     return first['args'][1], False
         return None
     documents, shoulders, swapping = 0, 0, 0
+    prompt_groups = {}
     for path in sorted((ROOT / 'content/baseoq4/pak0/guis').rglob('*.rui')):
         document = json.loads(re.sub(r'^\s*//.*$', '', path.read_text(encoding='utf-8'), flags=re.M))
         if generator.PROMPT_GLYPHS not in document.get('state', {}):
@@ -4744,18 +4776,29 @@ def check_prompt_glyphs(compiler: str, directory: Path) -> None:
         for pad in pads:
             assert pad.endswith('-pad') and pad[:-len('-pad')] in groups, (path.name, pad)
         shoulders += sum(1 for group_id in groups if group_id in ('tab-previous', 'tab-next', 'prompt-tabs-0', 'prompt-tabs-1'))
+        prompt_groups[path.relative_to(ROOT / 'content/baseoq4/pak0/guis').as_posix()] = groups
+    # The Awakening's family (6b6c48a1f, ac1ea4b50) restyles a page, never its
+    # prompts: each twin carries its Quake 4 page's glyph groups exactly.
+    twins = sorted(name for name in prompt_groups if name.endswith('_awakening.rui'))
+    assert len(twins) == 9, twins
+    for name in twins:
+        sibling = name.replace('_awakening.rui', '.rui')
+        assert prompt_groups.get(sibling) == prompt_groups[name], (name, sibling)
     # The title, both pauses, Single Player, Campaign, the campaign difficulty
     # page and CHAPTERS, Multiplayer and SETTINGS, the seven pages with their own
     # prompt bars and the Strogg pause's three, the loading screen, the Escape,
     # Welcome, summary and buy cards, the Arena pause card and the CONTROLS, GAME
-    # OPTIONS, DISPLAY (SYSTEM) and AUDIO sub-pages.
-    assert documents == 29, documents
+    # OPTIONS, DISPLAY (SYSTEM) and AUDIO sub-pages: 29. The Awakening's pause,
+    # Load, Save and Restart pages and its SETTINGS and four sub-pages: 9 more.
+    # The on-screen keyboard draws the controller's button on each function key (PAD-05): 1.
+    assert documents == 39, documents
     # The cards' and the settings sub-pages' tab keys take the shoulders, as do
-    # the Escape, Welcome and buy cards' Tabs prompts and Player Setup's tab
-    # strip on the Multiplayer page; every Accept and Back prompt follows Swap
-    # Confirm and Back.
-    assert shoulders == 22, shoulders
-    assert swapping == 57, swapping
+    # the Escape, Welcome and buy cards' Tabs prompts, Player Setup's tab strip
+    # on the Multiplayer page and Create Server's tab strip (3f3665233): 24, and
+    # 6 on the Awakening's settings sub-pages. Every Accept and Back prompt
+    # follows Swap Confirm and Back: 57, and 19 on the Awakening's pages.
+    assert shoulders == 30, shoulders
+    assert swapping == 76, swapping
     print(f'ui_retained gate: prompt glyphs follow the active device in {documents} documents')
 
 
@@ -4786,7 +4829,7 @@ def check_loading_hold(compiler: str, directory: Path) -> None:
     # while the retained screen still presents the load.
     change = function_body(session_lf, 'void idSessionLocal::ExecuteMapChange(')
     assert '\tif ( !BeginRetainedLoadingHold() ) {\n\t\tStartWipe( "gfx/wipes/fade_blend" );\n\t}' in change
-    assert change.index('ClearRetainedLoadingHold();') < change.index('BeginRetainedLoadingHold()') < change.index('retainedLoadingActive = false;\n\n\tSys_SetPhysicalWorkMemory')
+    assert change.index('ClearRetainedLoadingHold();') < change.index('BeginRetainedLoadingHold()') < change.index('retainedLoadingActive = false;\n\n\t// openQ4: Doom 3 raised the process')
     # Drawn above the game and its menu, under the wipe and the console.
     draw = function_body(session_lf, 'void idSessionLocal::Draw(')
     held = draw.index('guiLoadingHold->Redraw( presentationTime );')
@@ -5393,8 +5436,13 @@ def check_retained_multiplayer(menu: str, session: str) -> None:
     appearance = re.findall(r'"(mp[A-Za-z]+)"', re.search(r'RETAINED_MP_APPEARANCE_VALUES\[\] = \{([^}]*)\};', menu).group(1))
     choices = re.findall(r'"(mp[A-Za-z]+)"', re.search(r'RETAINED_MP_MATCH_CHOICES\[\] = \{([^}]*)\};', menu).group(1))
     admin_fields = re.findall(r'"(mpAdmin[A-Za-z]+)"', re.search(r'RETAINED_MP_ADMIN_FIELDS\[\] = \{([^}]*)\};', menu).group(1))
-    assert set(fields) | set(appearance) | set(choices) | set(admin_fields) | {'mpMatchRuleValue'} == value_verbs and \
-        len(fields) + len(appearance) + len(choices) + len(admin_fields) + 1 == len(value_verbs), (fields, appearance, choices, value_verbs)
+    # The Admin page's next Ban length and reason (MP-18), each a list by row.
+    ban_choices = re.findall(r'"(mpAdmin[A-Za-z]+)"', re.search(r'RETAINED_MP_ADMIN_BAN_CHOICES\[\] = \{([^}]*)\};', menu).group(1))
+    import retained_mp_admin
+    assert ban_choices == [verb for _key, verb, _label, _options, _count in retained_mp_admin.BAN_CHOICES]
+    assert set(fields) | set(appearance) | set(choices) | set(admin_fields) | set(ban_choices) | {'mpMatchRuleValue'} == value_verbs and \
+        len(fields) + len(appearance) + len(choices) + len(admin_fields) + len(ban_choices) + 1 == len(value_verbs), \
+        (fields, appearance, choices, value_verbs)
     assert appearance == [*retained_mp_menus.MODEL_VERBS, 'mpCrosshair'] and choices == ['mpMatchRole', 'mpMatchScope', 'mpMatchSeriesProfile']
     enum = [name.strip() for name in re.search(r'enum retainedVoteField_t \{([^}]*)\};', header).group(1).split(',') if name.strip()]
     assert enum[-1] == 'RVF_COUNT'
@@ -5569,7 +5617,9 @@ def main() -> int:
                        'guis/menu/multiplayer.rui', 'guis/menu/createserver.rui', 'guis/menu/joingame.rui',
                        'guis/menu/arena_pause.rui', 'guis/menu/settings/audio.rui', 'guis/menu/settings/game.rui',
                        'guis/menu/settings/controls.rui', 'guis/menu/settings.rui', 'guis/menu/msgbox.rui',
-                       'guis/menu/mp_buy.rui'}
+                       'guis/menu/mp_buy.rui',
+                       # PAD-05: the on-screen keyboard, shown only over a retained screen's field
+                       'guis/menu/keyboard.rui'}
             assert path in allowed, f'{name} names an ungated retained document {path}'
     # The message box presents the retained pop-up only behind the gate, found
     # through FindRetainedGui; the download progress keeps the stock box.
@@ -5660,7 +5710,25 @@ def main() -> int:
         gated = (ROOT / source).read_text(encoding='utf-8', errors='replace')
         assert gate in gated and 'cvarSystem->Find( "ui_retained" )' in gated, f'{cvar} is not gated on ui_retained'
         assert not re.search(rf'(cvar\s+"?|consoleCMD\s+"){cvar}\b', stock_game), f'{cvar} has a stock row: drop its exemption'
+    # The controller's Aim, Gyro and Feedback tabs (PAD-01 to PAD-08) are on
+    # the retained page first. The stock page keeps the three controller rows
+    # they refine (Stick Dead Zone, Look Sensitivity and Gyro Sensitivity,
+    # which still set both sticks, both speeds and both ratios) and owes
+    # players a row for each setting named here: the roadmap's PAD rows list
+    # "stock-menu rows" as remaining work. Take a name out when its stock row
+    # lands; a name that already has one fails here.
+    STOCK_ROWS_PENDING = {
+        'in_joystickDevicePin', 'in_joystickLayout', 'in_toggleCrouch', 'in_alwaysRun', 'in_joystickContextActions',
+        'in_joystickResponse', 'in_joystickYawSpeed', 'in_joystickPitchSpeed', 'in_joystickTurnBoost', 'in_aimAssist',
+        'in_joystickLookDeadZone', 'in_joystickLookOuterDeadZone', 'in_joystickMoveDeadZone', 'in_joystickMoveOuterDeadZone',
+        'in_joystickMoveDeadZoneAxial', 'in_joystickMoveCurve', 'in_gyroYawRatio', 'in_gyroPitchRatio', 'in_gyroSpace',
+        'in_gyroActivation', 'in_gyroInvertYaw', 'in_gyroInvertPitch', 'in_gyroDeadZone', 'in_gyroMenuPointer',
+        'in_joystickTriggerRumble', 'in_joystickAdaptiveTriggers', 'in_joystickDirectionalRumble', 'in_joystickLight',
+        'in_joystickPlayerLight', 'in_joystickLowBatteryNotice'}
+    for cvar in sorted(STOCK_ROWS_PENDING):
+        assert not re.search(rf'(cvar\s+"?|consoleCMD\s+"){cvar}\b', stock_game), f'{cvar} has a stock row: drop it from STOCK_ROWS_PENDING'
     import retained_controls
+    assert STOCK_ROWS_PENDING <= {cvar for cvar, _kind, _extra in retained_controls.setting_rows()}, 'a pending stock row names no retained setting'
     controls_document = json.loads(re.sub(r'^\s*//.*$', '', (ROOT / 'content/baseoq4/pak0/guis/menu/settings/controls.rui').read_text(encoding='utf-8'), flags=re.M))
     # The stock page's mouse and controller rows, with Free Look, Toggle Zoom
     # and Scope Sensitivity, stand on the CONTROLS page's device tabs (issue
@@ -5673,7 +5741,8 @@ def main() -> int:
             action = document['actions'][f'set.{cvar}']
             assert action['operation'] == 'settings.player.set' and action['arguments'] == {'cvar': cvar, 'value': {'input': 'value'}}, cvar
             assert cvar in rules and (kind != 'choice' or not isinstance(extra[1][0], str) or rules[cvar] == list(extra[1])), cvar
-            assert cvar in RETAINED_ONLY_GAME_SETTINGS or re.search(rf'(cvar\s+"?|consoleCMD\s+"){cvar}\b', stock_game), f'{cvar} is not a stock GAME OPTIONS setting'
+            assert cvar in RETAINED_ONLY_GAME_SETTINGS or cvar in STOCK_ROWS_PENDING or \
+                re.search(rf'(cvar\s+"?|consoleCMD\s+"){cvar}\b', stock_game), f'{cvar} is not a stock GAME OPTIONS setting'
     # The CONTROLS page: the button's and the multiplayer menu's routes as
     # GAME OPTIONS'; its rows are the stock page's bindings in its order, the
     # session's table follows them; a binding keeps at most two keys, as the
@@ -5707,7 +5776,11 @@ def main() -> int:
     assert {name: action['arguments']['command'] for name, action in controls_document['actions'].items()
             if action['operation'] != 'settings.player.set'} == \
         {'controlsBind': 'controlsBind', 'controlsClear': 'controlsClear', 'controlsTouchLayout': 'controlsTouchLayout',
-         'back': 'controlsBack'}
+         # PAD-06 and PAD-04: each reset restores one device, and the gyro's hold-still calibration
+         'controlsResetController': 'controlsResetController', 'controlsResetKeyboard': 'controlsResetKeyboard',
+         'controlsCalibrateGyro': 'controlsCalibrateGyro',
+         # PAD-07: the CONTROLLER TEST panel's rumble test
+         'controlsRumbleTest': 'controlsRumbleTest', 'back': 'controlsBack'}
     # A new key joins its action's keys through the menus' shared rule, two
     # keys of each device family (idKeyInput::BindForMenu): a keyboard key
     # never clears the action's controller buttons. The stock page binds the
@@ -6096,7 +6169,16 @@ def main() -> int:
     assert 'RETAINED_SYSTEM_GUI' in gate_functions
     page_start = menu.index('// The stock campaign pages: the campaigns (campaign_view 0)')
     campaign_page = menu[page_start:menu.index('#endif', menu.index('static void Session_HandleCampaignPageRequest(', page_start))]
-    bodies = [gate_functions, tables, campaign_page] + [function_body(menu, signature) for signature in (
+    # Player Setup's WEAPON ORDER dialog (a1bd952bc) and Create Server's
+    # Weapon Arena and Preset choices (MP-14, 8bd169759): tables and helpers.
+    order_start = menu.index('// RETAINED_WEAPON_ORDER is WEAPON_ORDER_ROWS')
+    order_signature = 'static bool Session_WeaponOrderRequest('
+    order_body = function_body(menu, order_signature)
+    order_end = menu.index(order_body, menu.index(order_signature, order_start)) + len(order_body)
+    weapon_order = menu[order_start:order_end]
+    presets_start = menu.index("// Weapon Arena's choices: si_weaponArena's tokens")
+    create_presets = menu[presets_start:menu.index("// A setting's value as the page offers it.", presets_start)]
+    bodies = [gate_functions, tables, campaign_page, weapon_order, create_presets] + [function_body(menu, signature) for signature in (
         'static bool Session_RetainedHomePopup(', 'static const char *Session_RetainedHomeMissingPage(',
         'static bool Session_RetainedMultiplayerRoutes(',
         'static void Session_RetainedSaveLabel(', 'static idStr Session_RetainedSaveShot(', 'static void Session_RetainedSaveStamp(',

@@ -42,6 +42,7 @@ int clockMsec=100000;
 int Sys_Milliseconds(){return clockMsec;}
 bool retainedEnabled=false,reducedMotion=false,initializationActive=false;
 bool openQ4_UpdateInitialization(){return initializationActive;}
+bool RetainedUI_CanUpdateInitialization(){return true;}
 struct idStr {
     static int Icmp(const char *a,const char *b){
         while(*a && std::tolower(static_cast<unsigned char>(*a))==std::tolower(static_cast<unsigned char>(*b))){++a;++b;}
@@ -54,8 +55,12 @@ struct {
     }
 } cvarSystemValue,*cvarSystem=&cvarSystemValue;
 void Sys_GenerateEvents(){}
-float Session_GetBlockingLoadFrameIntervalMsec(){return 16.0f;}
-constexpr float SESSION_PACIFIER_DRAW_BUDGET_RATIO=4.0f;
+@PACER@
+double LoadingPresentation_Now(){return clockMsec;}
+void LoadingPresentation_Presented(double,double){}
+int com_frameRealTime=0;
+int Session_FindPresentationCap(){return 60;}
+void openQ4_BeginPacedPresentationFrame(){}
 void Session_BeginBlockingLoadPresentationFrame(){}
 int com_ticNumber=500;
 int com_editors=0;
@@ -98,8 +103,9 @@ struct Renderer {
     void CaptureRenderToImage(const char*);
 } rendererValue,*renderSystem=&rendererValue;
 struct idSessionLocal {
-    bool insideExecuteMapChange=true,insidePacifierUpdate=false,insideUpdateScreen=false;
-    int lastPacifierTime=0,lastPacifierDrawMsec=0,bytesNeededForMapLoad=100;
+    bool insideExecuteMapChange=true,insidePacifierUpdate=false,insideUpdateScreen=false,startupLoadingHandoff=false;
+    int lastPacifierTime=0,bytesNeededForMapLoad=100;
+    openq4::LoadingFramePacer loadingFramePacer;
     bool loadingAssetQueueActive=false;
     int loadingAssetQueueTotal=0,loadingAssetQueueLoaded=0;
     float loadingAssetQueueStartPct=0.0f;
@@ -237,9 +243,21 @@ def check_sources(session: str) -> None:
     if not crop < save.index("game->Draw( 0 );") < save.index("CaptureRenderToFile( tempPreviewFile"):
         raise AssertionError("SaveGame's preview must draw and capture inside its crop")
 
-    # Every session-side crop is one of the two guarded captures. A new one must
+    # The load's unseen first-frame warm-up draws into a crop the same way.
+    warm = function_body(session, "int idSessionLocal::WarmFirstGameFrame(")
+    guard = GUARD_DECLARATION.search(warm)
+    crop = warm.find("sessionRenderCropGuard_t warmCrop(")
+    if guard is None or crop < 0:
+        raise AssertionError("WarmFirstGameFrame must hold sessionCaptureDrawGuard_t across sessionRenderCropGuard_t")
+    between = warm[guard.end():crop]
+    if not guard.start() < crop or "{" in between or "}" in between:
+        raise AssertionError("WarmFirstGameFrame's guard must precede its crop guard in the same block")
+    if not crop < warm.index("game->Draw( 0 );") < warm.index('CaptureRenderToImage( "_scratch" );'):
+        raise AssertionError("WarmFirstGameFrame must draw and capture inside its crop")
+
+    # Every session-side crop is one of the guarded captures. A new one must
     # hold sessionCaptureDrawGuard_t and be added here.
-    if session.count("CropRenderSize(") != 2 or len(SESSION_CROP_GUARD.findall(session)) != 1:
+    if session.count("CropRenderSize(") != 2 or len(SESSION_CROP_GUARD.findall(session)) != 2:
         raise AssertionError("Session.cpp gained a render crop: hold sessionCaptureDrawGuard_t across it and pin it here")
 
 
@@ -266,7 +284,8 @@ def main() -> None:
         "void idSessionLocal::PacifierUpdate(",
         "void idSessionLocal::UpdateScreen(",
     ))
-    harness = HARNESS.replace("@GUARD@", guard)
+    pacer = (ROOT / "src/framework/LoadingFramePacer.h").read_text(encoding="utf-8").replace("#pragma once", "")
+    harness = HARNESS.replace("@GUARD@", guard).replace("@PACER@", pacer)
 
     compiler = shutil.which("clang++") or shutil.which("g++")
     if not compiler:

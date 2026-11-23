@@ -739,6 +739,7 @@ void R_SetBackEndFrameData( frameData_t *frame );
 void R_SnapshotRenderView( viewDef_t *view );
 void R_PrepareRenderFrameResources( const emptyCommand_t *commands );
 void R_RetireRenderSnapshots( frameData_t *frame );
+void R_ClearRetainedSnapshotStreams();
 
 
 //=======================================================================
@@ -854,6 +855,7 @@ typedef struct {
 	int		current2DMap;
 	int		current3DMap;
 	int		currentCubeMap;
+	int		current2DArrayMap;
 	int		texEnv;
 	textureType_t	textureType;
 } tmu_t;
@@ -1358,6 +1360,10 @@ extern idCVar r_multiSamples;			// number of antialiasing samples
 extern idCVar r_postAA;					// post AA mode: 0 = off, 1/2/3 = SMAA medium/high/ultra, 4 = colour-edge prototype
 extern idCVar r_postAAStatePoisonTest;	// intentionally dirty GL texture/client state before SMAA draws
 extern idCVar r_pbrMaterials;			// allow explicitly PBR-authored materials on modern paths
+extern idCVar r_parallaxOcclusion;		// REN-11 parallax occlusion mapping
+extern idCVar r_parallaxSamples;		// most height samples per parallax ray
+extern idCVar r_parallaxDistance;		// distance where parallax has faded flat
+extern idCVar r_parallaxShadows;		// parallax self-shadow rays
 extern idCVar r_pbrLinearScene;		// laboratory linear PBR scene instead of display-referred composition
 extern idCVar r_pbrGeneratedLegacyFallback;	// allow development-only generated classic fallbacks
 extern idCVar r_pbrDebug;				// PBR attachment/fallback debug view
@@ -1385,6 +1391,20 @@ extern idCVar r_ssaoSamples;			// SSAO spiral sample count
 extern idCVar r_ssaoDebug;				// visualize SSAO only
 extern idCVar r_ssaoResolution;			// 0 automatic, 1 full, 2 half resolution
 bool R_SSAOHalfResolution();			// r_ssaoResolution resolved against r_ssaoSamples
+// r_ssaoMethod: the kernel of the occlusion pass (REN-10). The r_ssao* names
+// cover all of them: each is screen-space ambient occlusion.
+enum ssaoMethod_t {
+	SSAO_METHOD_SSAO = 0,		// the shipped obscurance estimate
+	SSAO_METHOD_HBAO = 1,		// horizon-based ambient occlusion
+	SSAO_METHOD_GTAO = 2,		// ground-truth ambient occlusion
+	SSAO_METHOD_REFERENCE = 3,	// brute-force reference, developer comparison only
+	SSAO_METHOD_COUNT
+};
+extern idCVar r_ssaoMethod;				// ssaoMethod_t
+extern idCVar r_ssaoMultiBounceAlbedo;	// GTAO: grey albedo classic surfaces bounce trapped light with, 0 off
+int R_SSAOMethod();						// r_ssaoMethod clamped to ssaoMethod_t
+bool R_SSAOFiltered();					// the occlusion target takes the separable filter (not the reference)
+void R_SSAOMethodInfo( const struct viewDef_s *viewDef, float info[4] );	// ssao.fs aoInfo / post_ssao.frag methodInfo
 extern idCVar r_motionBlur;				// enable camera motion blur post-process
 extern idCVar r_motionBlurStrength;		// motion blur strength multiplier
 extern idCVar r_motionBlurMaxPixels;	// maximum motion blur radius in pixels
@@ -1525,6 +1545,10 @@ const int SHARED_FAULT_INJECT_CINEMATIC_POST = 4;
 const int SHARED_FAULT_INJECT_DETAIL = 9000;	// failure detail recorded for an injected decline
 extern idCVar r_vkShadowFallbackTest;	// diagnostic-only forced Vulkan unshadowed receiver fallback
 extern idCVar r_rendererModernLightingParity;	// diagnostic override forcing lighting-ownership parity contracts proven
+extern idCVar r_rendererModernClassicShapes;	// REN-02 rollback mask for corridor-owned classic shapes
+const int MODERN_CLASSIC_SHAPE_STAGES = 1;	// stage transforms on cutouts and baked-light receivers
+const int MODERN_CLASSIC_SHAPE_STENCIL_SHADOWS = 2;	// stencil-shadowed lights
+extern idCVar r_rendererOwnershipCompose;	// REN-02 step 5: compose the aggregate executor with the shared world domains
 extern idCVar r_rendererModernAutoPromote;	// allow gated default modern-visible promotion
 extern idCVar r_rendererPromotionEvidence;	// Phase 8 evidence token required before auto-promotion
 extern idCVar r_rendererShaderReload;	// allow runtime reload of the internal modern GL shader library
@@ -1590,6 +1614,7 @@ extern idCVar r_shadowMapModernStrict;	// fail-visible modern shadow contract br
 extern idCVar r_shadowMapTranslucentReceivers;	// translucent surfaces sample the shadow map like opaque receivers
 extern idCVar r_shadowMapSubviewPolicy;	// 0 = full renders in subviews, 1 = reuse-or-stencil, 2 = always stencil
 extern idCVar r_shadowMapReportInterval;	// frames between shadow-map diagnostic reports
+extern idCVar r_shadowMapPrelightCasters;	// 0 = world surfaces whole, 1 = prelight front caps for lights whose source lies outside their box, 2 = for every prelit light
 extern idCVar r_shadowMapConservativeCasters;	// 1 = keep shadow-map caster submission independent from visible receiver scissors
 extern idCVar r_shadowMapProjectedCSM;	// 1 = allow ordinary projected lights to use CSM when r_shadowMapCSM is enabled
 extern idCVar r_shadowMapDepthCompare;	// 1 = use sampler2DShadow compare mode for projected depth maps
@@ -2050,6 +2075,15 @@ void R_PurgeFramebufferCopyFBOs( void );
 // than the client-memory index draw it replaces and causes pacing spikes)
 bool R_StaticIndexCacheAllowed( const idRenderEntityLocal *def );
 
+// The static world of a prelit light as one shadow-map caster: the front caps
+// of its prelight volume (tr_light.cpp). NULL when the light has none to give.
+bool R_ShadowMapLightSourceOutsideVolume( const renderLight_t &parms );
+srfTriangles_t *R_ShadowMapPrelightCaster( idRenderLightLocal *light );
+srfTriangles_t *R_ShadowMapBuildPrelightCaster( const srfTriangles_t *shadowTri );
+bool R_ShadowMapPrelightCasterSelfTest( void );
+// links it into the view light's caster chain (Interaction.cpp)
+void R_ShadowMapLinkPrelightCaster( viewLight_t *vLight );
+
 
 /*
 ====================================================================
@@ -2295,6 +2329,10 @@ bool RB_LightGridSurfaceModernRepresentable( const drawSurf_t *surf, const viewD
 // True with a null grid is an intentional native non-receiver, not missing work.
 class LightGrid;
 bool RB_PrepareModernLightGrid( const drawSurf_t *surf, const viewDef_t *viewDef, const LightGrid *&grid );
+// REN-02: the number of albedo layers the native light-grid pass draws for a
+// surface, and the bump/diffuse stage state of the first.
+int RB_LightGridClassicAlbedoStages( const drawSurf_t *surf, idImage **bumpImage, idVec4 bumpMatrix[2],
+	idImage **diffuseImage, idVec4 diffuseMatrix[2], float diffuseColor[4], float vertexColorParams[2] );
 // ModernLightGridGLSL.h's uBakedGrid[7], with positions relative to origin.
 void RB_LightGridBakedParams( const LightGrid &grid, const float origin[3], float params[7][4] );
 bool RB_FlatDiffuseSweepActive( const drawSurf_t *surf );
@@ -2345,6 +2383,10 @@ void RB_BindStageTexture( const float *shaderRegisters, const textureStage_t *te
 void RB_FinishStageTexture( const textureStage_t *texture, const drawSurf_t *surf );
 bool RB_DrawSurfHasSoftParticleStage( const drawSurf_t *surf );
 void RB_StencilShadowPass( const drawSurf_t *drawSurfs );
+// REN-02 step 4: the ARB2 light loop's stencil decision and one shadow chain,
+// for the modern classic-lighting corridor.
+bool RB_ARB2_LightShadowsByStencilPolicy( const viewLight_t *vLight );
+void RB_ARB2_StencilShadowPassForLight( const viewDef_t *viewDef, viewLight_t *vLight, const drawSurf_t *shadows );
 void RB_STD_DrawView( void );
 // Temporarily use the same scene coordinates while building/submitting modern
 // packets that the later legacy scene target uses. End restores all rectangles.
@@ -2622,6 +2664,7 @@ int R_CountFrameData( void );
 void R_ToggleSmpFrame( void );
 void *R_FrameAlloc( int bytes );
 void *R_ClearedFrameAlloc( int bytes );
+bool R_FrameMemoryContains( const void *data );
 void R_FrameFree( void *data );
 
 // R_StaticAlloc/R_ClearedStaticAlloc/R_StaticFree live in the shared

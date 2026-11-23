@@ -25,11 +25,15 @@ int clockMsec=1000, redraws=0, callbackStage=-1;
 bool throwFromCallback=false;
 bool initializing=false;
 bool openQ4_UpdateInitialization(){return initializing;}
+bool RetainedUI_CanUpdateInitialization(){return true;}
 int Sys_Milliseconds(){return clockMsec;}
 void Sys_GenerateEvents(){}
 float Session_GetBlockingLoadFrameIntervalMsec(){return 16.0f;}
-constexpr float SESSION_PACIFIER_DRAW_BUDGET_RATIO=4.0f;
-void Session_BeginBlockingLoadPresentationFrame(){++clockMsec;}
+@PACER@
+double LoadingPresentation_Now(){return clockMsec;}
+int com_frameRealTime=0;
+int Session_FindPresentationCap(){return 60;}
+void openQ4_BeginPacedPresentationFrame(){++clockMsec;}
 struct {int GetPresentationTime(){return clockMsec;}} commonValue,*common=&commonValue;
 struct {int GetReadCount(){return 40;}} filesystemValue,*fileSystem=&filesystemValue;
 struct GUI {
@@ -46,8 +50,9 @@ struct Network {
 };
 struct idAsyncNetwork {static inline Network client{1,0},server{2,0};};
 struct idSessionLocal {
-    bool insideExecuteMapChange=true,insidePacifierUpdate=false,insideUpdateScreen=false;
-    int lastPacifierTime=0,lastPacifierDrawMsec=0,bytesNeededForMapLoad=100;
+    bool insideExecuteMapChange=true,insidePacifierUpdate=false,insideUpdateScreen=false,startupLoadingHandoff=false;
+    int lastPacifierTime=0,bytesNeededForMapLoad=100;
+    openq4::LoadingFramePacer loadingFramePacer;
     bool loadingAssetQueueActive=true;
     int loadingAssetQueueTotal=10,loadingAssetQueueLoaded=2;
     float loadingAssetQueueStartPct=0.1f;
@@ -95,7 +100,9 @@ int main() {
     }
     Reset();session.insideExecuteMapChange=false;session.PacifierUpdate();
     assert(redraws==0 && idAsyncNetwork::server.calls==0 && !session.insidePacifierUpdate);
-    Reset();session.lastPacifierTime=clockMsec;session.PacifierUpdate();
+    // A frame presented a moment ago (a dedicated pacifier run): the next is not due yet.
+    Reset();session.loadingFramePacer.Presented(clockMsec-1,clockMsec);session.lastPacifierTime=clockMsec;
+    session.PacifierUpdate();
     assert(redraws==0 && idAsyncNetwork::server.calls==0 && !session.insidePacifierUpdate);
     puts("loading pacifier recursive offers, exception recovery and pacing: PASS");
 }
@@ -104,7 +111,8 @@ int main() {
 
 def main():
     production = (ROOT / "src/framework/Session.cpp").read_text(encoding="utf-8")
-    source = HARNESS.replace("@BODY@", function_body(production, "void idSessionLocal::PacifierUpdate"))
+    pacer = (ROOT / "src/framework/LoadingFramePacer.h").read_text(encoding="utf-8").replace("#pragma once", "")
+    source = HARNESS.replace("@PACER@", pacer).replace("@BODY@", function_body(production, "void idSessionLocal::PacifierUpdate"))
     compiler = shutil.which("clang++") or shutil.which("g++")
     if not compiler:
         raise RuntimeError("a C++ compiler is required")

@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 
 
 #include "tr_local.h"
+#include "VolumetricLighting.h"
 #if !defined( OPENQ4_RENDERER_VK_MODULE ) && !defined( OPENQ4_RENDERER_GLES_MODULE )
 #include "draw_pbr.h"
 #endif
@@ -50,6 +51,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "RenderGraph.h"
 #include "RenderGraphResources.h"
 #include "MaterialResourceTable.h"
+#include "PBRNativeContract.h"
 #include "ClassicGuiDomain.h"
 #include "ClassicCinematicPostDomain.h"
 #include "ClassicSpecialFrameDomain.h"
@@ -345,6 +347,12 @@ static void R_MSAAResolvesLastFrame( int &color, int &depth ) {
 idCVar r_postAA( "r_postAA", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "post AA mode: 0 = off, 1 = SMAA 1x medium, 2 = SMAA 1x high, 3 = SMAA 1x ultra, 4 = SMAA 1x colour-edge prototype", 0, 4, idCmdSystem::ArgCompletion_Integer<0,4> );
 idCVar r_postAAStatePoisonTest( "r_postAAStatePoisonTest", "0", CVAR_RENDERER | CVAR_BOOL, "intentionally dirty GL texture/client state before SMAA post-AA draws for validation" );
 idCVar r_pbrMaterials( "r_pbrMaterials", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "draw explicitly PBR-authored materials as PBR; 0 keeps their classic stages. Stock materials are never PBR" );
+// Parallax occlusion mapping (REN-11): authored PBR heightMap materials and,
+// on Vulkan, the retail Parallaxbump guide. Off draws both exactly as before.
+idCVar r_parallaxOcclusion( "r_parallaxOcclusion", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "ray-marched parallax occlusion mapping for PBR materials with a heightMap, and on Vulkan for the retail Parallaxbump guide; 0 draws heightMap materials flat and keeps the retail single-step offset" );
+idCVar r_parallaxSamples( "r_parallaxSamples", "32", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "most height samples one parallax ray takes, at grazing angles; a quarter of it at normal incidence, falling with distance", 8, 64, idCmdSystem::ArgCompletion_Integer<8,64> );
+idCVar r_parallaxDistance( "r_parallaxDistance", "1536", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "view distance at which parallax has faded back to the flat surface; it fades over the last quarter", 64.0f, 16384.0f );
+idCVar r_parallaxShadows( "r_parallaxShadows", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "trace a self-shadow ray through the height field toward each light for parallax surfaces" );
 idCVar r_vkPBRSpecularAA( "r_vkPBRSpecularAA", "1", CVAR_RENDERER | CVAR_BOOL, "filter native Vulkan PBR roughness by shading-normal variance; disable only for comparison" );
 idCVar r_pbrGeneratedLegacyFallback( "r_pbrGeneratedLegacyFallback", "1", CVAR_RENDERER | CVAR_BOOL, "allow development-only classic fallback generation for PBR-only materials" );
 idCVar r_pbrDebug( "r_pbrDebug", "0", CVAR_RENDERER | CVAR_INTEGER, "PBR debug view: 0=off, 1=albedo, 2=normal, 3=metallic, 4=roughness, 5=AO, 6=emissive, 7=state marker (green=PBR, magenta=contract mismatch)", 0, 7, idCmdSystem::ArgCompletion_Integer<0,7> );
@@ -379,10 +387,10 @@ idCVar r_ssaoBias( "r_ssaoBias", "2.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOA
 idCVar r_ssaoIntensity( "r_ssaoIntensity", "1.35", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "SSAO darkening strength", 0.0f, 4.0f );
 idCVar r_ssaoPower( "r_ssaoPower", "1.6", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "SSAO response curve", 0.1f, 4.0f );
 idCVar r_ssaoMaxDistance( "r_ssaoMaxDistance", "220.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "fade SSAO out past this view-space distance", 16.0f, 4096.0f );
-idCVar r_ssaoSamples( "r_ssaoSamples", "20", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "number of SSAO spiral samples", 4, 32, idCmdSystem::ArgCompletion_Integer<4,32> );
+idCVar r_ssaoSamples( "r_ssaoSamples", "20", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "depth samples per pixel for every r_ssaoMethod (32 also selects full resolution when r_ssaoResolution is 0)", 4, 32, idCmdSystem::ArgCompletion_Integer<4,32> );
 idCVar r_ssaoDebug( "r_ssaoDebug", "0", CVAR_RENDERER | CVAR_BOOL, "visualize SSAO only" );
 idCVar r_ssaoResolution( "r_ssaoResolution", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER,
-	"SSAO resolution: 0 automatic (full at the maximum r_ssaoSamples, half below), 1 full, 2 half", 0, 2,
+	"SSAO resolution: 0 automatic (full at the maximum r_ssaoSamples, half below), 1 full, 2 half; r_ssaoMethod 3 (the reference) is always full", 0, 2,
 	idCmdSystem::ArgCompletion_Integer<0,2> );
 
 /*
@@ -397,11 +405,69 @@ Both renderers read it (OpenGL since FPS-04).
 ====================
 */
 bool R_SSAOHalfResolution() {
+	if ( R_SSAOMethod() == SSAO_METHOD_REFERENCE ) {
+		// The reference is the comparison every other result is measured against.
+		return false;
+	}
 	switch ( r_ssaoResolution.GetInteger() ) {
 		case 1: return false;
 		case 2: return true;
 		default: return r_ssaoSamples.GetInteger() < 32;
 	}
+}
+
+/*
+====================
+R_SSAOMethod
+
+The ambient occlusion kernel of the occlusion pass (REN-10, ssaoMethod_t).
+0 is the SSAO obscurance estimate the presets ship with. 1 is horizon-based
+ambient occlusion (HBAO): per screen direction, the rises of the horizon above
+the tangent plane, weighted evenly over directions. 2 is ground-truth ambient
+occlusion (GTAO): a horizon search per slice and the cosine-weighted visible
+arc between the horizons, the visibility native PBR's multi-bounce and
+specular occlusion expect. 3 is a brute-force reference, cosine-weighted rays
+marched through the depth buffer at full resolution and unfiltered, many
+times GTAO's cost, for comparisons only. All four share the occlusion target,
+filter, resolve and native PBR field, so the application (classic factor,
+indirect-only PBR occlusion), MSAA, dynamic resolution, subviews and both
+backends are the same. The r_ssao* cvars keep their names: every method is
+screen-space ambient occlusion.
+====================
+*/
+idCVar r_ssaoMethod( "r_ssaoMethod", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER,
+	"ambient occlusion method when r_ssao is on: 0 SSAO (obscurance), 1 HBAO (horizon-based), 2 GTAO (ground-truth), 3 brute-force reference (developer comparison, very slow)",
+	SSAO_METHOD_SSAO, SSAO_METHOD_COUNT - 1, idCmdSystem::ArgCompletion_Integer<SSAO_METHOD_SSAO, SSAO_METHOD_COUNT - 1> );
+idCVar r_ssaoMultiBounceAlbedo( "r_ssaoMultiBounceAlbedo", "0.3", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT,
+	"GTAO: the grey albedo classic surfaces bounce the light their occluders trap with (native PBR uses its own albedo); 0 turns multi-bounce off", 0.0f, 1.0f );
+
+int R_SSAOMethod() {
+	return idMath::ClampInt( SSAO_METHOD_SSAO, SSAO_METHOD_COUNT - 1, r_ssaoMethod.GetInteger() );
+}
+
+bool R_SSAOFiltered() {
+	return R_SSAOMethod() != SSAO_METHOD_REFERENCE;
+}
+
+/*
+====================
+R_SSAOMethodInfo
+
+x the method, y the pattern turn: under temporal AA (a jittered view) HBAO
+and GTAO turn their sixteen sample patterns by a quarter pattern per frame,
+so the history accumulates four times the directions; without it the
+patterns hold still and nothing crawls. z the classic multi-bounce albedo,
+GTAO only (HBAO's even weighting is not the visibility the fit expects).
+====================
+*/
+void R_SSAOMethodInfo( const viewDef_t *viewDef, float info[4] ) {
+	const int method = R_SSAOMethod();
+	const bool temporal = ( method == SSAO_METHOD_HBAO || method == SSAO_METHOD_GTAO )
+		&& viewDef != NULL && viewDef->temporalJitterEnabled;
+	info[0] = static_cast<float>( method );
+	info[1] = temporal ? 0.25f * static_cast<float>( tr.frameCount & 3 ) : 0.0f;
+	info[2] = method == SSAO_METHOD_GTAO ? idMath::ClampFloat( 0.0f, 1.0f, r_ssaoMultiBounceAlbedo.GetFloat() ) : 0.0f;
+	info[3] = 0.0f;
 }
 idCVar r_motionBlur( "r_motionBlur", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "enable subtle camera motion blur post-process" );
 idCVar r_motionBlurStrength( "r_motionBlurStrength", "0.45", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "motion blur strength multiplier", 0.0f, 2.0f );
@@ -505,6 +571,7 @@ idCVar r_shadowMapReportInterval( "r_shadowMapReportInterval", "30", CVAR_RENDER
 idCVar r_shadowMapModernStrict( "r_shadowMapModernStrict", "0", CVAR_RENDERER | CVAR_BOOL, "fail-visible modern shadow contract: lights whose descriptor promises shadows but cannot deliver renders black instead of silently unshadowed" );
 idCVar r_shadowMapTranslucentReceivers( "r_shadowMapTranslucentReceivers", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "translucent surfaces sample the shadow map like opaque receivers (parity with r_stencilTranslucentShadows)" );
 idCVar r_shadowMapSubviewPolicy( "r_shadowMapSubviewPolicy", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "shadow maps in mirror/remote subviews: 0 = render like main views, 1 = prefer cache then stencil, 2 = prefer stencil; required maps override when stencil cannot preserve the shadow", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
+idCVar r_shadowMapPrelightCasters( "r_shadowMapPrelightCasters", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "what the static world casts into the shadow map of a light that has a prelight volume: 0 = each world surface whole (as before), 1 = the front caps of the prelight volume, the triangles stencil shadows are built from cut to the light, for a light whose source lies outside its own box (an off-centre point light, a parallel light), 2 = the front caps for every light with such a volume", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
 idCVar r_shadowMapConservativeCasters( "r_shadowMapConservativeCasters", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "submit shadow-map casters conservatively even when their receiver interaction scissor is not visible" );
 idCVar r_shadowMapProjectedCSM( "r_shadowMapProjectedCSM", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "allow ordinary projected lights to use cascades when r_shadowMapCSM is enabled" );
 idCVar r_shadowMapDepthCompare( "r_shadowMapDepthCompare", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "use hardware comparison sampling for projected depth shadow maps when supported; PCSS-lite (r_shadowMapFilterMode 2) implies the manual path" );
@@ -716,6 +783,8 @@ idCVar r_rendererSharedSubview( "r_rendererSharedSubview", "0", CVAR_RENDERER | 
 idCVar r_rendererSharedDeform( "r_rendererSharedDeform", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "enable optional, default-off backend-neutral material-deform ownership; incomplete or unsupported work retains the complete classic path" );
 idCVar r_rendererSharedFaultInject( "r_rendererSharedFaultInject", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_CHEAT, "qualification diagnostic: make the selected shared classic domains decline at their backend boundary with a named fallback, so the complete classic path runs (1 = subview, 2 = render-demo/Raven special frame, 4 = cinematic/authored post)", 0, 7, idCmdSystem::ArgCompletion_Integer<0,7> );
 idCVar r_rendererModernLightingParity( "r_rendererModernLightingParity", "0", CVAR_RENDERER | CVAR_INTEGER, "diagnostic override forcing modern lighting-ownership parity contracts proven for bring-up capture: 1 = interaction, 2 = fog/blend, 4 = light grid, 8 = shadow receivers; 0 keeps every unproven domain on the ARB2 bridge", 0, 15, idCmdSystem::ArgCompletion_Integer<0,15> );
+idCVar r_rendererModernClassicShapes( "r_rendererModernClassicShapes", "3", CVAR_RENDERER | CVAR_INTEGER, "rollback mask for shapes the classic-lighting corridor may own inside a modern visible frame: 1 = cutouts and baked-light receivers whose stage carries a texture matrix, vertex colour or stage expression, 2 = stencil-shadowed lights; clearing a bit hands frames with that shape back to the complete ARB2 path", 0, 3, idCmdSystem::ArgCompletion_Integer<0,3> );
+idCVar r_rendererOwnershipCompose( "r_rendererOwnershipCompose", "0", CVAR_RENDERER | CVAR_BOOL, "let the aggregate modern executor and the shared classic world domains be requested together: the aggregate executor is asked first, and a view's pass goes to its shared domain or to ARB2 only when the aggregate did not compose the frame; 0 keeps the two ownership models mutually exclusive" );
 idCVar r_rendererModernAutoPromote( "r_rendererModernAutoPromote", "0", CVAR_RENDERER | CVAR_BOOL, "allow r_glTier auto and r_renderer best to request the guarded modern visible path after promotion evidence and sign-off; off keeps ARB2 default" );
 idCVar r_rendererPromotionEvidence( "r_rendererPromotionEvidence", "", CVAR_RENDERER, "Phase 8 validation evidence token required with r_rendererModernAutoPromote before automatic modern visible promotion" );
 idCVar r_rendererShaderReload( "r_rendererShaderReload", "0", CVAR_RENDERER | CVAR_BOOL, "allow runtime reload of the internal modern GL shader library" );
@@ -4168,6 +4237,14 @@ void R_ScreenShot_f( const idCmdArgs &args ) {
 		R_ScreenshotFilename( lastNumber, "screenshots/shot", checkname, R_ScreenshotExtension() );
 		break;
 	case 4:
+		if ( !idStr::IsNumeric( args.Argv( 1 ) ) ) {
+			// openQ4 MP-22: screenshot <filename> <width> <height>, as a demo's thumbnail is taken
+			checkname = args.Argv( 1 );
+			width = atoi( args.Argv( 2 ) );
+			height = atoi( args.Argv( 3 ) );
+			blends = 1;
+			break;
+		}
 		width = atoi( args.Argv( 1 ) );
 		height = atoi( args.Argv( 2 ) );
 		blends = atoi( args.Argv( 3 ) );
@@ -4180,7 +4257,7 @@ void R_ScreenShot_f( const idCmdArgs &args ) {
 		R_ScreenshotFilename( lastNumber, "screenshots/shot", checkname, R_ScreenshotExtension() );
 		break;
 	default:
-		common->Printf( "usage: screenshot\n       screenshot <filename>\n       screenshot <width> <height>\n       screenshot <width> <height> <blends>\n" );
+		common->Printf( "usage: screenshot\n       screenshot <filename>\n       screenshot <width> <height>\n       screenshot <width> <height> <blends>\n       screenshot <filename> <width> <height>\n" );
 		return;
 	}
 
@@ -5179,6 +5256,7 @@ void GfxInfo_f( const idCmdArgs &args ) {
 		RENDER_GRAPH_MAX_RESOURCE_ACCESSES );
 	R_RenderGraphResources_PrintGfxInfo();
 	R_MaterialResourceTable_PrintGfxInfo();
+	R_Parallax_PrintInfo();
 #if !defined( OPENQ4_RENDERER_VK_MODULE ) && !defined( OPENQ4_RENDERER_GLES_MODULE )
 	RB_GLPBR_PrintInfo();
 #endif
@@ -5750,6 +5828,7 @@ void GfxInfo_f( const idCmdArgs &args ) {
 		r_pbrGeneratedLegacyFallback.GetBool() ? 1 : 0,
 		r_pbrInferFromLegacyMaterials.GetBool() ? 1 : 0,
 		r_pbrDebug.GetInteger() );
+	R_Volumetric_PrintStatus();
 	R_ModernGLExecutor_PrintGfxInfo();
 #ifndef OPENQ4_RENDERER_VK_MODULE
 	RB_HDRPrintGfxInfo();
@@ -5973,6 +6052,7 @@ static bool R_TryFullVidRestartInternal( const renderWindowRequest_t *request, b
 		R_FreeDerivedData();
 		if ( frameData != NULL ) { R_ToggleSmpFrame(); R_ToggleSmpFrame(); }
 		vertexCache.PurgeAll();
+		R_ClearRetainedSnapshotStreams();
 		if ( !R_ImagePolicyBeforeTeardown( error, errorSize ) ) R_RejectRecoverableRendererRestart( error );
 		R_ShutdownDeviceForRestart();
 		tr.viewDef = NULL; tr.primaryView = NULL; backEnd.viewDef = NULL;
@@ -6192,6 +6272,8 @@ void R_VidRestart_f( const idCmdArgs &args ) {
 
 	// free the vertex caches so they will be regenerated again
 	vertexCache.PurgeAll();
+	// the overlap snapshot's retained versions were keyed by those caches
+	R_ClearRetainedSnapshotStreams();
 
 	if ( full ) {
 		R_PerformFullVidRestart( forceWindow );
@@ -6522,6 +6604,7 @@ void R_InitCommands( void ) {
 #endif
 	cmdSystem->AddCommand( "rendererGpuTimerSelfTest", R_RendererGpuTimerSelfTest_f, CMD_FL_RENDERER, "run renderer GPU timer query self tests" );
 	cmdSystem->AddCommand( "rendererTemporalPresentationStatus", R_TemporalPresentation_PrintStatus_f, CMD_FL_RENDERER, "report dynamic-resolution and temporal-history state" );
+	R_Volumetric_RegisterCommands();
 	cmdSystem->AddCommand( "pbrProbeSettle", R_PBRProbeSettle_f, CMD_FL_RENDERER, "finish background reflection-probe filtering on the next frames, as a screenshot does" );
 	cmdSystem->AddCommand( "rendererMotionBlurStatus", R_TemporalPresentation_PrintMotionBlurStatus_f, CMD_FL_RENDERER, "report motion blur requested/effective settings and history decisions; \"reset\" clears the counters" );
 	cmdSystem->AddCommand( "rendererScenePacketSelfTest", R_RendererScenePacketSelfTest_f, CMD_FL_RENDERER, "run renderer front-end scene-packet self tests" );

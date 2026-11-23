@@ -356,6 +356,10 @@ void rvGameState::GameStateChanged( void ) {
 			if( gameLocal.isClient ) {
 				statManager->Init();
 			}
+			// openQ4 MP-22: this player's autoaction starts with live play
+			if ( previousGameState->currentState != SUDDENDEATH ) {
+				gameLocal.mpGame.AutoActionMatchStarted( true );
+			}
  		} else if( currentState == SUDDENDEATH ) {
 			soundSystem->SetActiveSoundWorld( true );
 			gameLocal.mpGame.ScheduleAnnouncerSound( AS_GENERAL_SUDDEN_DEATH, gameLocal.time );
@@ -365,6 +369,12 @@ void rvGameState::GameStateChanged( void ) {
 			gameLocal.mpGame.isBuyingAllowedRightNow = false;
 			// RITUAL END
 			gameLocal.mpGame.ShowStatSummary();
+			// openQ4 MP-17: the match goes in the player's own history
+			if ( previousGameState->currentState == GAMEON || previousGameState->currentState == SUDDENDEATH ) {
+				gameLocal.mpGame.IdentityRecordHistory();
+				// openQ4 MP-22: and this player's autoaction takes the result
+				gameLocal.mpGame.AutoActionMatchEnded( true );
+			}
 		}
 
 		gameLocal.mpGame.ScheduleTimeAnnouncements( );
@@ -542,6 +552,10 @@ void rvGameState::Run( void ) {
 			}
 
 			if ( nextState == INACTIVE ) {
+				// openQ4 MP-18: a shutdown that waited for this match stops the server here
+				if ( gameLocal.RunServerShutdown( true ) ) {
+					return;
+				}
 				// game rotation, new map, gametype etc.
 				// only cycle in tourney if tourneylimit is higher than the specified value
 				if( gameLocal.gameType != GAME_TOURNEY || ((rvTourneyGameState*)this)->GetTourneyCount() >= gameLocal.serverInfo.GetInt( "si_tourneyLimit" ) ) {
@@ -807,9 +821,13 @@ bool rvGameState::NewState( mpGameState_t newState ) {
 				gameLocal.mpGame.SetPlayerScore( p, 0 );
 				gameLocal.mpGame.SetPlayerTeamScore( p, 0 );
 			}
+			// openQ4 MP-17: the places kept for leavers belonged to the warmup
+			gameLocal.mpGame.IdentityNewMatch();
 
 			gameLocal.mpGame.ClearTeamScores();
 			gameLocal.mpGame.OnMatchStarted();
+			// openQ4 MP-22: the server's autoaction starts with live play
+			gameLocal.mpGame.AutoActionMatchStarted( false );
 
 			cvarSystem->SetCVarString( "ui_ready", "Not Ready" );
 			gameLocal.mpGame.switchThrottle[ 1 ] = 0;	// passby the throttle
@@ -821,6 +839,8 @@ bool rvGameState::NewState( mpGameState_t newState ) {
 			// that happen outside idMultiplayerGame::Run.
 			if ( currentState == GAMEON || currentState == SUDDENDEATH ) {
 				gameLocal.mpGame.OnMatchEnded();
+				// openQ4 MP-22: the server's autoaction takes the result
+				gameLocal.mpGame.AutoActionMatchEnded( false );
 			}
 			statManager->EndGame();
 			// openQ4: the map database offers the end-of-match pick, if the
