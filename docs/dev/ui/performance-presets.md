@@ -3,7 +3,9 @@
 SYSTEM uses the same nine performance profiles and hardware-detection policy as
 the existing engine commands (seven until Maximum and Low were added; the dated
 sections below describe the ladder as it stood on their date). `framework/PerformancePreset` owns the profile
-records, their ordered 55 assignments and the read-only detection decision.
+records, their ordered 54 assignments and the read-only detection decision.
+No profile and no detection result owns the render scale (`r_screenFraction`)
+or the display mode; see "Presets keep native resolution" below.
 Common retains its original setters, readback checks, modified flags and rollback;
 it publishes the selected profile name only after all other writes succeed.
 
@@ -15,7 +17,7 @@ The retained settings service exposes two typed draft operations:
 | `settings.system.autodetect` | None | Observe the existing platform/memory signals and expand the selected profile into the current draft. |
 
 These operations validate the entire merged draft. They replace exactly the
-55 profile fields and preserve the other 19 catalog fields, including custom
+54 profile fields and preserve the other 24 catalog fields, including custom
 Brightness and Ambient Brightness edits. They do not set CVars, run commands,
 restart devices or persist configuration. The complete local Number draft
 barrier also applies to these bulk changes.
@@ -40,7 +42,7 @@ unrelated renderer diagnostics and explicitly protected values stay protected.
 
 The isolated and root standalone suites compile the production model and
 transaction and exercise the actual Common, SYSTEM host, service and adapter
-method bodies. Golden profiles, detection boundaries, all 55 assignments,
+method bodies. Golden profiles, detection boundaries, all 54 assignments,
 untouched values, reentry, failed allocation, legacy flag/value restoration and
 the local draft barrier are covered. Windows and Linux sanitizer runs also
 reject compiled behavioral mutations. The separate MSVC debug-library test
@@ -843,3 +845,131 @@ once.
   session reported `taaRequested=1` and resolved 119 frames.
 - Not run: any ARM board, Pi or Asahi machine. The rule is covered by the
   model suite only. What the light grid and TAA cost on a Pi is not measured.
+
+## Presets keep native resolution, 23 November 2026
+
+The user asked that native resolution be the default and that graphics presets
+never change it. The display side already held: `r_mode -2` (desktop native)
+and `r_fullscreenDesktop 1` are the defaults, and no profile ever wrote the
+display mode, window size or custom size. The scene resolution did not:
+Minimum ran at 50%, Low Power and Low at 75% and Performance at 85%, and
+detection lowered any tier further to fit a scene pixel budget on a large
+drawable (a 4K integrated GPU got Performance at 50%).
+
+- `r_screenFraction` is no longer a preset target. The footprint is 54
+  assignments; `PerformancePreset::screenFraction`, the detection's
+  `screenFraction` and `scenePixelBudget`, and their self-test intent and
+  progression checks are gone. Choosing a preset, Auto-Detect, the first
+  launch's detection, the system check and the stock `execMachineSpec`
+  choices leave the render scale where the player set it (100 by default).
+  The SYSTEM catalog keeps `r_screenFraction` as an ordinary setting, so the
+  SYSTEM journal and catalog versions do not change.
+- The drawable still chooses the tier: the resolution-class ceilings that
+  lower a tier above 1080p (integrated) or 1440p (8 GiB class) are unchanged,
+  and `PerformancePresetReason::Resolution` now only names them.
+- The system check's detail line drops the render scale: `#str_232020` and
+  `#str_232021` now read "Frame rate cap %d" and "No frame rate cap" in all
+  twelve languages.
+- Migration: `r_screenFractionPresetMigrated` returns a scale below 100 to
+  100 once when `com_performancePreset` names a preset, because the old
+  presets or detection put it there. It runs on the saved configuration
+  before `autoexec.cfg`, so a scale an autoexec sets survives, and a new
+  configuration only records the flag. A custom selection is left alone.
+- The preset system version moves from `1.46eb190c` to `1.42bd63cb`, so
+  configurations saved earlier are offered the system check once.
+
+Validation:
+
+- `openq4-ui-performance-presets` (551,632 checks) and
+  `openq4-ui-system-presets` pass under MSVC. The native test now asserts that
+  no target is a render-scale, display-mode, window-size or dynamic-resolution
+  CVar, and that every detected record expands without `r_screenFraction`.
+- `ui_performance_presets.py --mutations`: the real SYSTEM host and Common
+  bodies pass and all 30 mutations are rejected (the two scene-budget
+  mutations were removed with the budget). `ui_system_settings_host.py`,
+  `performance_preset_check.py` (the pin against a compiled model) and
+  `lang_table_encoding.py` pass.
+- `performance_presets_smoke.py` now reads `r_screenFraction` and `r_mode`
+  back after every preset in gameplay and after the stock choices, and
+  requires the saved-config migration line.
+
+## Low-end measurements, 24 November 2026
+
+The user reported that the lowest presets did not hold even their own frame cap
+and asked that low-end PCs from the past decade be fully supported. Since 23
+November every preset draws the 3D scene at native resolution, so the low tiers
+now pay for every pixel the old 50-75% scene scales saved.
+
+**Method.** The low-end stand-in is the Intel Iris Xe (96 EU, i7-13700H laptop)
+through Vulkan (`r_vkDevice 2`), in a 1920x1080 window, with the timed suite
+scenarios. Frame rates on that GPU swung by 20% and more between launches: the
+machine was shared with other sessions' builds and test runs, and the Iris Xe
+also composes the 240 Hz desktop and other applications. Decisions rest on
+measurements that hold up under that: per-pass GPU timestamps
+(`r_vkGpuPhaseProfile`) in consecutive windows of one launch, toggle ladders
+that compare a window with the base windows either side of it, and runs at the
+preset's own frame cap (`com_maxfps` 30 or 60 instead of the suite's uncapped
+default) with the old and new recipes interleaved. Scripts and data:
+`.tmp/lowend-presets/`.
+
+**Before (Iris Xe, 1920x1080, Vulkan, at the cap).**
+
+| Preset | combat_airdefense1 | outdoor_airdefense1 | indoor_storage2 |
+| --- | --- | --- | --- |
+| Minimum (30 Hz) | 30.0 fps, work p50 11.8 ms | 30.0 fps, work p50 6.8 ms | 30.0 fps, work p50 4.9 ms |
+| Low (60 Hz) | **43.9 fps**, work p50 22.5 ms | **50.8 fps**, work p50 19.3 ms | 60.0 fps, work p50 4.8 ms |
+
+Minimum and Low Power held 30 Hz with room to spare; Low missed 60 Hz in the
+open and in combat. On the RTX 4060 Laptop the same Low settings take 5-11 ms of
+CPU work a frame, so on the Iris Xe the frame was GPU-bound: the renderer's frame
+trace put 18.6 ms on the GPU, with the CPU waiting in the present call.
+
+**Where Low's GPU time went** (combat, consecutive windows of one launch, each
+toggle added to the one before):
+
+| Window | GPU frame | Saved |
+| --- | --- | --- |
+| Low | 17.8 ms | |
+| + `r_softParticles 0` | 17.3 ms | 0.5 ms |
+| + `r_heatHazeDepthReject 0` | 15.2 ms | 2.0 ms |
+| + `r_useLightGrid 0` | 13.3 ms | 1.9 ms |
+| + `r_shadows 0` | 9.5 ms | 3.9 ms |
+| all restored | 18.8 ms | |
+
+Outdoors the light grid priced at 1.2 ms. The heat-haze saving is an artefact of
+that order: it appears only once soft particles are off. With soft particles on,
+the default, Low with the heat-haze depth test forced on and off measured 11.9 to
+12.0 ms in five alternating windows, so that setting was left alone. In the
+frame-rate ladder, Low with `r_shadows 0` ran 60-66 Hz in combat and the effects
+scene against 43-50 Hz in the base windows around it.
+
+**Change.** Low draws no shadows and skips the light grid: it is Low Power's
+recipe at 60 Hz with 2x anisotropic filtering. Performance is the first tier with
+Quake 4's stencil shadows. Stock Low quality (`execMachineSpec` 0) still maps to
+Low, so it no longer turns shadows on. The preset system version moves from
+`1.ac7c9a1f` to `1.d7f4b595`, so saved configurations are offered the system
+check once.
+
+**After (same GPU and window, at the cap).**
+
+| Scene | Low before (old recipe forced) | Low now | Low Power / Minimum now (30 Hz) |
+| --- | --- | --- | --- |
+| combat_airdefense1 (two rounds) | 49.8 / 50.2 fps, work p50 19.4 ms | 58.9 / 60.1 fps, work p50 9.2-11.4 ms | 30.0 / 30.0 fps |
+| effects_airdefense1 | 49.1 fps, work p50 19.8 ms | 59.2-60.0 fps, work p50 8.6-13.9 ms | 30.0 / 30.0 fps |
+| outdoor_airdefense1 | 55.4 fps, work p50 17.5 ms | 59.7-60.1 fps, work p50 5.9-6.2 ms | 30.0 / 30.1 fps |
+| outdoor_convoy1 | 60.3 fps, work p50 6.4 ms | 60.0 fps, work p50 6.4-7.9 ms | 30.0 / 30.0 fps |
+| indoor_storage2 | | 59.9 fps, work p50 6.3 ms | 30.0 / 30.0 fps |
+| indoor_hub2 | | 60.0 fps, work p50 6.6 ms | 30.0 / 30.0 fps |
+
+The "before" column was measured interleaved with "Low now", so both saw the same
+machine load. Low's median frame work is now 6-11 ms of its 16.7 ms budget on the
+Iris Xe.
+
+**Open.** Auto-Detect still recommends Balanced for an integrated GPU with 8 GB
+of memory or more at up to 1080p, which a GPU of the Iris Xe class does not hold
+at 120 Hz with stencil shadows. That is a detection decision the owner has not
+made yet. Engine costs that every tier pays on such GPUs remain: about 2 ms of
+Vulkan depth capture (`feedbackDepthCopy`: the depth leaves its attachment layout
+for a blit) and a 3-5 ms portal-sky view at 1080p. Combat CPU work on a
+decade-old quad-core CPU is not measured here (5-11 ms on the i7-13700H). These
+are tracked under FPS-10 in the roadmap.

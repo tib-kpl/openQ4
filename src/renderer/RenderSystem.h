@@ -374,6 +374,19 @@ typedef struct renderGpuFrameTiming_s {
 	unsigned long long	resetCount;
 } renderGpuFrameTiming_t;
 
+// One presented frame read back for video capture (idRenderSystem::PollVideoFrame).
+// pixels hold width x height RGBA8 (BGRA8 when bgra), rows bottom-up unless
+// topDown; tag is the value the capture was requested with. POD: crosses the
+// renderer-module boundary.
+typedef struct renderVideoFrame_s {
+	const byte *		pixels;
+	int					width;
+	int					height;
+	bool				topDown;
+	bool				bgra;
+	long long			tag;
+} renderVideoFrame_t;
+
 // Frame-latched presentation dimensions shared with the game modules. The
 // 3D scene and its post-process chain render at sceneWidth/sceneHeight; final
 // composition and all game/UI drawing remain at outputWidth/outputHeight.
@@ -485,6 +498,24 @@ typedef struct renderVRFrameResult_s {
 
 class idRenderWorld;
 
+
+// SetViewDepthOfField flags (DepthOfFieldCore.h DOF_REQUEST_*)
+static const int VIEW_DOF_FOCUS_VIEW_WEAPON = 1 << 0;	// the weapon wheel: the view weapon and the world near it stay sharp
+static const int VIEW_DOF_SHARP_VIEW_WEAPON = 1 << 1;	// with the thin lens: the view weapon stays sharp wherever the focus is
+
+// A depth of field asked for by the game: the weapon wheel, a focused in-world
+// screen, or a map script (sys.setDepthOfField and friends). With VIEW_DOF_FOCUS_VIEW_WEAPON only
+// amount counts. Otherwise it is the thin lens of the r_dof camera: amount
+// scales its blur, so fading amount in and out fades the effect.
+typedef struct renderViewDepthOfField_s {
+	float	amount = 0.0f;			// 0..1
+	int		flags = 0;
+	float	focusDistance = 0.0f;	// world units along the view axis; 0 = autofocus at the centre
+	float	fStop = 2.8f;
+	float	focalLength = 0.0f;		// millimetres; 0 = from the view's field of view
+	float	focusRange = 0.0f;		// world units kept fully sharp each side of the focus
+	float	maxBlur = 0.0f;			// pixels at 1080 lines; 0 = the default
+} renderViewDepthOfField_t;
 
 class idRenderSystem {
 public:
@@ -880,7 +911,30 @@ public:
 	// with nothing uploaded, for any other image or a rectangle outside it;
 	// the caller then uploads the image whole.
 	virtual bool UploadImageRegion( const char *imageName, const byte *data, int x, int y, int width, int height, int rowPitch ) = 0;
+
+	// Appended slots, render API 37. Video capture reads every presented frame
+	// back through the save preview's asynchronous path, into a small ring, so
+	// no frame waits for its own read. RequestVideoFrame marks the next presented
+	// frame for reading under tag (a request not yet presented is retagged);
+	// false when the ring is full or the backend cannot read frames back.
+	// PollVideoFrame hands back the oldest read: 1 ready (pixels mapped until
+	// ReleaseVideoFrame), 0 still on the GPU, -1 none queued or the read failed.
+	// wait blocks on that one read. EndVideoCapture frees the ring. The default
+	// bodies keep backends and test doubles without the readback building.
+	virtual bool RequestVideoFrame( long long tag ) { (void)tag; return false; }
+	virtual int PollVideoFrame( renderVideoFrame_t &frame, bool wait ) { (void)frame; (void)wait; return -1; }
+	virtual void ReleaseVideoFrame() {}
+	virtual void EndVideoCapture() {}
+
+	// Appended slot, render API 38. A depth of field the game asks for on
+	// this frame's main view (renderViewDepthOfField_t above); call it before
+	// RenderScene, every frame it is wanted. Returns true when the renderer
+	// will draw it (amount 0 asks for nothing and returns true), false when the
+	// caller should fall back to its own treatment: the player's Depth of Field
+	// setting (r_depthOfField) is off, or the backend cannot draw it.
+	virtual bool SetViewDepthOfField( const renderViewDepthOfField_t &dof ) { (void)dof; return false; }
 };
+
 
 extern idRenderSystem *		renderSystem;
 

@@ -12,6 +12,502 @@ does not restore the withdrawn release. See
 protocol 2.42 and render demo v14 do not interoperate with 0.14.1. Its
 player-facing notes are [releases/v0.15.0.md](releases/v0.15.0.md).
 
+## Faster pack reads and cache writes, oversized screenshots and cleaner mirrors, from openPR06, 24 November 2026
+
+Fixes and speed-ups first made in openPR06, the PREY port built on openQ4,
+brought back to openQ4. Thanks to danperisse-hue, whose openPR06 pull requests
+gave the pack-read, cache-write, shader-startup and Ogg improvements.
+
+- **Faster pack reads.** Reading a file from a PK4 reuses an idle handle on
+  that pack instead of opening the pack file again each time
+  (`fs_reusePackHandles`, default 1; up to 16 idle handles per pack and 64 in
+  all, so the open-file limits on macOS and the Windows C runtime are never
+  reached). Members inflate and CRC-check through zlib-ng 2.3.3 instead of
+  the zlib 1.1.3 code from 1998 embedded in the engine. zlib-ng picks SIMD
+  paths for the CPU at run time and is linked statically, so packages gain no
+  new file beyond its licence notice. openPR06 measured warm loads of six maps
+  18% faster with it. Writing a file stats its folder once, instead of
+  calling mkdir on every folder in its path.
+- **The first OpenGL launch after an update no longer looks hung.** The
+  modern GL shader library builds only the GLSL tier it draws with: 14
+  programs, not up to 56. A program that fails there falls back to the next
+  tier down without failing the library. Startup says it is building before
+  the wait (`r_rendererShaderAllTiers 1` builds every tier for validation).
+- **Small Ogg sounds are inflated once.** A compressed sound up to 4 MiB is
+  read from its pack once, both for the format check and the decode (it was
+  inflated twice). A small sound that then streams reuses that read.
+- **Level-load caches are written off the load thread.** Generated caches are
+  hashed with the CPU's SHA instructions where available and written by a
+  background writer, so a first visit no longer waits on disk writes. It
+  falls back to writing during the load if the thread cannot start, and
+  `com_levelLoadCacheAsyncWrite 0` turns it off. The cache report adds a
+  `Generated cache writer: written/failed/pending` line.
+- **A copy of openQ4 built without git history can save and load.** Such a
+  copy (GitHub's "Download ZIP") builds as build 0, and it refused every
+  save it wrote, its own autosaves included. It now loads its own saves; see
+  [savegame compatibility](savegame-compatibility-policy.md#builds-without-git-history).
+  Meson warns when it configures such a tree.
+- **Screenshots larger than the window** (`screenshot 3840 2160`) draw the
+  HUD across the whole picture. On Vulkan the tiles are no longer magnified,
+  and animated models no longer leave stray wedges between tiles.
+- **Mirrors clip at the mirror plane** with an oblique near plane on both
+  renderers. Nothing between the reflected camera and the mirror draws over
+  the reflection, and OpenGL mirrors keep alpha-tested surfaces such as
+  grates. In mirror views, shadow volumes are always capped and soft
+  particles draw plainly. The cheat `r_skipSubviewClip 1` turns the clip
+  off for comparison.
+- **Shadow-map fallbacks.** The view weapon and depth-hacked models keep
+  their stencil shadows. A light whose shadow map is skipped by the update
+  budget or the subview policy is no longer locked onto stencil shadows, and
+  a built but empty shadow volume no longer counts as a missing caster.
+  Region-split levelshots fit shadow cascades to the whole tile and leave out
+  the view weapon's shadow.
+- **Steadier heat haze with temporal AA.** The jitter no longer makes the
+  stock heat-haze programs' strength flicker at range, on OpenGL, Vulkan and
+  GLES.
+- **Vulkan compiles authored material programs when the level loads**, not
+  on first draw.
+- **Retained menus do less work at rest.** A settled page replays its last
+  frame even when it has widgets. A refused subtree skips its input lookups.
+  A closed list repaints only what its motion changes, vector art inside the
+  visible region keeps its compiled mesh, and the focus check stops at the
+  outermost scrolling ancestor.
+- Not ported: particle-bounds and bindings-file fixes (openQ4 has neither the
+  code nor the file), the libvorbisfile Ogg fallback (every Ogg in the stock
+  Quake 4 PK4s decodes with stb_vorbis), the LP64 script-argument,
+  `GetGameAPI` export and glass-shard NaN fixes (already in openQ4), and
+  PREY-only game, portal, glow, pointer and sound work.
+- Evidence: a clean MSVC build; 18 native tests (CRC-32, core safety,
+  level-load cache format, retained UI, value, number, scrollbar, choice,
+  popup and document runtimes, material compiler); and the level-load cache,
+  file-system write and length-probe, pure-cache, ARM64-portability, Vulkan
+  shadow and screenshot readback contracts. `renderer_native_ui_output` and
+  `renderer_display_presentation` fail on the video-capture symbols from 23
+  November, before this change. In game on airdefense1, OpenGL and Vulkan,
+  cold then warm: the cold load wrote 198 generated caches in the background
+  with none failed, the warm loads hit all 198, logs carry no errors or
+  warnings, and 3840x2160 shots from a 2560x1440 window show the full-frame
+  HUD on both renderers. Mirrors: the only stock mirror is in medlabs' rescue
+  room (`map game/medlabs skipall`, then `setviewpos`), captured straight on,
+  40 units from the glass and at an angle, against the 0.15.0 release. In
+  0.15.0 the OpenGL reflection lost a lit wall panel and the ceiling edge that
+  Vulkan drew. Now both renderers draw them and match each other, and
+  `r_skipSubviewClip 1` changes nothing in that room. The logs have no errors
+  and the same warnings as 0.15.0. Heat haze: stock world surfaces carry no
+  heat haze, so the tram car (`testmodel model_vehicle_tram_car`, whose
+  `tramglass` floor is a static heat-haze stage) was set over medlabs' floor
+  and viewed through its glass. A 5120x2880 tiled capture (off-axis tiles)
+  differed from the window-sized shot over the glass by 0.98 of 255 in
+  0.15.0's OpenGL and 0.72 now, the same as the 0.70 floor with TAA off. In
+  90-frame recordings with TAA on, the glass changes by 0.18-0.29 of 255 per
+  frame, which is invisible. (Screenshots present without TAA, so only a
+  recording shows it. Vulkan's tiled capture renders one capture-sized frame,
+  so that A/B does not reach Vulkan.) zlib-ng, shader and Ogg round:
+  - Native CRC-32, PNG, demo-block and update-core codec tests and the audio
+    decode, memory, stream and restore contracts pass.
+  - airdefense1 on OpenGL and Vulkan, cold then warm:
+    - pack reads and the 198 background cache writes are clean;
+    - Oggs stream through the single read;
+    - a cold NVIDIA shader cache built the library in 113 s (14 programs,
+      no fallbacks), 223 ms warm;
+    - the only warnings are two `non pre-cached lipSync decl` lines on one
+      Vulkan run.
+  - Load timing could not be measured: other sessions loaded the machine.
+    Interleaved warm loads against 0.15.0 showed no regression.
+
+  Not yet run: retained menu interaction in game, Linux, macOS and Android
+  builds with zlib-ng.
+
+## Low holds 60 FPS on low-end graphics, 24 November 2026
+
+- **The Low preset holds its 60 FPS cap on low-end graphics again.** Since
+  the presets stopped lowering the resolution (23 November), Low drew every
+  pixel at native resolution, and on an Intel Iris Xe at 1080p it fell to
+  44-55 FPS in battles and open areas. Low now draws no shadows and skips the
+  light grid, as Low Power and Minimum do: it is Low Power's recipe at 60 FPS
+  with 2x anisotropic filtering. Performance is the first preset with Quake
+  4's original shadows, and the classic menu's Low quality uses the same
+  preset. The preset system version moves to `1.d7f4b595`, so players are
+  offered the system check once more.
+- Evidence: Vulkan on the Iris Xe in a 1920x1080 window, each preset at its
+  own cap, the old recipe forced by CVars and interleaved with the new one.
+  Combat ran 49.8/50.2 FPS before and 58.9/60.1 after (median frame work 19.4
+  to 9.2-11.4 ms); the effects scene 49.1 to 59.2-60.0, Air Defense outdoors
+  55.4 to 59.7-60.1. All six timed scenes hold 60 on Low and 30 on Low Power
+  and Minimum. GPU timestamps priced the stencil shadows at 3.9 ms and the
+  light grid at 1.2-1.9 ms of a 17.8 ms combat frame. Native preset tests, the
+  preset model with mutations, the pin check and the in-game Vulkan preset
+  smoke (readbacks in gameplay) pass. Details: [performance
+  presets](ui/performance-presets.md#low-end-measurements-24-november-2026).
+  Not yet run: OpenGL on an integrated GPU, an older iGPU or CPU. Auto-Detect
+  still gives integrated GPUs with 8 GB or more Balanced (FPS-10).
+
+## Your own shadow under the big outdoor lamps, 24 November 2026
+
+- **Characters cast shadows again under Quake 4's huge outdoor lamps with
+  shadow maps on.** Several outdoor areas are lit by one enormous point light
+  whose source sits just above the area: MCC Landing's courtyard
+  (`outdoor_Main`, 280 units above a box 4352 by 6256 wide), and the big
+  lights of Convoy, Walker, the tram yards, Air Defense 2 and Hangar 1, about
+  forty in the stock maps. Each had one cube map. A character two thousand
+  units below was two or three shadow pixels wide there, so its shadow,
+  including your own, was filtered away, and large shadows turned to soft
+  smears. These lights are not "distant" by the old rule, which aims the map
+  at the light's centre and found part of the area behind the source. Seen
+  straight down the axis the source stands off, the whole area is in front
+  of it, so they now use the fitted cascades sunlight has used since 0.15.0
+  (`r_shadowMapWideSources`, default 1). The rule asks for a source at least
+  1024 units off centre whose area spans at most 24 times its height sideways,
+  and applies only while cascades are on (Quality, Ultra, Maximum). One map
+  over such a fan would be coarser than the cube. Enhanced keeps point lights
+  on stencil shadows as before.
+- Evidence: frozen-frame comparisons against stencil on the same frame (no
+  input), up to 10 spots and 2 views each on MCC Landing, Tram 1b, Air Defense 2,
+  Walker, Convoy 1 and Hangar 1, OpenGL and Vulkan alike. Screen area
+  shadowed by stencil but lit with maps: MCC Landing 1.02% to 0.10% (worst
+  view 8.3% to 0.7%, the player's own silhouette on a crate), Air Defense 2
+  0.55% to 0.13%, Convoy 1 (OpenGL) 0.19% to 0.01%. Area the map darkened
+  that stencil did not: MCC Landing 0.44% to 0.04%, Tram 1b 1.2-2.2% to
+  0.15%; Convoy 1 rose from 0.11% to 0.17%, its worst view being the same
+  before and after. The distant-projection self-test covers the rule and the
+  new frustum. The investigation that led here found no shadow regression
+  between 0.15.0, 21 November and 24 November on these sweeps. Not yet run:
+  frame-time comparison, Linux, macOS.
+## Stereoscopic 3D without a headset, 24 November 2026
+
+- **A stereo option for flat displays (VR-07).** The user asked for a
+  stereoscopic 3D option; ioquake3's `r_stereo`/`r_anaglyphMode` was the
+  suggested reference. `r_stereo3D` 1-5 gives side by side (half width), side
+  by side at full resolution (double-width displays and glasses), top and
+  bottom, red/cyan anaglyph (Dubois matrices in linear light) and row
+  interlaced; `r_stereoSeparation` (units), `r_stereoConvergence` (the
+  zero-parallax distance, ioquake3's `r_zProj`) and `r_stereoSwapEyes` tune
+  it. All archived, all applied on the next frame.
+- **How it renders.** Without a headset, `BeginVRFrame` opens the frame as a
+  stereo frame of the VR target machinery with internal targets and no
+  swapchains (`R_DesktopStereo_BeginFrame`), so per-eye TAA, subview keys and
+  world-GUI sharing carry over. Both game modules render the scene chain per
+  eye (`idPlayerView::StereoView`, eyes from `Stereo_BuildEyeView` in
+  `VRSystem.h`: parallel axes, frusta shifted to meet at the convergence),
+  then the HUD, fades and menus land on the premultiplied screen layer. At
+  the swap the GL composite (`RB_DesktopStereo_Composite`) or Vulkan's
+  `post_stereo.frag` lays the eyes and the layer into the window. A capture
+  of the layer (the retained menus' blurred backdrop, wipes) reads the left
+  eye, revisiting it without finishing it twice. Window-sized screenshots
+  read the composite; tiled ones stay flat. Double vision, influence and the
+  paused-scene cache stand down in stereo, as in a headset.
+- **Menus.** Settings > Game Options > Virtual Reality gains a
+  STEREOSCOPIC 3D section (layout, depth, convergence, swap; the last three
+  dimmed while off); the classic Game Options a tenth section after Video
+  Capture (scroll 0..95). Strings `#str_232920`-`232925` and the picker's new
+  name in all twelve languages.
+- Evidence: window-sized screenshots of every layout and the swap on OpenGL
+  and Vulkan in airdefense1, q4dm1 (MP), the title and the paused menu
+  (blurred backdrop kept); `capture_retained_screens.py` scenarios
+  `game-stereo` (the rows set `r_stereo3D` and `r_stereoSwapEyes`, the menu
+  then draws side by side) and `game-stereo-stock`; `settings_menu_coverage`,
+  `ui_retained_gate`, `vk_shader_header_pin` and the retained-screens `pages`
+  group pass. The `mp-*` and `pointer-reach` groups fail on the existing
+  `mp_escape.rui` timeline warning. Not yet run: physical stereo displays or
+  glasses, Linux, macOS (its GL renderer declines with a console warning).
+
+## The weapon wheel's mouse dot, keyboard and D-pad, 24 November 2026
+
+- **A dot bounded by the rim.** The user asked for the wheel's mouse selector
+  to stay within the circumference, show as a dot and for keyboard and
+  controller use to be considered. The selector the mouse steers was clamped
+  to the ring but invisible; the retained Marine, Strogg, Awakening and
+  quick-chat documents now draw it as a dot (`cursorX`/`cursorY`/
+  `cursorShown`, rim 118 selector units = 232 dp) only while the mouse steers,
+  hidden for a stick, touch or a tracked VR hand. The Classic wheel's cross
+  is a dot for every device (its stick moves the selector too).
+- **Weapon controls choose on an open wheel.** Number keys, next/previous and
+  last weapon (mouse wheel, `[`/`]`, D-pad) used to switch weapon behind the
+  open wheel, and the release then overrode them. `HandleWeaponWheelImpulse`
+  now takes the local player's weapon impulses while the wheel is open:
+  direct slot, step over owned slots with wrap, previous weapon; it turns a
+  selector on the ring to the choice, shows the wheel at once and counts the
+  release as a choice rather than a tap. Nothing reaches the server until
+  the release's normal impulse. Visual spec 1.52 (register rebind only).
+- Evidence: `weapon_wheel_behavior.py` (93 checks, new bound, dot-rule and
+  stepping cases), `sp_turbo_weapon_wheel.py`, the retained-screens optics
+  and quick-chat document tests, and a Windows x64 OpenGL gameplay capture
+  (`capture_weapon_wheels.py`, new `testWeaponWheel cursor`/`step`) on
+  airdefense1, recomp and q4dm1: the dot follows, holds on the rim, turns to
+  a stepped slot and draws on Classic. The MP run stopped on an unrelated
+  `mp_escape.rui` timeline warning after its shots. Not yet run: Vulkan,
+  Linux, macOS, a real mouse and controller.
+- **The Classic wheel draws whole again.** Its segment fills, inner ring,
+  selected arc and the selection arrow's tip were triangles wound against the
+  2D path's culling, so only the spokes, icons and text drew. They now keep
+  the lines' winding, and the dot uses the segment fan again. Evidence: the
+  airdefense1 gameplay capture's Classic shot shows the fills, the ring, the
+  shotgun's arc and arrow. Not yet run: Vulkan.
+
+## Point lights keep their shadows in crowded views on Vulkan, 23 November 2026
+
+- **Lights no longer shine through walls when a view runs out of shadow
+  maps** (#258). Vulkan renders a view's point-light shadows into a bounded
+  pool of cubes, and some views of `mcc_landing` see 240 to 265 lights, more
+  than a hundred of them point lights that cast shadows. A light that found
+  no cube left fell back to its stencil shadows only when they were
+  complete. Most lights also cast from surfaces only shadow maps draw, such
+  as grates, so they drew with no shadow at all. They now draw the stencil
+  shadows they have: the original game's shadows, without the map-only ones.
+  On a 56-spot sweep of `mcc_landing` this cut unshadowed light-frames by 87%
+  on Maximum and 79% on Ultra, and the result matches OpenGL, which renders
+  each cube in turn and never runs out. The rest are lights in the frame they
+  switch to stencil, which has no volumes yet.
+- **Maximum's point-light shadows are 1024 pixels, not 2048.** A 2048 cube
+  is 96 MB, so the default budget held five and a Vulkan view's pool twelve.
+  The preset change brings up the System Check once.
+- Evidence: scripted camera sweeps (no input) on Vulkan and OpenGL, and
+  side-by-side captures against OpenGL. Not yet run: a frame-time
+  comparison.
+
+## Lighter zoom scopes and cannon optics, smaller HUD files, 23 November 2026
+
+- **Scopes and the cannon draw once.** The user asked for a round of HUD
+  optimizations confined to the `.rui` documents. The air-defence cannon's
+  optic and the machine gun, nailgun and railgun scopes resubmitted large
+  antialiased rings and gradients every frame: 218k vertices for the cannon at
+  720p, 166-264k for the moving scopes at 1080p and up to 414k at 4K. Their
+  unchanging art now sits under isolating groups the runtime caches as layers:
+  20k for the cannon, 25-47k for the scopes, the railgun scope from 4.1 to
+  0.7 ms a frame on OpenGL. Moving parts keep their order and behaviour.
+- **Smaller files.** The weapon wheels, quick-chat wheel, HUD artwork catalog
+  and its coverage registry are compact JSON with the same content, about a
+  quarter of their size (a weapon wheel loads about 55 ms faster).
+- **What you need to do.** Nothing; nothing looks different.
+- **Checks.** Engine profiles of each HUD before and after; frozen A/B
+  pictures of the cannon (within 2/255 in the optic) and the scopes;
+  `ui_scope_performance.py` passes on OpenGL and Vulkan; the native retained
+  screen, scope, quick chat, HUD, Remastered HUD and coverage tests and every
+  generator's `--check` pass. Details:
+  [performance report section 20](performance-report.md#20-static-optic-art-and-hud-document-size-fps-06-23-november-2026).
+
+## Kane stands unarmed on the MCC, 23 November 2026
+
+- **No gun stance without a gun.** The MCC's campaign maps put the weapons
+  away, but the game only hid the blaster, so Kane's body kept the pistol
+  stance, twisted and aiming, wherever it shows: his shadow, mirrors and the
+  third-person view. With no weapon in hand (a map without weapons, or a
+  script that disables them) he now stands upright with his arms at his
+  sides, and the hidden gun's model leaves his hand. The arms ease down and
+  back up with the animation's own blend when the weapon goes or returns.
+  Stock content has no unarmed player animation, so the stand is the model's
+  rest pose with the arms turned down in code; no new assets.
+- Evidence: front, side and back third-person captures on `mcc_1` before
+  and after (OpenGL, no input), and `enableWeapon`/`disableWeapon` from the
+  console bringing the stance and the gun back and dropping them again.
+  Not yet seen: Kane's Strogg body on `mcc_2`, and Vulkan.
+
+## Depth of field for captures and the weapon wheel, 23 November 2026
+
+- **The weapon wheel focuses on your weapon.** The renderer's depth of field
+  keeps the view weapon and the world within 128 units sharp and blurs the
+  distance with round bokeh, in place of the whole-screen Gaussian, which
+  stays as the fallback where the renderer declines. The crosshair hides
+  while the wheel is open, and in single player the weapon now stays raised
+  under the wheel, as in multiplayer, instead of being put away. Visual spec
+  1.50 and 1.51, register revision 30 (`WID-039` supersedes `WID-037`,
+  pending).
+- **`r_dof` camera for promotional shots** (REN-12, partial): a thin-lens
+  model following the field of view, autofocus with an eased pull, focus
+  range, near/far scales, bladed bokeh with highlight weighting, quality up
+  to 192 samples at full resolution, and a focus view. Every cvar is a cheat
+  with no menu entry. Render API 38 appends `SetViewDepthOfField`.
+- Evidence: Windows x64 captures on OpenGL and Vulkan at 2560x1440 on
+  airdefense2; `openq4-depth-of-field-core`, `retained_view_effects.py` and
+  the retained-screens wheel checks pass. Not yet run: Linux, macOS, the
+  Android emulator (GLES declines by design) and a cost measurement.
+- **Scripted depth of field and a Depth of Field setting** (second round).
+  Map scripts call `sys.setDepthOfField`, `setDepthOfFieldFocus`,
+  `setDepthOfFieldLens` and `clearDepthOfField` (eased focus pulls, entity
+  tracking), declared by the script compiler on first use so stock programs
+  and save checksums are unchanged; the state rides in the worldspawn's spawn
+  args. `r_depthOfField` (Settings > Display > Effects, SYSTEM catalog V8,
+  12 languages, `#str_232914`) gates the wheel and scripts and is a preset
+  target on from Enhanced up; the preset system version moves (players see the
+  system check again). Evidence: airdefense2 `script` calls draw and clear on
+  OpenGL; the setting off returns the reference frame. Cinematics across the
+  campaign are REN-13.
+- **In-world screens take focus** (third round, 24 November). While the
+  cursor is on an interactive GUI (`FOCUS_GUI`), the player view asks for a
+  thin lens focused on the cursor's point on the screen: 50 mm at f/2, a
+  focus range of 8 to 24 units for panels seen at an angle, 12 px at most,
+  easing in over 0.25 s and out over 0.4 s and pulling focus as the player
+  moves. The new request flag `VIEW_DOF_SHARP_VIEW_WEAPON` keeps the view
+  weapon sharp under a lens. The weapon wheel still wins; a focused screen
+  wins over a script. Single and multiplayer modules; no fallback blur, and
+  the Depth of Field setting gates it with the rest. Evidence: airdefense1's
+  exit panel on Vulkan and OpenGL, driven by `setviewpos` (no input), sharp
+  panel and softened room with the setting on, unchanged with it off;
+  `openq4-depth-of-field-core` passes. Not yet run: a cost measurement,
+  Linux, macOS.
+
+## Texture packs' converted normal maps light correctly; a clearer settings failure, 23 November 2026
+
+- **BC7 normal maps that keep X in alpha are read correctly** (#255). A pack
+  that converts Quake 4's own DXT5 normal maps to BC7 carries their layout
+  across, X in alpha with red empty or holding a height. openQ4 read X from
+  red, which lit one half of a mirrored face and darkened the other. It now
+  recognises the layout from the pixels, whether the file uploads as it is
+  or is decoded to rebuild a bump map, and caches of rebuilt bump maps are
+  made again once. Evidence: hidef2k's `anderson_local.dds` rebuilt with
+  `image_usePrecompressedTextures 2` on Vulkan; X averages 118 of 255 where
+  it averaged 32 before; `imageDDSSelfTest` covers the recognition. Not yet
+  run: a BC7 normal map uploaded as it is, and OpenGL.
+- **A failed display change says why in the log** (#260). The settings
+  recovery window only says the changes could not be applied; the reason is
+  now a console warning every time, not only with `ui_retainedTrace 1`. The
+  Keep countdown no longer shows a stray 0 under "Settings need attention".
+  The macOS check that fails for the reporter is still unknown.
+
+## Initials and ammunition on the scoreline, no side lists, and a moving kill feed, 23 November 2026
+
+- **Players by initials, ammunition at a glance.** On the user's review the
+  scoreline's tiles name each player by the first two letters of their name
+  instead of showing their weapon (Quake 4 ships no portraits), and a thin bar
+  over each tile fills to the ammunition for the weapon in hand, in that
+  weapon's colour. The dead keep their initials, dimmed, under the skull.
+- **Less clutter.** Competitive's team lists at the screen's edges are gone;
+  the rosters carry the players. Where each team mate stands now shows under
+  your team's tiles instead (Team Locations, `hud_teamLocations`): one small
+  row each, initials then the place, below the flags or alive pips where they
+  hang; a spectator sees both teams'. The user chose this over retiring the
+  setting (visual specification 1.49, register revision 29: `FLOW-077`
+  supersedes `FLOW-075`, pending). A native check covers the rows; captures
+  show them for a spectator and a player.
+- **A kill feed that moves.** A new line slides in from the right as it fades
+  in, its weapon mark settles and its plate glints, all within 280 ms; when the
+  top line leaves, the rest glide up instead of jumping. Reduced motion seats
+  lines at once and reduced flashing caps the glint.
+- **Ammunition on the wire.** Ammunition is private player state, so team info
+  now carries it: each record gains a byte after the entries, which 0.15.0
+  clients do not read, so mixed versions still play together. On a casual
+  server someone who chose to watch is sent every player's record (a managed
+  match keeps its own rules); that also keeps a spectator's vitals current for
+  players across the map.
+- **What you need to do.** Nothing.
+- **Checks.** Native core tests pin the ammunition packing; the native HUD
+  checks cover initials, the ammunition bar, the dead, the missing side lists,
+  the chat room under the vote card and the feed's arrival and glide; the
+  two-client smoke adds a team mate's ammunition and a spectator receiving
+  every player's record with ammunition. Captures show Team DM spectating, the
+  feed mid-arrival and Duel as player and spectator. Visual specification 1.48
+  and register revision 28 (`FLOW-075` supersedes `FLOW-073`; `FLOW-076` for
+  the feed's motion; both pending).
+
+## A Competitive scoreline with rosters, and item timers with symbols, 23 November 2026
+
+- **Duel, Tourney and team games read like a broadcast.** With the Competitive
+  HUD layout the top center is now a scoreline: large scores on slabs either
+  side of the timer (team-colored with the faction mark in team games, the
+  leader's lip gold in Duel and Tourney, with the players' names under them)
+  and, further out, up to four players a side as tiles with the weapon in hand
+  and health and armor bars, a skull while they are dead and a light on the
+  player you follow. Deathmatch keeps the leader, the runner-up and the timer
+  at the top left, with network quality under the timer.
+- **Fair to players, full for spectators.** A player sees weapons and vitals
+  only for their own side; the other side shows its mark, and whether each of
+  its players is dead, as the round modes' alive pips already did. Someone who
+  chose to watch sees both sides in full. A player out for the round sees only
+  their own team.
+- **Item timers you can read at a glance.** Each row shows the item's symbol,
+  where it lies on the map (so two armours are told apart), the time left and
+  a line filling in the item's color as it respawns. A client measures the
+  line against the whole respawn when it saw the item taken, and against the
+  item's defined respawn when it first hears of it part-way. A spectator's
+  right-hand team list steps down under the timers.
+- **What you need to do.** Nothing. Choose **Competitive** under **Settings →
+  Game Options → HUD → HUD Layout** to see the scoreline; item timers follow the
+  server's `si_itemTimers` as before (spectators only by default).
+- **Checks.** Native checks cover deathmatch's layout, the Duel and team
+  scoreline geometry, roster visibility, vitals, the dead, the narrow-view
+  step, the item timer rows and the spectator list's step; the two-client
+  `mp_client_options_smoke.py` passes 27 of 27, including the new check that a
+  remote client's countdown knows its whole respawn. Engine captures with bots
+  show Duel (playing, then spectating), Team DM spectating at 16:9 and 4:3,
+  CTF and deathmatch. Visual specification 1.47 and register revision 27
+  (`FLOW-073`, superseding `FLOW-058`, and `FLOW-074`, both pending); the
+  revision also re-binds `audio-voice-evidence.md` and `performance-presets.md`,
+  which AUD-03 and the native-resolution presets changed without re-binding.
+  Human judgement while casting, 21:9 and 9:16 captures and the rosters in MVD
+  playback remain.
+
+## The Classic ruleset plays by its own numbers, 23 November 2026
+
+- **Quad damage hits four times as hard under Classic**, as Quake 2's did,
+  instead of Quake 4's three.
+- **Zoomed nailgun fire plays by Classic's numbers.** Its seeking nails had
+  kept Quake 4's 25-point splash on top of every 10-point nail.
+- **The napalm launcher on the expansion maps** comes back after 30 seconds
+  like every other Classic weapon, instead of every 5, and its pickup gives a
+  box of napalm.
+- **Rockets fly as far as before.** Classic's slower rockets now last long
+  enough to cross the big maps instead of vanishing after 3,900 units.
+- **Scout carriers take no armour** under Classic, as under Quake 4's rules.
+- **Health that Regeneration builds past 100 drains** once the powerup runs
+  out, like mega health's, instead of staying for good.
+- **Threewave CTF bonuses follow Threewave.** Fragging near your flag's base
+  counts while the flag is away, a dropped flag is no longer a base to
+  defend, the capturer earns capture assists too, and a capture ends the
+  bonus for fragging whoever was hurting the carrier.
+
+## Settings that do nothing are greyed out, 23 November 2026
+
+- **See at a glance what applies.** On every settings page, a row that another
+  setting has switched off is now dimmed and skipped by the keyboard and
+  controller: the rumble, gyro and stick options while Controller Input is
+  off, the acceleration options while Mouse Accel is 0, the HUD size and
+  message options under the Classic HUD, the VR options while VR Mode is off,
+  the subtitle options while subtitles are off, Surround Speakers while
+  Headphone HRTF is on, Borderless Window in fullscreen, and the fullscreen
+  resolution, refresh rate and policy in a window. Turn the setting they need
+  back on and they come back with the values you left.
+- **What you need to do.** Nothing. No setting changes value.
+- **Developer detail:** [the dependency table](settings-menu-structure.md#dependent-rows).
+
+## Watch Quake 4 1.4.2 network demos, 23 November 2026
+
+- **Play the original game's network demos.** A `.ndmo85` file recorded with
+  Quake 4 1.4.2's `recordNetDemo` plays from **Demos** or with
+  `playNetDemo name.ndmo85`: copy it into the `demos/` folder in your save
+  path. 1.4.2 ships two in `q4mp/demos`, `id_perftest.ndmo85` and
+  `id_serverdemo.ndmo85`.
+- **As it was recorded.** A player's recording shows their view with their
+  HUD; a server's recording lets you follow any player or fly freely. Pause,
+  speed, frame steps and seeking work; seeking back replays from the start.
+- **A benchmark again.** `playNetTimeDemo id_perftest.ndmo85` (or `timeDemo`)
+  times id's own performance demo.
+- **Limits.** Demos from releases before 1.4.2 (`.netdemo`) and demos recorded
+  at a tick rate other than 60 are listed with the reason and do not play. A
+  damaged file is refused and never stops openQ4.
+- **Evidence.** `retail_netdemo_contract.py` reads both shipped demos with an
+  independent reader and pins the reader's bounds; `mp_retail_netdemo_smoke.py`
+  plays both to their ends from the library and the console, times one,
+  refuses every damaged copy, and finds the decl numbering it rebuilds for a
+  recording identical to the retail dedicated server's (Windows, OpenGL). Not
+  run: Vulkan, Linux, macOS and a person watching.
+
+## Retail Quake 4 render demos play, 23 November 2026
+
+- **Watch demos recorded with the original game.** A `.demo` recorded by
+  retail Quake 4 with `recordDemo` plays from **Demos**, where it is listed as
+  **Retail Quake 4 render demo** with its level, or with `playDemo` and
+  `timeDemo`: the recorded view, HUD, screens, effects and sound, with pause,
+  speed, step and seek. It needs the same Quake 4 game files as the recording.
+- **Damaged files are refused safely.** A cut or corrupted retail demo stops
+  with a warning in the console and returns to the menu.
+- **Step back** now lands on the previous frame of a render demo, after a seek
+  too.
+- **Evidence.** `retail_render_demo_contract.py` (no game files);
+  `retail_render_demo_smoke.py` records a fixture with retail Quake 4 itself,
+  plays it in all four compression schemes on OpenGL and Vulkan, compares
+  openQ4's frames with retail's own captures and plays sixteen damaged copies
+  (Windows). Network demos have their own entry above.
+
 ## Music and ambience keep playing when the game runs slowly, 23 November 2026
 
 - **No more gaps in long tracks on slow frames.** Since 0.14.1, music, ambience
@@ -159,14 +655,18 @@ player-facing notes are [releases/v0.15.0.md](releases/v0.15.0.md).
   one to follow. `demoPlayers` lists them at the console.
 - **Step back** a frame at a time, as well as forward.
 - **Export.** `demoExport name.mvd 30` writes a demo as PNG pictures for a
-  video editor. Sound is not exported yet.
+  video editor, with its sound as a WAV file exactly as long as the pictures.
+  Nothing plays through your speakers while it runs, and your sound device
+  comes back afterwards. The demos guide has the `ffmpeg` line that joins
+  them into a video.
 - **Find your demos.** The library names the players, or whose view a
   recording shows, shows a picture from the recording itself, and
   `demoFind <text>` searches them all.
 - **Markers in your own recordings**, for kills and the match's changes.
 - **Evidence.** `mp_client_demo_smoke.py` and `mp_autoaction_smoke.py` check
-  each on a cheats-off dedicated server (Windows, OpenGL). The new deck
-  buttons were not pressed by a person.
+  each on a cheats-off dedicated server (Windows, OpenGL); the export's WAV is
+  read back for its format, length and level. The new deck buttons were not
+  pressed by a person, and nobody has listened to an export yet.
 
 ## Record every match automatically, time a demo, and seek recordings faster, 23 November 2026
 

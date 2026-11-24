@@ -20,8 +20,9 @@ const float	WEAPON_WHEEL_SEGMENT_CONTENT_MARGIN = 7.0f;
 const float	WEAPON_WHEEL_SEGMENT_ICON_RADIUS = 88.0f;
 const float	WEAPON_WHEEL_SEGMENT_ICON_SIZE	= 30.0f;
 const float	WEAPON_WHEEL_SEGMENT_ICON_MIN_SIZE = 20.0f;
-const float	WEAPON_WHEEL_CURSOR_SIZE		= 6.0f;
-const float	WEAPON_WHEEL_CURSOR_THICKNESS	= 1.15f;
+// The selector is a dot with a dark halo, legible over the white ring lines.
+const float	WEAPON_WHEEL_CURSOR_DOT_RADIUS	= 2.4f;
+const float	WEAPON_WHEEL_CURSOR_HALO_RADIUS	= 3.8f;
 const float	WEAPON_WHEEL_LINE_THICKNESS		= 1.6f;
 const float	WEAPON_WHEEL_INNER_RING_RADIUS	= WEAPON_WHEEL_INNER_RADIUS + 1.8f;
 const float	WEAPON_WHEEL_INNER_RING_HALF_WIDTH = 1.7f;
@@ -89,6 +90,8 @@ static float WeaponWheelNormalizeAngle( float angle ) {
 	return angle;
 }
 
+// Every triangle keeps the winding of the lines' quads: the 2D path culls the
+// other, which once left the segment fills, inner ring and arrow tip undrawn.
 static void DrawWeaponWheelQuad( const idVec2& p0, const idVec2& p1, const idVec2& p2, const idVec2& p3, const idMaterial* material ) {
 	if ( material == NULL ) {
 		return;
@@ -161,8 +164,8 @@ static void DrawWeaponWheelSegment( const idVec2& center, const idVec2& popoutOf
 		const idVec2 inner1 = WeaponWheelProjectPoint( center, popoutOffset + dir1 * innerRadius, aspectScale );
 		const idVec2 outer1 = WeaponWheelProjectPoint( center, popoutOffset + dir1 * outerRadius, aspectScale );
 
-		renderSystem->DrawStretchTri( inner0, outer0, outer1, idVec2( 0.0f, 0.0f ), idVec2( 1.0f, 0.0f ), idVec2( 1.0f, 1.0f ), material );
-		renderSystem->DrawStretchTri( inner0, outer1, inner1, idVec2( 0.0f, 0.0f ), idVec2( 1.0f, 1.0f ), idVec2( 0.0f, 1.0f ), material );
+		renderSystem->DrawStretchTri( inner0, outer1, outer0, idVec2( 0.0f, 0.0f ), idVec2( 1.0f, 1.0f ), idVec2( 1.0f, 0.0f ), material );
+		renderSystem->DrawStretchTri( inner0, inner1, outer1, idVec2( 0.0f, 0.0f ), idVec2( 0.0f, 1.0f ), idVec2( 1.0f, 1.0f ), material );
 	}
 }
 
@@ -202,7 +205,7 @@ static void DrawWeaponWheelArrow( const idVec2& center, const idVec2& dir, float
 			const idVec2 tip = WeaponWheelProjectPoint( center, center1Local, aspectScale );
 			const idVec2 left = WeaponWheelProjectPoint( center, center0Local + perp * halfWidth0, aspectScale );
 			const idVec2 right = WeaponWheelProjectPoint( center, center0Local - perp * halfWidth0, aspectScale );
-			renderSystem->DrawStretchTri( tip, left, right, idVec2( 0.0f, 0.0f ), idVec2( 1.0f, 0.0f ), idVec2( 0.0f, 1.0f ), material );
+			renderSystem->DrawStretchTri( tip, right, left, idVec2( 0.0f, 0.0f ), idVec2( 0.0f, 1.0f ), idVec2( 1.0f, 0.0f ), material );
 		} else {
 			const idVec2 p0 = WeaponWheelProjectPoint( center, center0Local + perp * halfWidth0, aspectScale );
 			const idVec2 p1 = WeaponWheelProjectPoint( center, center1Local + perp * halfWidth1, aspectScale );
@@ -532,8 +535,8 @@ void idPlayer::DrawLegacyWeaponWheel( void ) {
 	const float segmentIconRadius = WEAPON_WHEEL_SEGMENT_ICON_RADIUS * transitionScale;
 	const float segmentIconSize = WEAPON_WHEEL_SEGMENT_ICON_SIZE * transitionScale;
 	const float segmentIconMinSize = WEAPON_WHEEL_SEGMENT_ICON_MIN_SIZE * transitionScale;
-	const float cursorSize = WEAPON_WHEEL_CURSOR_SIZE * transitionScale;
-	const float cursorThickness = WEAPON_WHEEL_CURSOR_THICKNESS * transitionScale;
+	const float cursorDotRadius = WEAPON_WHEEL_CURSOR_DOT_RADIUS * transitionScale;
+	const float cursorHaloRadius = WEAPON_WHEEL_CURSOR_HALO_RADIUS * transitionScale;
 	const float lineThickness = WEAPON_WHEEL_LINE_THICKNESS * transitionScale;
 	const float innerRingRadius = WEAPON_WHEEL_INNER_RING_RADIUS * transitionScale;
 	const float innerRingHalfWidth = WEAPON_WHEEL_INNER_RING_HALF_WIDTH * transitionScale;
@@ -699,14 +702,14 @@ void idPlayer::DrawLegacyWeaponWheel( void ) {
 	}
 
 	{
+		// Classic steers its selector with the stick's look motion too, so the
+		// dot shows for every device; it stays within the ring's rim.
 		const idVec2 cursorPos = WeaponWheelProjectPoint( center, weaponWheelCursor * transitionScale, aspectScale );
-		const float halfScreenSizeX = cursorSize * aspectScale * 0.5f;
-		const float halfScreenSizeY = cursorSize * 0.5f;
-		const float thicknessX = cursorThickness * aspectScale;
-		const float thicknessY = cursorThickness;
-		renderSystem->SetColor4( 1.0f, 1.0f, 1.0f, lineAlpha * 0.92f );
-		renderSystem->DrawStretchPic( cursorPos.x - halfScreenSizeX, cursorPos.y - thicknessY * 0.5f, cursorSize * aspectScale, thicknessY, 0.0f, 0.0f, 1.0f, 1.0f, whiteMaterial );
-		renderSystem->DrawStretchPic( cursorPos.x - thicknessX * 0.5f, cursorPos.y - halfScreenSizeY, thicknessX, cursorSize, 0.0f, 0.0f, 1.0f, 1.0f, whiteMaterial );
+		const idVec2 none( 0.0f, 0.0f );
+		renderSystem->SetColor4( 0.0f, 0.0f, 0.0f, blend * 0.55f );
+		DrawWeaponWheelSegment( cursorPos, none, 0.0f, idMath::TWO_PI, 0.0f, cursorHaloRadius, aspectScale, whiteMaterial );
+		renderSystem->SetColor4( 1.0f, 1.0f, 1.0f, lineAlpha );
+		DrawWeaponWheelSegment( cursorPos, none, 0.0f, idMath::TWO_PI, 0.0f, cursorDotRadius, aspectScale, whiteMaterial );
 	}
 
 	if ( weaponWheelHoveredSlot >= 0 && weaponWheelHoveredSlot < WEAPON_WHEEL_SLOT_COUNT ) {

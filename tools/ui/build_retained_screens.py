@@ -5472,7 +5472,7 @@ def main() -> int:
                 stale.append(str(output.relative_to(ROOT)))
             continue
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_bytes(rendered.encode("utf-8"))
+        output.write_bytes(rendered.replace(chr(13) + chr(10), chr(10)).encode("utf-8"))
         print(f"wrote {output.relative_to(ROOT)} ({len(rendered)} bytes)")
     if stale:
         print("stale generated documents: " + ", ".join(stale), file=sys.stderr)

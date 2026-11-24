@@ -10,6 +10,46 @@ the [development roadmap](../roadmap.md) for current scope.
 
 ## Highlights
 
+- **A scoreline worth watching.** The Competitive HUD layout now puts the
+  score across the top in Duel, Tourney and team games: big scores either side
+  of the clock, and each side's players beside them by their initials, with
+  ammunition, health and armour bars, and a skull while they are down.
+  Spectators see both sides at a glance without the old side lists, the item
+  timers show each powerup and armour with where it lies and how close it is
+  to returning, and kill feed lines slide in with a quick glint.
+
+- **The weapon wheel focuses like a camera.** While the wheel is open, your
+  weapon stays raised and it and everything close by stay sharp while the
+  distance falls softly out of focus, instead of the whole screen blurring,
+  and the crosshair gets out of the way. **Depth of Field** in Settings >
+  Display > Effects turns it on or off (on from the Enhanced preset up), and
+  map scripts can now use it to pull focus in cutscenes. For screenshots and videos there is a full depth-of-field camera
+  too, with autofocus, aperture, bokeh shape and more, kept to the console as
+  a cheat. See [Depth of Field for Screenshots and Video](../../user/depth-of-field.md).
+
+- **Native resolution, always.** The game starts at your display's native
+  resolution with the 3D scene at full size, and no graphics preset or
+  Auto-Detect ever changes your resolution or resolution scale again. The
+  lower presets save their performance with lighter effects, shadows and
+  textures instead of a blurrier picture; **Resolution Scale** stays yours to
+  lower if you want more speed.
+
+- **Record video of your games.** Bind **Record Video** in Settings >
+  Controls > Other (or type `recordVideo` in the console) and openQ4 saves an
+  MP4 of what you see and hear, ready to upload. In single-player the video
+  stays perfectly smooth even if your computer struggles to keep up; format
+  (MP4, MKV, WebM, MOV, AVI, GIF), quality, frame rate, resolution, sound and
+  timing are under Video Capture in Settings > Game Options. See
+  [Record Video](../../user/video-capture.md).
+
+- **Play in 3D without a headset.** Turn on **Stereoscopic 3D** in Settings >
+  Game Options > Virtual Reality and the game draws a view for each eye: side
+  by side or top and bottom for 3D televisions and monitors, full-resolution
+  side by side for video glasses, interlaced for passive 3D displays, or a
+  red/cyan anaglyph for paper glasses. The HUD and menus stay readable at the
+  screen's depth, and Stereo Depth and Convergence tune how far the world
+  stands out. See [Stereoscopic 3D](../../user/stereoscopic-3d.md).
+
 - **Sharper textures at lower resolution scales, and on Vulkan with NVIDIA
   cards.** When the game draws the 3D scene below your screen's resolution
   and upscales it, the world's textures now keep more of their detail: 16-18%
@@ -128,9 +168,8 @@ the [development roadmap](../roadmap.md) for current scope.
   Capable Macs using Apple's compatibility renderer are no longer forced to
   Minimum because modern post effects are unavailable. An unset legacy quality
   marker no longer resets saved graphics settings at startup.
-  On high-resolution displays, Auto-Detect also reduces scene render scale to
-  suit the hardware, keeping the interface sharp, and leaves unsupported post
-  AA off. Stock quality controls now use the same presets and preserve your
+  On high-resolution displays, Auto-Detect picks a lighter preset rather than
+  lowering the resolution, and leaves unsupported post AA off. Stock quality controls now use the same presets and preserve your
   display mode and VSync preference.
 
 - **Less wasted Vulkan rendering work.** High-resolution shadow maps avoid clearing
@@ -429,7 +468,7 @@ the [development roadmap](../roadmap.md) for current scope.
 - **Cleaner outdoor shadows.** Shadow mapping removes repeating terrain lines in Sandstorm and restores terrain brightness and debris shadows in Air Defense 1's opening, on OpenGL and Vulkan. Keep cascaded shadow maps enabled for distant outdoor lighting.
 - Railings and other objects first seen at a distance now regain their mapped shadows as you approach, fixing missing entrance shadows in Air Defense 1.
 - **Shadow maps come on with the top presets.** Choosing **Quality** or **Ultra** in Settings > System now turns shadow maps on. Shadows from projected lights, such as the flashlight, stay sharp where an object touches a surface and soften with distance. Lower presets keep Quake 4's original shadows.
-- **Sharper, smoother image at lower render scales.** When the 3D scene renders below your screen's resolution, as the **Performance**, **Low Power** and **Minimum** presets do, temporal anti-aliasing now rebuilds it at full resolution instead of stretching it. Edges stay smooth and fine detail returns. It also tracks animated characters and your weapon exactly while they move, so they no longer shimmer or lose their anti-aliasing. At native resolution nothing changes unless you turn it on with `r_temporalAA 1`. See [Temporal AA](../../user/temporal-presentation.md).
+- **Sharper, smoother image at lower render scales.** When you set the 3D scene below your screen's resolution with **Resolution Scale**, temporal anti-aliasing now rebuilds it at full resolution instead of stretching it. Edges stay smooth and fine detail returns. It also tracks animated characters and your weapon exactly while they move, so they no longer shimmer or lose their anti-aliasing. At native resolution nothing changes unless you turn it on with `r_temporalAA 1`. See [Temporal AA](../../user/temporal-presentation.md).
 - **Physically based materials for mods.** Maps and mods can now ship PBR materials that render by default on OpenGL and Vulkan, beside the stock surfaces. Their metalness, roughness and ambient occlusion shape how every light (shadows included), the map's ambient light and its baked light grids fall on them. Glow maps shine on their own, and SSAO darkens only their bounced light. Reflection probes can follow a room's walls and be captured in the game. Stock content has no PBR materials and looks exactly as before. See the [PBR materials guide](../../user/pbr-materials.md).
 - **Smarter multiplayer bots you can give orders to.** Bots plan safer routes around jump pads, ledges and hazardous floors, recover when knocked off their route, and make running jumps across gaps. They hear gunfire and footsteps, time armour and weapon respawns, back off from fights they can't win and go hunting while they have quad damage. In team games you can give the bots on your side orders in team chat, such as `kane defend`, `everyone follow me` or `sorg hold here`, and they answer in character. Navigation and decision-making also use less processor time. See [Giving bots orders](../../user/multiplayer.md#give-bots-orders).
 - Bots account for their health and armour before taking drops or jump pads, and check the ground beyond a touchdown before continuing. Running jumps check their current position and momentum against the player's collision shape, and bots avoid walking through jump pads that have no safe landing route.
@@ -443,6 +482,17 @@ the [development roadmap](../roadmap.md) for current scope.
 - **Radio chatter and squad banter have subtitles.** About three in ten campaign lines had no transcript in the installed game, among them most radio transmissions. They now show the line as written in the game's own script, and marines heard over the helmet radio show the same text as face to face. What is left, screams, laughter and pain sounds, shows **[untranscribed speech]** after the speaker's name instead of nothing; turn it off with **Settings > Audio > Untranscribed Speech**. **Speaker Names** now shows who is talking, not only the radio label. Captions also stay up long enough to read after a line ends, and mods can correct or translate captions with caption packs. See [Dialogue subtitles](../../user/gameplay-settings.md#dialogue-subtitles).
 
 ## Upgrade Notes
+
+- **Low** no longer draws shadows, so it holds its 60 FPS cap on low-end
+  graphics. Select Low again (or accept the system check's recommendation) to
+  adopt it. If your PC can afford them, turn **Shadows** back on or choose
+  **Performance**, the first preset with Quake 4's original shadows.
+
+- If an earlier preset lowered your resolution scale (Performance 85%, Low and
+  Low Power 75%, Minimum 50%, or less from Auto-Detect on a large display),
+  the first start returns it to 100% once. A scale you set in `autoexec.cfg`,
+  or after that start, is kept. Because the presets changed, the system check
+  offers its recommendation again before the main menu.
 
 - Multiplayer-only settings that earlier versions lost (field of view, HUD
   options such as item timers or damage numbers, Create Server options) do not
@@ -509,9 +559,102 @@ the [development roadmap](../roadmap.md) for current scope.
 
 ## Change Log
 
+- The **Low** preset holds its 60 FPS cap on low-end graphics again. Since the
+  presets stopped lowering the resolution, Low drew every pixel and fell to
+  44-55 FPS in battles and open areas on an Intel Iris Xe at 1080p. It now
+  leaves out shadows and the baked indirect light, as Low Power and Minimum
+  do, and stays at 60 FPS in every tested scene there with time to spare.
+  **Performance** is now the first preset with Quake 4's original shadows. The
+  classic menu's Low quality uses the same preset. Because the presets
+  changed, the game offers its graphics system check once more on the next
+  start.
+- Zooming in with the machine gun, nailgun or railgun, and crewing the
+  air-defence cannon, cost far less: their scope pictures are drawn once and
+  reused instead of being redrawn every frame (the railgun scope went from
+  about 4 ms a frame to under 1 ms in testing). The weapon and quick-chat
+  wheels and the HUD artwork load faster, their files a quarter of the size.
+- The Competitive HUD layout has a scoreline across the top in Duel, Tourney
+  and team games: large scores either side of the timer and, further out, up
+  to four players a side named by their initials, with a bar for the
+  ammunition of the weapon in hand (in its colour) and health and armour bars
+  where you may see them (your own side, or both sides when you spectate), and
+  a skull while they are dead. It replaces the team lists at the screen's
+  edges, and lists where your team mates stand under their tiles (Team
+  Locations). Deathmatch keeps the leader, the runner-up and the timer at the
+  top left. Item timers in every layout now show each item's symbol, where it lies
+  and a line filling as it respawns, and kill feed lines arrive with a quick
+  slide and glint and glide up as older lines leave. See
+  [Spectate](../../user/multiplayer.md#spectate) and
+  [Item timers](../../user/multiplayer-client-options.md#item-timers).
+- `recordVideo` records what you play, with its sound, to a video file:
+  an MP4 at your window's resolution and 60 frames a second by default,
+  smooth even when your computer is busy. MKV, WebM, MOV and GIF use FFmpeg
+  if you have it, and an AVI needs nothing at all. `aviGame` and `aviDemo`
+  now record video too. Settings > Game Options has a Video Capture section
+  for its format, quality, frame rate, resolution, sound and timing, and
+  Settings > Controls > Other has a Record Video key. See
+  [Record Video](../../user/video-capture.md).
+- Stereoscopic 3D without a headset (`r_stereo3D`) on OpenGL and Vulkan:
+  side by side (half and full resolution), top and bottom, red/cyan anaglyph
+  and row interlaced, with Stereo Depth (`r_stereoSeparation`), Stereo
+  Convergence (`r_stereoConvergence`) and Swap Eyes (`r_stereoSwapEyes`) in
+  Settings > Game Options > Virtual Reality and in the classic Game Options'
+  new last section. Single-player, multiplayer, cutscenes and menus all show
+  in the chosen layout, and window-sized screenshots capture it. See
+  [Stereoscopic 3D](../../user/stereoscopic-3d.md).
+- The weapon wheel uses a depth of field focused on your weapon and the
+  world within about three metres, keeps your weapon raised (single player
+  used to put it away) and hides the crosshair while it is open;
+  where post-processing is off it keeps the old soft blur. For promotional
+  shots, `r_dof` and its settings (cheats, no menu entry) add a thin-lens
+  camera with autofocus, f-stop, focal length, focus range, round or bladed
+  bokeh and a focus view, on OpenGL and Vulkan. See
+  [Depth of Field for Screenshots and Video](../../user/depth-of-field.md).
+- Your weapon holds still while the weapon wheel is open, and while quick
+  chat is open in multiplayer. If you had been turning just before, it used
+  to swing back and forth through that turn about once a second until the
+  wheel closed.
+- The weapon wheel shows where your mouse points as a dot, which stays inside
+  the wheel: pushing past the edge slides it round the rim instead of
+  wandering off. While the wheel is open, the weapon keys, the mouse wheel,
+  `[` / `]` and the D-pad choose on it (next and previous step to the
+  weapons you have) and releasing switches, instead of changing weapon behind
+  the wheel. Quick chat shows the same dot. See
+  [Keyboard and mouse](../../user/input-settings.md#keyboard-and-mouse).
+- The classic interface's weapon wheel draws its shaded segments, inner ring
+  and the arrow pointing at your choice again; only the spokes, icons and
+  text had been showing.
+- **Depth of Field** (Settings > Display > Effects, `r_depthOfField`) turns
+  the game's own depth of field on or off: the weapon wheel's focus,
+  focus on the in-world screen you are using (the screen stays sharp, the
+  room behind it softens) and scripted cutscene focus. Enhanced, Quality, Ultra and Maximum turn it on.
+  Because the presets changed, the game offers its graphics system check once
+  more on the next start.
+- Map and mod scripts can drive depth of field with `sys.setDepthOfField`,
+  `sys.setDepthOfFieldFocus` (follows a character), `sys.setDepthOfFieldLens`
+  and `sys.clearDepthOfField`, with smooth focus pulls, kept in saved games;
+  Quake 4's own scripts and existing saves are unaffected. See
+  [scripted depth of field](../../user/depth-of-field.md#for-map-and-mod-authors-scripted-depth-of-field).
+- Classic multiplayer ruleset corrections: quad damage is four times, seeking
+  nails lose Quake 4's splash, the expansion maps' napalm launcher respawns in
+  30 seconds, Scout carriers take no armour, health from Regeneration drains
+  after it ends, rockets keep their range, and the CTF defence and assist
+  bonuses follow Threewave CTF. See
+  [Classic Multiplayer Ruleset](../../user/classic-ruleset.md).
+- Render demos recorded with the original Quake 4 (`recordDemo`) now play:
+  from **Demos**, where they are listed as **Retail Quake 4 render demo** with
+  their level, or with `playDemo`. They show the recorded view, HUD, screens,
+  effects and sound with your openQ4 graphics settings, and need the same
+  Quake 4 game files as the recording. Retail `.netdemo` files are still not
+  playable. See
+  [What each format can do](../../user/multiview-demos.md#what-each-format-can-do).
 - Demo playback lists the players to follow by name, steps back a frame,
   and `demoExport` writes a demo as pictures; the library shows who played and
   a picture from each recording, and `demoFind` searches it.
+- `demoExport` also writes the demo's sound, a WAV file exactly as long as the
+  pictures, in your sound device's rate and speaker layout. Nothing plays
+  through your speakers while it runs. See
+  [Export a demo as pictures](../../user/multiview-demos.md#export-a-demo-as-pictures).
 - `ui_autoAction "demo ss stats"` records every match you play, screenshots the
   result and writes its stats; servers can do the same with `si_autoAction`.
   `timeDemo name.mvd` benchmarks a multi-view demo. See

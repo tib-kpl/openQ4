@@ -429,6 +429,9 @@ typedef struct viewDef_s {
 	bool				temporalJitterEnabled;
 	bool				temporalHistoryValid;
 	bool				temporalCaptureFrame;
+	// The game's depth-of-field request for this frame (SetViewDepthOfField),
+	// latched when the view was built so the back end reads it on any thread.
+	renderViewDepthOfField_t depthOfFieldRequest;
 	bool				temporalPreviousProjectionValid;
 
 	idRenderWorldLocal *renderWorld;
@@ -465,6 +468,10 @@ typedef struct viewDef_s {
 	int					numClipPlanes;			// mirrors will often use a single clip plane
 	idPlane				clipPlanes[MAX_CLIP_PLANES];		// in world space, the positive side
 												// of the plane is the visible side
+	// R_SetupProjection moved the near plane onto clipPlanes[0]: depth is no
+	// longer a function of eye z alone, so nothing may derive it from
+	// projectionMatrix[10] and [14] (depth bounds, linearised depth).
+	bool				obliqueNearPlane;
 	idScreenRect		viewport;				// in real pixels and proper Y flip
 
 	idScreenRect		scissor;
@@ -606,6 +613,9 @@ typedef struct {
 	// the target's temporal frame state, restored when the backend reaches it:
 	// the front end rewrites the frame's one state for every target (VR-05)
 	bool	temporalAA;
+	// a brief return to a finished eye (a desktop stereo capture): the target
+	// left is not finished again and nothing is cleared
+	bool	revisit;
 } vrTargetCommand_t;
 
 typedef struct {
@@ -1045,6 +1055,10 @@ public:
 	virtual bool BeginSavePreview();
 	virtual int PollSavePreview( const char *fileName );
 	virtual void CancelSavePreview();
+	virtual bool RequestVideoFrame( long long tag );
+	virtual int PollVideoFrame( renderVideoFrame_t &frame, bool wait );
+	virtual void ReleaseVideoFrame();
+	virtual void EndVideoCapture();
 	virtual bool ReloadGeneratedCacheImages();
 	virtual void			SetPortalSkyCaptureViewCallback( renderPortalSkyCaptureViewCallback_t callback );
 	virtual void			UnCrop();
@@ -1076,6 +1090,7 @@ public:
 	virtual int				GetImageMSAASamples(idImage* image);
 	virtual const glconfig_t &	GetGLConfig( void ) const;
 	virtual bool			SetUnderwaterView( float amount, const idVec3 &tint, float fogDistance );
+	virtual bool			SetViewDepthOfField( const renderViewDepthOfField_t &dof );
 	virtual void			GetGpuFrameTiming( renderGpuFrameTiming_t &timing ) const;
 	virtual void			ResetGpuFrameTiming( const char *reason );
 	virtual void			GetPresentationState( renderPresentationState_t &state ) const;
@@ -1130,6 +1145,8 @@ public:
 	int						viewportOffset[2];	// for doing larger-than-window tiled renderings
 	int						tiledViewport[2];
 	int						tiledWindow[2];		// the window's size while a capture sets tiledViewport (BeginFrame)
+	int						tiledUIViewport[4];	// the window's UI viewport while a larger capture scales it (BeginFrame)
+	bool					tiledUIViewportSaved;
 
 	// determines which back end to use, and if vertex programs are in use
 	backEndName_t			backEndRenderer;
@@ -1230,6 +1247,10 @@ public:
 	float					underwaterAmount;
 	idVec3					underwaterTint;
 	float					underwaterFogDistance;
+	// openQ4: the game's depth-of-field request (SetViewDepthOfField), valid for
+	// the frame it was made in; RenderScene latches it into the view.
+	renderViewDepthOfField_t depthOfFieldRequest;
+	int						depthOfFieldRequestFrame;
 	idRenderTexture *		activeRenderTexture;
 	renderPortalSkyCaptureViewCallback_t portalSkyCaptureViewCallback;
 	bool					suppressLevelshotViewModels;
@@ -1247,6 +1268,13 @@ public:
 	int						vrWindowHeight;
 	int						vrSavedUIViewport[4];
 	idRenderTexture *		vrTargets[3];
+	// openQ4 desktop stereoscopic 3D (r_stereo3D, RenderSystem_vr.cpp): with no
+	// headset, BeginVRFrame can open the frame as a stereo frame of its own,
+	// whose targets the backend composites into the window in this layout
+	// (stereo3DLayout_t) at the swap instead of copying them to swapchains.
+	// 0 on every other frame.
+	int						desktopStereoLayout;
+	bool					desktopStereoSwapEyes;
 
 	bool					BeginVRFrame( int &windowWidth, int &windowHeight );
 	void					EndVRFrame( void );
@@ -1289,6 +1317,24 @@ void	R_ShutdownStereoGuiShare( void );
 // RenderSystem_init.cpp: VR frames present the window without waiting for vsync
 void	R_SetVRSwapIntervalBypass( bool active );
 
+// openQ4 desktop stereoscopic 3D (r_stereo3D): how a frame's two eyes and its
+// screen layer (menus, HUD, console) reach the window.
+typedef enum {
+	STEREO3D_OFF = 0,
+	STEREO3D_SIDE_BY_SIDE,			// half-width eyes, left on the left (3D TVs, monitors)
+	STEREO3D_SIDE_BY_SIDE_FULL,		// full-resolution eyes on a double-width display (glasses)
+	STEREO3D_TOP_BOTTOM,			// half-height eyes, left on top
+	STEREO3D_ANAGLYPH,				// red/cyan glasses (Dubois colour matrices)
+	STEREO3D_INTERLACED,			// alternate window rows, left on the top row (passive 3D)
+	STEREO3D_LAYOUT_COUNT
+} stereo3DLayout_t;
+// The backend can composite a desktop stereo frame into the window.
+bool	R_VR_BackendCanPresentDesktopStereo( void );
+// A capture of a desktop stereo frame's screen layer reads the left eye
+// between these (RenderSystem_vr.cpp); false when there is nothing to read.
+bool	R_DesktopStereo_BeginCapture( void );
+void	R_DesktopStereo_EndCapture( void );
+
 extern backEndState_t		backEnd;
 
 // Exact authored fog/blend stages in a preflighted modern linear target.
@@ -1318,6 +1364,12 @@ extern bool					tr_levelshotProjectionShiftActive;
 bool R_ViewFovTangentsValid( const renderView_t &renderView );
 extern float				tr_levelshotProjectionShiftX;
 extern float				tr_levelshotProjectionShiftY;
+// A levelshot region's width and height as fractions of its tile's; 1 outside regions.
+extern float				tr_levelshotRegionScaleX;
+extern float				tr_levelshotRegionScaleY;
+// The levelshot tile's own shift, which a region's shift above replaces.
+extern float				tr_levelshotTileShiftX;
+extern float				tr_levelshotTileShiftY;
 
 static ID_INLINE bool R_IsPortalSkyView( void ) {
 	return tr.viewDef != NULL && ( tr.viewDef->renderFlags & RF_PORTAL_SKY ) != 0;
@@ -1552,6 +1604,7 @@ extern idCVar r_rendererOwnershipCompose;	// REN-02 step 5: compose the aggregat
 extern idCVar r_rendererModernAutoPromote;	// allow gated default modern-visible promotion
 extern idCVar r_rendererPromotionEvidence;	// Phase 8 evidence token required before auto-promotion
 extern idCVar r_rendererShaderReload;	// allow runtime reload of the internal modern GL shader library
+extern idCVar r_rendererShaderAllTiers;	// build the modern GL shader library at every GLSL tier, not only the drawn one
 extern idCVar r_rendererModernVisibleDepth;	// opt-in graph-backed modern depth/shadow-depth execution
 extern idCVar r_rendererModernDepthDebug;	// show graph-backed modern depth resources as a debug overlay
 extern idCVar r_rendererModernOpaque;	// opt-in graph-backed modern opaque G-buffer execution
@@ -1755,6 +1808,7 @@ const float RB_PLAYER_RIMLIGHT_MAX_FLOOR = 1.0f;
 extern idCVar r_playerRimlightPower;	// player rimlight falloff exponent
 extern idCVar r_playerRimlightFloor;	// player rimlight floor, keeps a sliver of colour on camera-facing surfaces
 extern idCVar r_skipSubviews;			// 1 = don't render any mirrors / cameras / etc
+extern idCVar r_skipSubviewClip;		// 1 = mirror views keep no clip plane
 extern idCVar r_skipGuiShaders;			// 1 = don't render any gui elements on surfaces
 extern idCVar r_skipParticles;			// 1 = don't render any particles
 extern idCVar r_skipUpdates;			// 1 = don't accept any entity or light updates, making everything static
@@ -2357,7 +2411,24 @@ void RB_ApplyResolutionScaleToBackBuffer( void );
 void RB_ApplyCRTToBackBuffer( void );
 // openQ4 VR desktop mirror (draw_common.cpp)
 void RB_VR_DrawImageRect( idImage *image, int x, int y, int width, int height, float s0, float t0, float s1, float t1 );
+// openQ4 desktop stereoscopic 3D: the OpenGL composite of a stereo frame into
+// the bound window (draw_common.cpp); false draws nothing
+bool RB_DesktopStereo_CompositeAvailable( void );
+bool RB_DesktopStereo_Composite( idImage *left, idImage *right, idImage *screen, int layout,
+	int windowWidth, int windowHeight, int eyeHeight, bool eyesDrawn, bool screenDrawn );
 bool RB_UnderwaterViewAvailable( void );
+// Depth of field (DepthOfField.cpp; the pass in draw_common.cpp and
+// Vulkan/vk_PostProcess.cpp). RB_DepthOfFieldAvailable: whether this back end
+// can draw it at all.
+struct depthOfFieldSettings_t;
+bool RB_DepthOfFieldAvailable( void );
+bool R_DepthOfField_ResolveView( const viewDef_t *viewDef, int viewWidth, int viewHeight,
+	depthOfFieldSettings_t &settings );
+void R_DepthOfField_LatchRequest( viewDef_t *viewDef );
+// Seconds since the previous autofocus frame on this clock (wall time, so a
+// paused game still settles its focus); resets and returns 0 when stale.
+float R_DepthOfField_FocusElapsed( int &lastMsec );
+float R_DepthOfField_FocusSpeed( void );
 
 void RB_DetermineLightScale( void );
 void RB_STD_LightScale( void );
@@ -2426,6 +2497,9 @@ void	RB_ARB2_ClearPreparedPackedMD5RDraw( void );
 bool	RB_ARB2_DrawPreparedPackedMD5RStageBatches( const srfTriangles_t *tri );
 bool	RB_ARB2_DrawPreparedPackedMD5RDirectBatches( const srfTriangles_t *tri );
 void	R_ReloadARBPrograms_f( const idCmdArgs &args );
+// End of level load: compile the material programs a backend would otherwise
+// compile on first draw (Vulkan's authored GLSL and translated ARB pairs).
+void	R_PrecacheLevelMaterialPrograms( void );
 void	R_ReportShaderPrograms_f( const idCmdArgs &args );
 
 // Stable identities for the stock ARB newStage program families.  Vulkan

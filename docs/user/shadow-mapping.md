@@ -10,8 +10,8 @@ Choose a preset on **Settings → Display → Graphics → Performance Preset** 
 
 | Preset | Shadows |
 |---|---|
-| Minimum, Low Power | None, to save work on weak or battery-powered hardware. |
-| Low, Performance, Balanced | Quake 4's original stencil shadows. |
+| Minimum, Low Power, Low | None, to save work on weak or battery-powered hardware. Low dropped them in 0.15.0 so that it holds its 60 FPS cap on low-end graphics. |
+| Performance, Balanced | Quake 4's original stencil shadows. |
 | Enhanced | Shadow maps for spotlights and sunlight. Point lights, which are most of Quake 4's lights, keep the original shadows, because their shadow maps cost the most. |
 | Quality | Shadow maps for every light, with soft edges that harden where objects meet surfaces. Sunlight and other distant lights get cascades, so outdoor shadows stay sharp around you. |
 | Ultra | As Quality, with sharper spotlight and sunlight shadows and smoother edges. |
@@ -44,7 +44,7 @@ Choosing a preset again replaces these with the preset's own values. Shadow sett
 
 These are the settings that matter most. Each is described fully in the [settings reference](#settings-reference).
 
-- **Sharpness.** `r_shadowMapSize` sets the resolution of spotlight and sunlight shadows (presets use 1024 to 4096). `r_shadowMapPointSize` does the same for point lights (512, or 2048 on Maximum). Higher values are sharper but use more video memory; point-light size costs the most, because each point light stores six images.
+- **Sharpness.** `r_shadowMapSize` sets the resolution of spotlight and sunlight shadows (presets use 1024 to 4096). `r_shadowMapPointSize` does the same for point lights (512, or 1024 on Maximum; **after 0.15.0** Maximum uses 1024 rather than 2048, which on Vulkan left room for only a dozen point-light shadows in a view). Higher values are sharper but use more video memory; point-light size costs the most, because each point light stores six images.
 - **Point lights.** `r_shadowMapPointLights 0` keeps the original shadows for point lights only. It is the biggest single saving, and it is what Enhanced does.
 - **Soft edges.** `r_shadowMapFilterMode` picks the edge style: `2` contact-hardening (the default), `1` an even soft edge, `0` a simple fixed blur. `r_shadowMapFilterTaps` (5, 9 or 13) sets how many samples smooth each edge: more is smoother and costs more.
 - **Large outdoor areas.** `r_shadowMapCSM 1` turns on cascades: a distant light, such as sunlight, gets several shadow maps, with the sharpest one closest to you. Quality, Ultra and Maximum turn them on; only Maximum also cascades ordinary spotlights (`r_shadowMapProjectedCSM`), which costs more indoors. Past the cascades' reach (`r_shadowMapCascadeDistance`), the light's whole shadow map takes over, so distant shadows don't disappear. **New in 0.15.0.**
@@ -175,6 +175,7 @@ On every platform, openQ4 never draws a half-finished shadow: it rejects incompl
 - **Speckles or stripes on surfaces (shadow acne).** Raise the matching bias a very little. If it only happens with a wide soft edge, raise the shadow resolution or narrow `r_shadowMapFilterRadius` first.
 - **Outdoor sunlight shadows look too soft or too sharp.** Distant lights use a tighter edge (`r_shadowMapDistantFilterScale 0.35`). Lower it toward `0` for sharper shadows, or set `1` for the same softness as other lights.
 - **Character shadows outdoors look blocky.** Quake 4 lights its outdoor areas with a few very large lights, and without cascades each of them gets one shadow map stretched over the whole area: on Air Defense 1 about 25 world units per shadow pixel at 2048, so a character is two pixels wide and most nearby shadows vanish. Cascades (`r_shadowMapCSM 1`) spend the sharpest map on the area around you. Quality, Ultra and Maximum turn them on (**not in 0.14.1**, where only Maximum did); on Enhanced or your own settings, turn them on yourself. Raising `r_shadowMapSize` helps much less and costs more memory. If you prefer the original hard-edged look, `r_useShadowMap 0` brings back the stencil shadows.
+- **Your own shadow is missing outdoors under a big lamp, but appears with `r_useShadowMap 0`.** Some outdoor areas are lit by one huge point light whose source sits just above the area. Its single cube map was so coarse that a character a couple of thousand units below was two or three shadow pixels wide, and filtering erased the shadow. With cascades on (Quality, Ultra and Maximum), `r_shadowMapWideSources 1` (the default) cascades these lights too. **Not in 0.15.0.**
 - **Distant shadows disappear outdoors with cascades on.** Check `r_shadowMapCascadeFarMap 1` (the default), which keeps the light's whole map for everything past the cascades' reach. **New in 0.15.0**, where shadows ended at `r_shadowMapCascadeDistance`.
 - **Characters don't shadow some objects, or themselves.** That is how Quake 4 was made. Characters and many props, consoles and machines use materials marked to keep out of each other's shadows, so the original stencil shadows looked clean on their low-polygon models. Characters still shadow most of the level, and the level still shadows them. openQ4 keeps the original rule unless you turn on [character self-shadows](#character-self-shadows).
 - **Soft edges don't change with distance.** Check `r_shadowMapFilterMode 2`.
@@ -196,6 +197,7 @@ On every platform, openQ4 never draws a half-finished shadow: it rejects incompl
 | `r_shadowMapPointLights` | `1` | `0..1` | Uses shadow maps for point lights too. Most of Quake 4's lights are point lights (about 19 in 20 shadow-casting ones), so `0` keeps nearly every light on the original shadows. Enhanced sets `0`. |
 | `r_shadowMapCSM` | `0` | `0..1` | Cascades for sunlight, distant lights and (with `r_shadowMapProjectedCSM`) spotlights: several shadow maps per light, sharpest nearest you. Quality, Ultra and Maximum set `1` (**not in 0.14.1**, where only Maximum did). |
 | `r_shadowMapProjectedCSM` | `1` | `0..1` | Lets ordinary spotlights use cascades when `r_shadowMapCSM` is on. Sunlight and distant lights are cascaded either way. Maximum sets `1`; Quality and Ultra set `0`, so indoor spotlights keep one map each. |
+| `r_shadowMapWideSources` | `1` | `0..1` | While cascades are on, the big outdoor point lights whose source sits just above a huge area (MCC Landing's courtyard, the convoy, walker and tram yards) are cascaded like sunlight instead of getting one cube. Their single cube left your own shadow and other characters' a few pixels wide, so they vanished. `0` keeps the cube. **Not in 0.15.0.** |
 | `r_shadowMapHashedAlpha` | `1` | `0..1` | Steadier shadows from grates, fences and foliage. `0` gives harder, cleaner cutout edges. |
 | `r_shadowMapCharacterSelfShadow` | `0` | `0..1` | Character self-shadows: under shadow-mapped lights, animated characters shadow themselves, each other and props. `0` keeps the original rule. **New in 0.15.0.** |
 | `r_shadowMapStableAlphaHash` | `1` | `0..1` | Keeps that cutout pattern fixed to the world, so it doesn't crawl as the camera moves. |

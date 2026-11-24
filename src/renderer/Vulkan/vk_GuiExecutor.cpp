@@ -124,6 +124,7 @@ bool VK_PostProcess_DrawUnderwater( const viewDef_t *viewDef );
 void VK_DebugTools_DrawView( const viewDef_t *viewDef );
 #include "../SavePreviewCapture.h"
 static void VK_ConsumeSavePreview( int slot );
+static void VK_ConsumeVideoFrames( int slot );
 static void VK_Exec_ReleaseStencilReadbacks( void );
 static void VK_Exec_PrintStencilReadbacks( int slot );
 static void VK_Exec_ReleaseHDRReadbacks( void );
@@ -134,7 +135,8 @@ VkDescriptorSet VK_Exec_InteractionUniformSet( void );
 int VK_Exec_InteractionUniformAlloc( const void *data, int bytes );
 static bool VK_TemporalPresentation_DrawPendingSceneSpatial(
 	const viewDef_t *viewDef, idImage *sceneImage, vkImageEntry_t *sceneEntry,
-	idImage *depthImage, vkImageEntry_t *depthEntry );
+	idImage *depthImage, vkImageEntry_t *depthEntry,
+	const VkViewport *outputViewport = NULL );
 struct vkSceneScaleState_s;
 static bool VK_WindowView_Begin( const viewDef_t *viewDef, struct vkSceneScaleState_s &state );
 static void VK_WindowView_End( struct vkSceneScaleState_s &state );
@@ -604,6 +606,9 @@ typedef struct vkGuiExecutor_s {
 	int				temporalSceneFrame;
 	const viewDef_t *	temporalSceneRoot;
 	bool				temporalScenePendingComposite;
+	// The pending scene holds a whole larger-than-window capture, drawn at the
+	// target's origin; its composite takes the tile offset (VK_TiledCapture_Rect).
+	bool				temporalSceneTiled;
 	bool				temporalSceneAllocationWarned;
 	// Multisampled stand-in for the window while a 3D view that would draw
 	// straight to it renders (VK_WindowView_Begin), and its single-sample
@@ -3907,6 +3912,7 @@ void VK_GuiExecutor_Shutdown( void ) {
 	VK_Exec_ReleaseStencilReadbacks();
 	VK_Exec_ReleaseHDRReadbacks();
 	RB_ReleaseSavePreview();
+	RB_ShutdownVideoCapture();
 	for ( int i = 0; i < 2; ++i ) {
 		if ( vkExec.temporalDirectHistoryRenderTextures[i] != NULL ) {
 			delete vkExec.temporalDirectHistoryRenderTextures[i];
@@ -4433,6 +4439,7 @@ bool VK_GuiExecutor_BeginFrame( void ) {
 	VK_Exec_PrintStencilReadbacks( slot );
 	VK_Exec_ConsumeHDRReadback( slot );
 	VK_ConsumeSavePreview( slot );
+	VK_ConsumeVideoFrames( slot );
 	// retire the last upload batch (and, per fence submission-order scope,
 	// every earlier one) before deferred destroys can release images those
 	// batches referenced; near-free, since the batch was submitted before the
@@ -5307,6 +5314,50 @@ static bool VK_TemporalPresentation_RootCoversNativeOutput(
 		&& height == (int)VK_Exec_DefaultExtent().height;
 }
 
+/*
+====================
+VK_TiledCapture_Rect
+
+A capture larger than the window (R_ReadTiledPixels) draws the frame once per
+window-sized tile, with tr.viewportOffset moved to the tile and the views on
+the window moved with it (VK_Backend_ApplyTileOffset). Copying and
+re-sampling a view that hangs off the window cannot work: the scene and
+post-process copies clamp to the window and stretch it back over the whole
+view, magnifying each tile. As OpenGL does (RB_TileOffsetX), the main scene
+therefore renders into a scene target sized to the whole capture, at the
+target's origin, and only its composite to the window takes the tile offset.
+
+Returns the capture's rectangle in window pixels (bottom-left origin) while
+such a capture is drawing. False for ordinary frames, captures that fit the
+window, and rectangles the device cannot express as one viewport.
+====================
+*/
+static bool VK_TiledCapture_Rect( int &x, int &y, int &width, int &height ) {
+	x = tr.viewportOffset[0];
+	y = tr.viewportOffset[1];
+	width = tr.tiledViewport[0];
+	height = tr.tiledViewport[1];
+	if ( width <= 0 || height <= 0 || vkExecVROutputActive || vkExec.windowless
+			|| ( width <= (int)VK_Exec_DefaultExtent().width
+				&& height <= (int)VK_Exec_DefaultExtent().height ) ) {
+		return false;
+	}
+	const VkPhysicalDeviceLimits &limits = vkCtx.deviceProperties.limits;
+	return width <= (int)limits.maxViewportDimensions[0]
+		&& height <= (int)limits.maxViewportDimensions[1]
+		&& (float)x >= limits.viewportBoundsRange[0]
+		&& (float)( x + width ) <= limits.viewportBoundsRange[1]
+		&& (float)( (int)VK_Exec_DefaultExtent().height - height - y ) >= limits.viewportBoundsRange[0]
+		&& (float)( (int)VK_Exec_DefaultExtent().height - y ) <= limits.viewportBoundsRange[1];
+}
+
+// The view is the whole capture of VK_TiledCapture_Rect, moved to the tile.
+static bool VK_TiledCapture_ViewCovers( const viewDef_t *view, int x, int y,
+		int width, int height ) {
+	return view != NULL && view->viewport.x1 == x && view->viewport.y1 == y
+		&& view->viewport.x2 == x + width - 1 && view->viewport.y2 == y + height - 1;
+}
+
 // Direct engine captures (envshot/probe faces) do not pass through the game's
 // scene target. Keep an in-frame capture in the same float attachment as an
 // ordinary HDR view, without scaling its smaller viewport to the whole window.
@@ -6137,16 +6188,34 @@ static bool VK_TemporalPresentation_CompositePendingScene( void ) {
 			? VK_TemporalPresentation_DepthCurrentForCapture( sampledTarget, sampledTarget->GetDepthImage() )
 			: VK_TemporalPresentation_DepthStampMatches( sampledTarget,
 				sampledTarget->GetDepthImage(), R_TemporalPresentation_HistoryGeneration() ) );
+	// A tile of a larger-than-window capture shows its part of the whole
+	// capture's scene: the scene is drawn over the capture's rectangle, which
+	// the root view still holds in window pixels (bottom-left origin), so the
+	// window receives it one-to-one. The pass uses a positive, top-down
+	// viewport (DrawResolve). Captures keep no temporal history.
+	const bool tiled = vkExec.temporalSceneTiled && sceneRoot != NULL;
+	VkViewport tileViewport;
+	memset( &tileViewport, 0, sizeof( tileViewport ) );
+	if ( tiled ) {
+		const int width = sceneRoot->viewport.x2 - sceneRoot->viewport.x1 + 1;
+		const int height = sceneRoot->viewport.y2 - sceneRoot->viewport.y1 + 1;
+		tileViewport.x = (float)sceneRoot->viewport.x1;
+		tileViewport.y = (float)( (int)VK_Exec_DefaultExtent().height
+			- sceneRoot->viewport.y1 - height );
+		tileViewport.width = (float)width;
+		tileViewport.height = (float)height;
+		tileViewport.maxDepth = 1.0f;
+	}
 	// Let the resolver validate the exact depth-success stamp. A missing or
 	// stale depth image is a spatial/no-write result that must advance the
 	// shared invalidation generation rather than silently bypassing ownership.
-	const bool temporalPresented =
-		VK_TemporalPresentation_ResolvePendingSceneTemporal( sceneRoot );
+	const bool temporalPresented = !tiled
+		&& VK_TemporalPresentation_ResolvePendingSceneTemporal( sceneRoot );
 	const bool presented = temporalPresented
 		|| VK_TemporalPresentation_DrawPendingSceneSpatial( sceneRoot,
 			sampledTarget->GetColorImage( 0 ), sceneColor,
 			depthReady ? sampledTarget->GetDepthImage() : NULL,
-			depthReady ? sceneDepth : NULL );
+			depthReady ? sceneDepth : NULL, tiled ? &tileViewport : NULL );
 	if ( presented ) {
 		vkExec.temporalScenePendingComposite = false;
 		vkExec.temporalSceneRoot = NULL;
@@ -6170,9 +6239,10 @@ static bool VK_TemporalPresentation_CompositePendingScene( void ) {
 			R_TemporalPresentation_HistoryGeneration();
 		vkExec.temporalSceneCompositeInvalidatedFrame = backEnd.frameCount;
 	}
-	if ( sceneRoot != NULL && sceneRoot->temporalJitterEnabled ) {
+	if ( tiled || ( sceneRoot != NULL && sceneRoot->temporalJitterEnabled ) ) {
 		// VkImageBlit cannot express the fractional projection recenter required
-		// by a jittered scene. Fail closed instead of exposing an unstable frame;
+		// by a jittered scene, nor place a capture tile that hangs off the
+		// window. Fail closed instead of exposing an unstable frame;
 		// abandon this scene so a later frame cannot retry stale command-arena
 		// view state after the source frame has already been submitted.
 		vkExec.temporalScenePendingComposite = false;
@@ -6268,7 +6338,25 @@ static bool VK_TemporalPresentation_BeginView( const viewDef_t *viewDef,
 	int targetWidth = 0;
 	int targetHeight = 0;
 	bool captureScene = false;
-	if ( !VK_TemporalPresentation_BackendSceneRequested( rootView, targetWidth, targetHeight ) ) {
+	int tileX = 0;
+	int tileY = 0;
+	int tileWidth = 0;
+	int tileHeight = 0;
+	// A larger-than-window capture always takes the scene target, sized to
+	// the whole capture, whatever the presentation settings: see
+	// VK_TiledCapture_Rect. Its views come back to the target's origin below.
+	const bool tiledScene = VK_TiledCapture_Rect( tileX, tileY, tileWidth, tileHeight )
+		&& VK_TiledCapture_ViewCovers( rootView, tileX, tileY, tileWidth, tileHeight )
+		&& VK_TiledCapture_ViewCovers( viewDef, tileX, tileY, tileWidth, tileHeight );
+	if ( tiledScene ) {
+		if ( vkExec.temporalResolveVertModule == VK_NULL_HANDLE
+				|| vkExec.temporalResolveFragModule == VK_NULL_HANDLE
+				|| VK_TemporalPresentation_GetResolvePipeline() == VK_NULL_HANDLE ) {
+			return false;
+		}
+		targetWidth = tileWidth;
+		targetHeight = tileHeight;
+	} else if ( !VK_TemporalPresentation_BackendSceneRequested( rootView, targetWidth, targetHeight ) ) {
 		if ( !VK_TemporalPresentation_HDRCaptureInFrame( rootView )
 				|| vkExec.temporalResolveVertModule == VK_NULL_HANDLE
 				|| vkExec.temporalResolveFragModule == VK_NULL_HANDLE
@@ -6297,6 +6385,7 @@ static bool VK_TemporalPresentation_BeginView( const viewDef_t *viewDef,
 		vkExec.temporalSceneRoot = rootView;
 	}
 	vkExec.temporalScenePendingComposite = true;
+	vkExec.temporalSceneTiled = tiledScene;
 	// The attachment stays window-sized so the spatial presenter copies it
 	// one-to-one. Only the capture's original rectangle is rendered/read back.
 	const int viewWidth = captureScene ? viewDef->viewport.x2 - viewDef->viewport.x1 + 1 : targetWidth;
@@ -6305,8 +6394,17 @@ static bool VK_TemporalPresentation_BeginView( const viewDef_t *viewDef,
 			viewWidth, viewHeight, true ) ) {
 		(void)VK_Exec_SetRenderTarget( NULL );
 		vkExec.temporalScenePendingComposite = false;
+		vkExec.temporalSceneTiled = false;
 		vkExec.temporalSceneRoot = NULL;
 		return false;
+	}
+	if ( tiledScene ) {
+		// Same size, so BeginScale kept the viewport; it restores it at EndView.
+		viewDef_t *mutableView = const_cast<viewDef_t *>( viewDef );
+		mutableView->viewport.x1 -= tileX;
+		mutableView->viewport.x2 -= tileX;
+		mutableView->viewport.y1 -= tileY;
+		mutableView->viewport.y2 -= tileY;
 	}
 	return true;
 }
@@ -7843,6 +7941,172 @@ void RB_ReleaseSavePreview() {
 	memset( &vkSavePreview, 0, sizeof( vkSavePreview ) );
 }
 
+/*
+====================
+Video capture ring
+
+The save preview's copy, made for every requested frame into one of four
+host buffers. A copy becomes readable when its frame slot's fence is waited
+at the start of a later frame (VK_ConsumeVideoFrames), or when a poll that
+must wait waits that fence itself.
+====================
+*/
+static const int VK_VIDEO_RING = 4;
+static struct {
+	VkBuffer buffer;
+	VmaAllocation allocation;
+	void *mapped;
+	VkDeviceSize allocated;
+	int width, height, frameSlot, state;	// 0 free, 1 copy recorded, 2 readable
+	long long tag;
+	bool bgra;
+} vkVideoSlots[ VK_VIDEO_RING ];
+static int vkVideoHead = 0;
+static int vkVideoCount = 0;
+static bool vkVideoRequested = false;
+static long long vkVideoRequestTag = 0;
+
+static void VK_DestroyVideoSlotBuffer( int index, bool inFlight ) {
+	if ( vkVideoSlots[index].buffer == VK_NULL_HANDLE ) return;
+	if ( inFlight ) {
+		VK_Device_DeferDestroy( VK_NULL_HANDLE, VK_NULL_HANDLE, vkVideoSlots[index].buffer, vkVideoSlots[index].allocation );
+	} else {
+		vmaDestroyBuffer( vkCtx.allocator, vkVideoSlots[index].buffer, vkVideoSlots[index].allocation );
+	}
+	vkVideoSlots[index].buffer = VK_NULL_HANDLE;
+	vkVideoSlots[index].allocation = VK_NULL_HANDLE;
+	vkVideoSlots[index].mapped = NULL;
+	vkVideoSlots[index].allocated = 0;
+}
+
+bool RB_RequestVideoFrame( int64 tag ) {
+	if ( !vkCtx.initialized || vkCtx.presentationBlocked ||
+		( !vkCtx.offscreenFrames && !vkCtx.swapchainTransferSrc ) ) return false;
+	if ( vkVideoRequested ) {
+		vkVideoRequestTag = tag;
+		return true;
+	}
+	if ( vkVideoCount >= VK_VIDEO_RING ) return false;
+	vkVideoRequested = true;
+	vkVideoRequestTag = tag;
+	return true;
+}
+
+void RB_QueueVideoFrame() {
+	if ( !vkVideoRequested || !vkExec.frameOpen || vkVideoCount >= VK_VIDEO_RING ||
+		VK_Exec_DefaultColorImage() == VK_NULL_HANDLE ) return;
+	vkVideoRequested = false;
+	const VkFormat format = VK_Exec_DefaultColorFormat();
+	const bool bgra = format == VK_FORMAT_B8G8R8A8_UNORM || format == VK_FORMAT_B8G8R8A8_SRGB;
+	if ( !bgra && format != VK_FORMAT_R8G8B8A8_UNORM && format != VK_FORMAT_R8G8B8A8_SRGB ) return;
+	const int width = (int)VK_Exec_DefaultExtent().width;
+	const int height = (int)VK_Exec_DefaultExtent().height;
+	const VkDeviceSize bytes = (VkDeviceSize)width * height * 4;
+	if ( width <= 0 || height <= 0 || bytes > (VkDeviceSize)33554432 * 4 ) return;
+	const int index = ( vkVideoHead + vkVideoCount ) % VK_VIDEO_RING;
+	if ( vkVideoSlots[index].allocated != bytes ) {
+		VK_DestroyVideoSlotBuffer( index, false );
+		VkBufferCreateInfo buffer = {};
+		buffer.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		buffer.size = bytes;
+		buffer.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+		VmaAllocationCreateInfo allocation = {};
+		allocation.usage = VMA_MEMORY_USAGE_AUTO;
+		allocation.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+		VmaAllocationInfo mapped = {};
+		if ( vmaCreateBuffer( vkCtx.allocator, &buffer, &allocation, &vkVideoSlots[index].buffer,
+			&vkVideoSlots[index].allocation, &mapped ) != VK_SUCCESS ) {
+			vkVideoSlots[index].buffer = VK_NULL_HANDLE;
+			return;
+		}
+		vkVideoSlots[index].mapped = mapped.pMappedData;
+		vkVideoSlots[index].allocated = bytes;
+	}
+	VK_Exec_EndMainRendering();
+	VK_Exec_TransitionSwapchain( VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL );
+	VkBufferImageCopy copy = {};
+	copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	copy.imageSubresource.layerCount = 1;
+	copy.imageExtent.width = width;
+	copy.imageExtent.height = height;
+	copy.imageExtent.depth = 1;
+	vkCmdCopyImageToBuffer( vkExec.cmd, VK_Exec_DefaultColorImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		vkVideoSlots[index].buffer, 1, &copy );
+	VkBufferMemoryBarrier2 barrier = {};
+	barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+	barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+	barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+	barrier.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+	barrier.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+	barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.buffer = vkVideoSlots[index].buffer;
+	barrier.size = VK_WHOLE_SIZE;
+	VkDependencyInfo dependency = {};
+	dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+	dependency.bufferMemoryBarrierCount = 1;
+	dependency.pBufferMemoryBarriers = &barrier;
+	if ( r_vkResourceProfile.GetBool() ) { ++vkResourceProfile.barriers; }
+	vkCmdPipelineBarrier2( vkExec.cmd, &dependency );
+	VK_Exec_TransitionSwapchain( VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL );
+	vkVideoSlots[index].width = width;
+	vkVideoSlots[index].height = height;
+	vkVideoSlots[index].bgra = bgra;
+	vkVideoSlots[index].tag = vkVideoRequestTag;
+	vkVideoSlots[index].frameSlot = vkExec.frameSlot;
+	vkVideoSlots[index].state = 1;
+	vkVideoCount++;
+}
+
+static void VK_ConsumeVideoFrames( int slot ) {
+	for ( int i = 0; i < vkVideoCount; ++i ) {
+		const int index = ( vkVideoHead + i ) % VK_VIDEO_RING;
+		if ( vkVideoSlots[index].state == 1 && vkVideoSlots[index].frameSlot == slot ) {
+			vkVideoSlots[index].state = vmaInvalidateAllocation( vkCtx.allocator, vkVideoSlots[index].allocation,
+				0, VK_WHOLE_SIZE ) == VK_SUCCESS ? 2 : -1;
+		}
+	}
+}
+
+int RB_PollVideoFrame( renderVideoFrame_t &frame, bool wait ) {
+	if ( vkCtx.presentationBlocked || vkVideoCount == 0 ) return -1;
+	const int index = vkVideoHead;
+	if ( vkVideoSlots[index].state == 1 ) {
+		if ( !wait ) return 0;
+		const VkResult waited = vkWaitForFences( vkCtx.device, 1, &vkCtx.frameFences[ vkVideoSlots[index].frameSlot ],
+			VK_TRUE, 2000000000ULL );
+		if ( waited == VK_TIMEOUT ) return -1;
+		vkVideoSlots[index].state = waited == VK_SUCCESS && vmaInvalidateAllocation( vkCtx.allocator,
+			vkVideoSlots[index].allocation, 0, VK_WHOLE_SIZE ) == VK_SUCCESS ? 2 : -1;
+	}
+	if ( vkVideoSlots[index].state != 2 || vkVideoSlots[index].mapped == NULL ) {
+		RB_ReleaseVideoFrame();
+		return -1;
+	}
+	frame.pixels = static_cast<const byte *>( vkVideoSlots[index].mapped );
+	frame.width = vkVideoSlots[index].width;
+	frame.height = vkVideoSlots[index].height;
+	frame.topDown = true;
+	frame.bgra = vkVideoSlots[index].bgra;
+	frame.tag = vkVideoSlots[index].tag;
+	return 1;
+}
+
+void RB_ReleaseVideoFrame() {
+	if ( vkVideoCount == 0 ) return;
+	vkVideoSlots[vkVideoHead].state = 0;
+	vkVideoHead = ( vkVideoHead + 1 ) % VK_VIDEO_RING;
+	vkVideoCount--;
+}
+
+void RB_ShutdownVideoCapture() {
+	for ( int i = 0; i < VK_VIDEO_RING; ++i ) {
+		VK_DestroyVideoSlotBuffer( i, vkVideoSlots[i].state == 1 );
+		vkVideoSlots[i].state = 0;
+	}
+	vkVideoHead = vkVideoCount = 0;
+	vkVideoRequested = false;
+}
+
 bool VK_GuiExecutor_ReadPixels( int x, int y, int width, int height, void *pixels, int components ) {
 	R_RenderThread_Sync( "readback" );
 	if ( components != 3 && components != 4 ) {
@@ -8016,6 +8280,16 @@ bool VK_GuiExecutor_ReadPixels( int x, int y, int width, int height, void *pixel
 		// The captured composition was submitted and retired above. The clear
 		// starts a new composition on this acquired image, with fresh draw state.
 		vkExec.displayColorMapped = false;
+		// What is recorded next comes from a new front-end frame: the next tile
+		// of a larger-than-window capture (R_ReadTiledPixels), or the real
+		// frame after a save-preview crop. Its frame-temp vertex cache
+		// recycles the headers these memos are keyed by, so a hit would draw
+		// a surface of the frame just read back: animated and deformed entity
+		// surfaces of every tile after the first came out as stray bright
+		// wedges. Forget the uploads, as opening a frame does.
+		memset( vkExec.vertMemo, 0, sizeof( vkExec.vertMemo ) );
+		memset( vkExec.idxMemo, 0, sizeof( vkExec.idxMemo ) );
+		memset( vkExec.gpuSkinningMemo, 0, sizeof( vkExec.gpuSkinningMemo ) );
 		// The screenshot path explicitly retired this same slot; start a fresh
 		// timing epoch for the real frame recorded after the crop.
 		VK_GpuFrameTiming_BeginFrame( vkExec.cmd, submittedSlot, backEnd.frameCount );
@@ -8033,7 +8307,10 @@ static bool VK_GuiExecutor_SubmitFrame( bool present ) {
 	VkCommandBuffer cmd = vkExec.cmd;
 	// A hidden window's offscreen frame completes without a presentation.
 	const bool presentImage = present && vkExec.framePresentable;
-	if ( present ) RB_QueueSavePreview();
+	if ( present ) {
+		RB_QueueSavePreview();
+		RB_QueueVideoFrame();
+	}
 
 	// submit any batched image uploads first: same-queue submission order makes
 	// them execute before this frame samples the images, and this frame's fence
@@ -9730,7 +10007,8 @@ static bool VK_TemporalPresentation_DrawResolve(
 		idImage *sceneImage, vkImageEntry_t *sceneEntry,
 		idImage *depthImage, vkImageEntry_t *depthEntry,
 		idImage *historyImage, vkImageEntry_t *historyEntry,
-		const vkTemporalResolveBlock_t &block, idImage *velocityImage = NULL ) {
+		const vkTemporalResolveBlock_t &block, idImage *velocityImage = NULL,
+		const VkViewport *outputViewport = NULL ) {
 	if ( sceneImage == NULL || sceneEntry == NULL
 			|| !VK_Exec_SetRenderTarget( NULL ) ) {
 		return false;
@@ -9790,6 +10068,10 @@ static bool VK_TemporalPresentation_DrawResolve(
 	viewport.width = (float)vkExec.activeExtent.width;
 	viewport.height = (float)vkExec.activeExtent.height;
 	viewport.maxDepth = 1.0f;
+	if ( outputViewport != NULL ) {
+		// a tile of a larger-than-window capture: the whole capture, offset
+		viewport = *outputViewport;
+	}
 	VkRect2D scissor;
 	memset( &scissor, 0, sizeof( scissor ) );
 	scissor.extent = vkExec.activeExtent;
@@ -9937,11 +10219,13 @@ bool VK_GuiExecutor_PresentScaledScene( const presentScaledSceneCommand_t &comma
 static bool VK_TemporalPresentation_DrawPendingSceneSpatial(
 		const viewDef_t *viewDef, idImage *sceneImage,
 		vkImageEntry_t *sceneEntry, idImage *depthImage,
-		vkImageEntry_t *depthEntry ) {
+		vkImageEntry_t *depthEntry, const VkViewport *outputViewport ) {
 	if ( viewDef == NULL || sceneImage == NULL || sceneEntry == NULL ) {
 		return false;
 	}
-	if ( VK_TemporalPresentation_DrawScaledScene( viewDef, sceneImage, sceneEntry ) ) {
+	// A capture tile is never upscaled: its scene is the capture's own size.
+	if ( outputViewport == NULL
+			&& VK_TemporalPresentation_DrawScaledScene( viewDef, sceneImage, sceneEntry ) ) {
 		return true;
 	}
 	resolveTemporalPresentationCommand_t command;
@@ -9954,8 +10238,13 @@ static bool VK_TemporalPresentation_DrawPendingSceneSpatial(
 	VK_TemporalPresentation_FillResolveBlock( command,
 		sceneEntry->width, sceneEntry->height, false, depthEntry != NULL,
 		true, 0, block );
+	if ( outputViewport != NULL ) {
+		// the output is the whole capture, not the window it is drawn through
+		block.sceneOutputExtent[2] = idMath::Fabs( outputViewport->width );
+		block.sceneOutputExtent[3] = idMath::Fabs( outputViewport->height );
+	}
 	return VK_TemporalPresentation_DrawResolve( NULL, sceneImage, sceneEntry,
-		depthImage, depthEntry, NULL, NULL, block );
+		depthImage, depthEntry, NULL, NULL, block, NULL, outputViewport );
 }
 
 static bool VK_TemporalPresentation_DrawResolvedColorToSwap(
@@ -12616,9 +12905,13 @@ static void VK_Exec_DrawProgramStage( const viewDef_t *viewDef,
 	parms[ 2 ][ 1 ] = modelView[ 6 ];
 	parms[ 2 ][ 2 ] = modelView[ 10 ];
 	parms[ 2 ][ 3 ] = modelView[ 14 ];
+	// Row 0 without its off-axis term: the deform scale is the projection's x
+	// scale over the distance. projection[8] times the eye depth would add an
+	// off-axis view's shift (a levelshot tile, a VR or stereo eye, the temporal
+	// AA jitter) and smear the haze, as R_LoadARBProgram rewrites it on OpenGL.
 	parms[ 3 ][ 0 ] = projection[ 0 ];
 	parms[ 3 ][ 1 ] = projection[ 4 ];
-	parms[ 3 ][ 2 ] = projection[ 8 ];
+	parms[ 3 ][ 2 ] = 0.0f;
 	parms[ 3 ][ 3 ] = projection[ 12 ];
 	parms[ 4 ][ 0 ] = projection[ 3 ];
 	parms[ 4 ][ 1 ] = projection[ 7 ];
@@ -12901,8 +13194,11 @@ static void VK_Exec_DrawAmbientStages( const viewDef_t *viewDef, const drawSurf_
 		// soft particles (RB_TryDrawSoftParticleStage) fade against the
 		// prepass depth. Like OpenGL, the capture is taken even under an
 		// explicit offscreen chain, and a failed capture leaves the stage on
-		// the plain path with no fade.
+		// the plain path with no fade. A mirror's oblique near plane makes
+		// depth depend on more than eye z, so the fade's linearised depth
+		// would be wrong there: such a view draws its particles plain.
 		bool softParticle = worldDepthState && drawSurf->decalColorCache == NULL
+				&& !viewDef->obliqueNearPlane
 				&& globalImages->currentDepthImage != NULL
 				&& VK_SoftParticleStageSupported( drawSurf, pStage );
 		if ( softParticle && !backEnd.currentDepthCopied ) {

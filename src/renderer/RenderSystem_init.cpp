@@ -788,6 +788,7 @@ idCVar r_rendererOwnershipCompose( "r_rendererOwnershipCompose", "0", CVAR_RENDE
 idCVar r_rendererModernAutoPromote( "r_rendererModernAutoPromote", "0", CVAR_RENDERER | CVAR_BOOL, "allow r_glTier auto and r_renderer best to request the guarded modern visible path after promotion evidence and sign-off; off keeps ARB2 default" );
 idCVar r_rendererPromotionEvidence( "r_rendererPromotionEvidence", "", CVAR_RENDERER, "Phase 8 validation evidence token required with r_rendererModernAutoPromote before automatic modern visible promotion" );
 idCVar r_rendererShaderReload( "r_rendererShaderReload", "0", CVAR_RENDERER | CVAR_BOOL, "allow runtime reload of the internal modern GL shader library" );
+idCVar r_rendererShaderAllTiers( "r_rendererShaderAllTiers", "0", CVAR_RENDERER | CVAR_BOOL, "build the internal modern GL shader library at every supported GLSL tier, not only the tier it draws with (shader validation; slower startup)" );
 idCVar r_rendererModernVisibleDepth( "r_rendererModernVisibleDepth", "0", CVAR_RENDERER | CVAR_BOOL, "execute graph-backed modern depth and compatible shadow-depth passes while ARB2 remains the visible color path" );
 idCVar r_rendererModernDepthDebug( "r_rendererModernDepthDebug", "0", CVAR_RENDERER | CVAR_INTEGER, "modern depth debug overlay: 0 = off, 1 = scene depth, 2 = shadow-map depth", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
 idCVar r_rendererModernOpaque( "r_rendererModernOpaque", "0", CVAR_RENDERER | CVAR_BOOL, "execute graph-backed modern opaque G-buffer passes while ARB2 remains the visible color path" );
@@ -922,6 +923,7 @@ static idCVar r_temporalAADefaultMigrated( "r_temporalAADefaultMigrated", "0", C
 extern idCVar r_temporalAA;
 idCVar r_frontBuffer( "r_frontBuffer", "0", CVAR_RENDERER | CVAR_BOOL, "draw to front buffer for debugging" );
 idCVar r_skipSubviews( "r_skipSubviews", "0", CVAR_RENDERER | CVAR_INTEGER, "1 = don't render any gui elements on surfaces" );
+idCVar r_skipSubviewClip( "r_skipSubviewClip", "0", CVAR_RENDERER | CVAR_BOOL | CVAR_CHEAT, "1 = draw mirror views without their clip plane (diagnostic)" );
 idCVar r_skipParticles( "r_skipParticles", "0", CVAR_RENDERER | CVAR_INTEGER, "1 = skip all particle systems", 0, 1, idCmdSystem::ArgCompletion_Integer<0,1> );
 idCVar r_subviewOnly( "r_subviewOnly", "0", CVAR_RENDERER | CVAR_BOOL, "1 = don't render main view, allowing subviews to be debugged" );
 // Stencil shadows cost a handheld GPU 23 to 37 ms a frame in combat (Adreno 740, 18 to 49
@@ -3050,6 +3052,10 @@ bool R_ReadTiledPixels( int width, int height, byte *buffer, renderView_t *ref =
 
 	tr.tiledViewport[0] = width;
 	tr.tiledViewport[1] = height;
+	// The window's size for BeginFrame (tiledWindow), which every tile after
+	// the first would otherwise take from glConfig, by then the capture's.
+	tr.tiledWindow[0] = oldWidth;
+	tr.tiledWindow[1] = oldHeight;
 
 	// Only tiled captures need to disregard unadjusted light scissors. A
 	// window-sized screenshot must preserve the frame's rendering semantics;
@@ -3150,6 +3156,8 @@ bool R_ReadTiledPixels( int width, int height, byte *buffer, renderView_t *ref =
 	tr.viewportOffset[1] = 0;
 	tr.tiledViewport[0] = 0;
 	tr.tiledViewport[1] = 0;
+	tr.tiledWindow[0] = 0;
+	tr.tiledWindow[1] = 0;
 
 	R_StaticFree( temp );
 	R_StaticFree( rgbaTemp );
@@ -3158,6 +3166,15 @@ bool R_ReadTiledPixels( int width, int height, byte *buffer, renderView_t *ref =
 	// the window's size is restored here.
 	glConfig.vidWidth = oldWidth;
 	glConfig.vidHeight = oldHeight;
+	// and the window's UI viewport, which BeginFrame scaled to a capture
+	// larger than the window, before anything draws to the window again
+	if ( tr.tiledUIViewportSaved ) {
+		glConfig.uiViewportX = tr.tiledUIViewport[0];
+		glConfig.uiViewportY = tr.tiledUIViewport[1];
+		glConfig.uiViewportWidth = tr.tiledUIViewport[2];
+		glConfig.uiViewportHeight = tr.tiledUIViewport[3];
+		tr.tiledUIViewportSaved = false;
+	}
 #ifdef OPENQ4_RENDERER_VK_MODULE
 	// Vulkan publishes each new drawable size from its swapchain. A resize
 	// during the capture leaves the tiles sized for the old window: keep the
@@ -3543,6 +3560,9 @@ static void R_CaptureLevelShotTileRGBA( int width, int height, int blends, const
 	const bool previousDisableLevelshotEntityCulling = tr.disableLevelshotEntityCulling;
 	tr_levelshotProjectionShiftActive = true;
 	tr.disableLevelshotEntityCulling = true;
+	// what a region's view-fitted passes (shadow cascades) fit instead of the region
+	tr_levelshotTileShiftX = projectionShiftX;
+	tr_levelshotTileShiftY = projectionShiftY;
 
 	const int guard = LEVELSHOT_REGION_GUARD;
 	if ( width <= glConfig.vidWidth && height <= glConfig.vidHeight ) {
@@ -3583,6 +3603,8 @@ static void R_CaptureLevelShotTileRGBA( int width, int height, int blends, const
 				regionView.fov_y = RAD2DEG( 2.0f * idMath::ATan( halfY * tanY ) );
 				tr_levelshotProjectionShiftX = 0.5f * ( left + right ) / halfX;
 				tr_levelshotProjectionShiftY = 0.5f * ( top + bottom ) / halfY;
+				tr_levelshotRegionScaleX = halfX;
+				tr_levelshotRegionScaleY = halfY;
 
 				idTempArray<byte> region( regionWidth * regionHeight * 4 );
 				R_CaptureTiledPixelsRGBA( regionWidth, regionHeight, blends, &regionView, region.Ptr() );
@@ -3598,6 +3620,10 @@ static void R_CaptureLevelShotTileRGBA( int width, int height, int blends, const
 	tr_levelshotProjectionShiftActive = false;
 	tr_levelshotProjectionShiftX = 0.0f;
 	tr_levelshotProjectionShiftY = 0.0f;
+	tr_levelshotRegionScaleX = 1.0f;
+	tr_levelshotRegionScaleY = 1.0f;
+	tr_levelshotTileShiftX = 0.0f;
+	tr_levelshotTileShiftY = 0.0f;
 }
 
 /*
@@ -6672,6 +6698,8 @@ idRenderSystemLocal::Clear
 void idRenderSystemLocal::Clear( void ) {
 	registered = false;
 	frameCount = 0;
+	depthOfFieldRequest = renderViewDepthOfField_t();
+	depthOfFieldRequestFrame = -1;
 	viewCount = 0;
 	videoRestartCount = 0;
 	glContextGeneration = 0;
@@ -6689,6 +6717,8 @@ void idRenderSystemLocal::Clear( void ) {
 	tiledViewport[1] = 0;
 	tiledWindow[0] = 0;
 	tiledWindow[1] = 0;
+	tiledUIViewport[0] = tiledUIViewport[1] = tiledUIViewport[2] = tiledUIViewport[3] = 0;
+	tiledUIViewportSaved = false;
 	backEndRenderer = BE_BAD;
 	backEndRendererHasVertexPrograms = false;
 	backEndRendererMaxLight = 1.0f;
@@ -6746,6 +6776,8 @@ void idRenderSystemLocal::Clear( void ) {
 	vrWindowHeight = 0;
 	memset( vrSavedUIViewport, 0, sizeof( vrSavedUIViewport ) );
 	memset( vrTargets, 0, sizeof( vrTargets ) );
+	desktopStereoLayout = STEREO3D_OFF;
+	desktopStereoSwapEyes = false;
 	memset( gammaTable, 0, sizeof( gammaTable ) );
 	takingScreenshot = false;
 }
@@ -6912,6 +6944,8 @@ void idRenderSystemLocal::BeginLevelLoad( void ) {
 	// of the new map, costing a full-screen copy per loading-screen present.
 	underwaterAmount = 0.0f;
 	underwaterTint.Zero();
+	depthOfFieldRequest = renderViewDepthOfField_t();
+	depthOfFieldRequestFrame = -1;
 
 	// The caller runs declManager->BeginLevelLoad() immediately before this, and
 	// that purge can reach the generated glyph atlas materials. Put them back
@@ -6939,6 +6973,8 @@ void idRenderSystemLocal::EndLevelLoad( void ) {
 	session->BeginLoadingAssetQueue( pendingImageLoads );
 	globalImages->EndLevelLoad();
 	session->EndLoadingAssetQueue();
+
+	R_PrecacheLevelMaterialPrograms();
 
 	if ( r_forceLoadImages.GetBool() ) {
 		RB_ShowImages();
@@ -7054,6 +7090,7 @@ idRenderSystemLocal::ShutdownOpenGL
 void idRenderSystemLocal::ShutdownOpenGL( void ) {
 	R_RenderThread_Shutdown();
 	CancelSavePreview();
+	EndVideoCapture();
 	r_recoverableRendererRestore = false;
 	if ( !glConfig.isInitialized ) {
 		R_ClearActiveRenderTextures();

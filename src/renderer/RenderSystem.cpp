@@ -1550,8 +1550,12 @@ void idRenderSystemLocal::BeginFrame( int windowWidth, int windowHeight ) {
 	// for the larger-than-window tiled rendering screenshots
 	if ( tiledViewport[0] ) {
 		// glConfig takes the capture's size below; keep the real window's.
-		tiledWindow[0] = windowWidth;
-		tiledWindow[1] = windowHeight;
+		// R_ReadTiledPixels sets it for the whole capture: from the second tile
+		// on, the session passes glConfig's size, which is then the capture's.
+		if ( tiledWindow[0] <= 0 || tiledWindow[1] <= 0 ) {
+			tiledWindow[0] = windowWidth;
+			tiledWindow[1] = windowHeight;
+		}
 		windowWidth = tiledViewport[0];
 		windowHeight = tiledViewport[1];
 	} else {
@@ -1574,6 +1578,41 @@ void idRenderSystemLocal::BeginFrame( int windowWidth, int windowHeight ) {
 			static_cast<float>( safeHeight ) );
 		postProcessSourceColorSpace.Set( 0.0f, 2.2f, 0.0f, 0.0f );
 		postProcessSMAAQuality.Set( 0.0f, 0.10f, 8.0f, 2.0f );
+	}
+
+	// A capture larger than the window draws its 2D over the whole capture, as
+	// a one-pass render at the capture's size would. The UI viewport is the
+	// window's (the platform may narrow it to a safe area, top-left origin);
+	// kept as it is, the HUD drew at window size into the capture's top-left
+	// tile. Scale the window's rectangle to the capture, from a copy so a tile
+	// never scales it twice, and put the window's back once the capture ends.
+	const bool scaleUIViewport = tiledViewport[0] > 0 && tiledViewport[1] > 0
+		&& tiledWindow[0] > 0 && tiledWindow[1] > 0
+		&& ( tiledViewport[0] > tiledWindow[0] || tiledViewport[1] > tiledWindow[1] );
+	if ( scaleUIViewport ) {
+		if ( !tiledUIViewportSaved ) {
+			tiledUIViewport[0] = glConfig.uiViewportX;
+			tiledUIViewport[1] = glConfig.uiViewportY;
+			tiledUIViewport[2] = glConfig.uiViewportWidth;
+			tiledUIViewport[3] = glConfig.uiViewportHeight;
+			tiledUIViewportSaved = true;
+		}
+		if ( tiledUIViewport[2] > 0 && tiledUIViewport[3] > 0 ) {
+			const int x0 = static_cast<int>( static_cast<int64>( tiledUIViewport[0] ) * windowWidth / tiledWindow[0] );
+			const int y0 = static_cast<int>( static_cast<int64>( tiledUIViewport[1] ) * windowHeight / tiledWindow[1] );
+			const int x1 = static_cast<int>( static_cast<int64>( tiledUIViewport[0] + tiledUIViewport[2] ) * windowWidth / tiledWindow[0] );
+			const int y1 = static_cast<int>( static_cast<int64>( tiledUIViewport[1] + tiledUIViewport[3] ) * windowHeight / tiledWindow[1] );
+			glConfig.uiViewportX = x0;
+			glConfig.uiViewportY = y0;
+			glConfig.uiViewportWidth = x1 - x0;
+			glConfig.uiViewportHeight = y1 - y0;
+		}
+	} else if ( tiledUIViewportSaved ) {
+		glConfig.uiViewportX = tiledUIViewport[0];
+		glConfig.uiViewportY = tiledUIViewport[1];
+		glConfig.uiViewportWidth = tiledUIViewport[2];
+		glConfig.uiViewportHeight = tiledUIViewport[3];
+		tiledUIViewportSaved = false;
 	}
 
 	// Keep the 2D viewport anchored to a valid region of the current framebuffer.
@@ -2246,6 +2285,9 @@ void idRenderSystemLocal::CaptureRenderToImage( const char *imageName ) {
 	// may need to sync to create the image
 	idImage	*image = globalImages->ImageFromFile(imageName, TF_DEFAULT, TR_REPEAT, TD_DEFAULT);
 
+	// openQ4: a desktop stereo frame's scene is in its eyes, not its screen layer
+	const bool stereoCapture = R_DesktopStereo_BeginCapture();
+
 	renderCrop_t *rc = &renderCrops[currentRenderCrop];
 
 	copyRenderCommand_t *cmd = (copyRenderCommand_t *)R_GetCommandBuffer( sizeof( *cmd ) );
@@ -2260,6 +2302,9 @@ void idRenderSystemLocal::CaptureRenderToImage( const char *imageName ) {
 	if ( R_ScenePackets_FrontEndCaptureRequired() ) {
 		R_ScenePackets_AddCopyRender( image, cmd->x, cmd->y,
 			cmd->imageWidth, cmd->imageHeight, cmd->cubeFace, cmd->copyDepth );
+	}
+	if ( stereoCapture ) {
+		R_DesktopStereo_EndCapture();
 	}
 
 	guiModel->Clear();
@@ -2384,6 +2429,30 @@ int idRenderSystemLocal::PollSavePreview( const char *fileName ) {
 void idRenderSystemLocal::CancelSavePreview() {
 	R_RenderThread_Sync( "save preview" );
 	RB_ReleaseSavePreview();
+}
+
+// Video capture readback (render API 37). The ring is shared with the frame on
+// the render thread, as the save preview is.
+bool idRenderSystemLocal::RequestVideoFrame( long long tag ) {
+	R_RenderThread_Sync( "video capture" );
+	return glConfig.isInitialized && RB_RequestVideoFrame( tag );
+}
+
+int idRenderSystemLocal::PollVideoFrame( renderVideoFrame_t &frame, bool wait ) {
+	R_RenderThread_Sync( "video capture" );
+	memset( &frame, 0, sizeof( frame ) );
+	if ( !glConfig.isInitialized ) return -1;
+	return RB_PollVideoFrame( frame, wait );
+}
+
+void idRenderSystemLocal::ReleaseVideoFrame() {
+	R_RenderThread_Sync( "video capture" );
+	RB_ReleaseVideoFrame();
+}
+
+void idRenderSystemLocal::EndVideoCapture() {
+	R_RenderThread_Sync( "video capture" );
+	RB_ShutdownVideoCapture();
 }
 
 bool idRenderSystemLocal::ReloadGeneratedCacheImages() {

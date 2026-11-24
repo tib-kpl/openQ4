@@ -17,6 +17,8 @@ their layout, and corrupt/truncated streams fail at a bounded record.
 #include "../../idlib/NumericString.h"
 #include "MvdStorageBudget.h"
 #include "MvdNavigation.h"
+#include "RetailNetDemo.h"
+#include "../../sound/SoundCapture.h"
 
 #include <time.h>
 
@@ -610,7 +612,8 @@ static bool MVD_ParseTimelineIndex(
 	return count == 0 || indexedEndTime >= previousTime;
 }
 
-static bool MVD_ValidateReliablePayload( const idList<byte> &payload, unsigned short version, idStr &error ) {
+static bool MVD_ValidateReliablePayload( const idList<byte> &payload, unsigned short version, idStr &error,
+		bool retailRoutes = false ) {
 	const int routeBytes = version == 2 ? 3 : 2;
 	if ( ( version != 1 && version != 2 ) ||
 		 payload.Num() < 8 + routeBytes + 1 ||
@@ -621,8 +624,11 @@ static bool MVD_ValidateReliablePayload( const idList<byte> &payload, unsigned s
 	const int routeType = payload[8];
 	const int routeClient = static_cast<signed char>( payload[9] );
 	const int maxRouteType = version == 2 ? DEMO_RECORD_INSTANCE : DEMO_RECORD_EXCLUDE;
+	// openQ4 MP-22: a retail server demo also routes to its own viewer's slot,
+	// MAX_ASYNC_CLIENTS (DEMO_RECORD_CLIENTNUM only)
+	const int maxRouteClient = retailRoutes && routeType == DEMO_RECORD_CLIENTNUM ? MAX_ASYNC_CLIENTS : MAX_ASYNC_CLIENTS - 1;
 	if ( routeType < DEMO_RECORD_CLIENTNUM || routeType > maxRouteType ||
-		 routeClient < -1 || routeClient >= MAX_ASYNC_CLIENTS ) {
+		 routeClient < -1 || routeClient > maxRouteClient ) {
 		error = va( "invalid MVD reliable route (%d, %d)", routeType, routeClient );
 		return false;
 	}
@@ -796,6 +802,7 @@ mvdFileInfo_t::mvdFileInfo_t() {
 	markerCount = 0;
 	keyframeCount = 0;
 	fileSize = 0;
+	retail = false;
 }
 
 /*
@@ -885,8 +892,10 @@ void idMultiViewDemo::ClearState() {
 	timeDemoSlowestFrame = 0;
 	markers.clear();
 	exporting = false;
-	exportStepMS = 0;
+	exportFps = 0;
+	exportSteps = 0;
 	exportFrames = 0;
+	exportSound = false;
 	exportDirectory.Clear();
 	recordingPlayers.Clear();
 	thumbnailTaken = false;
@@ -897,6 +906,10 @@ void idMultiViewDemo::ClearState() {
 	lastMarkerIndex = -1;
 	nextPlaybackMarker = 0;
 	keyframeWritesDisabled = false;
+	retailSource = false;
+	retailEntityDefs = 0;
+	retailStream.Clear();
+	openq4_retail::ClearDeclRemap();
 }
 
 /*
@@ -908,7 +921,7 @@ void idMultiViewDemo::Init() {
 	cmdSystem->AddCommand( "recordMVD", Record_f, CMD_FL_SYSTEM, "records a server-side multi-view demo" );
 	cmdSystem->AddCommand( "stopMVD", Stop_f, CMD_FL_SYSTEM, "stops MVD recording or playback" );
 	cmdSystem->AddCommand( "playMVD", Play_f, CMD_FL_SYSTEM, "plays a multi-view demo" );
-	cmdSystem->AddCommand( "demoExport", Export_f, CMD_FL_SYSTEM, "writes a multi-view demo as PNG frames: demoExport <demo>.mvd [fps] [quit]" );
+	cmdSystem->AddCommand( "demoExport", Export_f, CMD_FL_SYSTEM, "writes a multi-view demo as PNG frames and a WAV sound track: demoExport <demo>.mvd [fps] [quit]" );
 	cmdSystem->AddCommand( "mvdInfo", Info_f, CMD_FL_SYSTEM, "validates and describes a multi-view demo" );
 	cmdSystem->AddCommand( "mvdRecover", Recover_f, CMD_FL_SYSTEM, "salvages the complete part of an interrupted .mvd.part recording into a new demo" );
 	cmdSystem->AddCommand( "mvdStatus", Status_f, CMD_FL_SYSTEM, "reports multi-view playback time and camera state" );
@@ -934,7 +947,9 @@ void idMultiViewDemo::Init() {
 	cmdSystem->AddCommand( "record", Record_f, CMD_FL_SYSTEM, "records a multiplayer demo: the whole match when hosting, your own view on a server you joined" );
 	cmdSystem->AddCommand( "stopRecord", Stop_f, CMD_FL_SYSTEM, "stops a multiplayer demo recording (or MVD playback)" );
 	cmdSystem->AddCommand( "stopNetDemo", Stop_f, CMD_FL_SYSTEM, "stops MVD recording or playback" );
-	cmdSystem->AddCommand( "playNetDemo", Play_f, CMD_FL_SYSTEM, "plays a multi-view demo" );
+	cmdSystem->AddCommand( "playNetDemo", Play_f, CMD_FL_SYSTEM, "plays a multi-view demo or a Quake 4 1.4.2 network demo" );
+	// openQ4 MP-22: Quake 4's own name for timing a network demo
+	cmdSystem->AddCommand( "playNetTimeDemo", TimeDemo_f, CMD_FL_SYSTEM, "times a multi-view demo or a Quake 4 1.4.2 network demo" );
 }
 
 /*
@@ -1873,7 +1888,8 @@ bool idMultiViewDemo::ValidateClientNetworkState( const byte *bytes, int length,
 		cursor += 4;
 		return true;
 	};
-	const int entityDefs = declManager->GetNumDecls( DECL_ENTITYDEF );
+	// openQ4 MP-22: a retail recording numbers only the entity definitions of its own paks
+	const int entityDefs = retailSource ? retailEntityDefs : declManager->GetNumDecls( DECL_ENTITYDEF );
 	const int entityDefBits = idMath::BitsForInteger( entityDefs ) + 1;
 	auto validState = [&]( int stateSize ) {
 		if ( stateSize < 1 || stateSize > MVD_BASELINE_MAX_STATE_BYTES || !need( stateSize ) ) {
@@ -2210,7 +2226,8 @@ bool idMultiViewDemo::ValidateNetworkStatePayload( const byte *bytes, int length
 				error = startError;
 				return false;
 			}
-		} else if ( messageBytes < 16 ) {
+		} else if ( messageBytes < ( retailSource ? 1 : 16 ) ) {
+			// openQ4 MP-22: Quake 4 1.4.2's game state is a few bytes shorter than openQ4's
 			error = "short MVD multiplayer game state";
 			return false;
 		}
@@ -3203,7 +3220,7 @@ bool idMultiViewDemo::BuildPlaybackIndex() {
 		}
 
 		if ( record.type == MVD_RECORD_RELIABLE ) {
-			if ( !MVD_ValidateReliablePayload( record.payload, record.version, lastError ) ) {
+			if ( !MVD_ValidateReliablePayload( record.payload, record.version, lastError, retailSource ) ) {
 				return false;
 			}
 			const int gameFrame = static_cast<int>( MVD_ReadLittleUInt( record.payload.Ptr() ) );
@@ -3290,7 +3307,17 @@ bool idMultiViewDemo::StartPlayback( const idCmdArgs &args ) {
 		Clear();
 		return false;
 	}
-	file = fileSystem->OpenFileRead( fileName.c_str(), true );
+	if ( openq4_retail::IsRetailNetDemoName( fileName.c_str() ) ) {
+		// openQ4 MP-22: a retail Quake 4 network demo, decoded into records first
+		if ( !OpenRetailNetDemo() ) {
+			common->Warning( "Cannot play '%s': %s", fileName.c_str(), lastError.c_str() );
+			openq4_retail::ClearDeclRemap();
+			Clear();
+			return false;
+		}
+	} else {
+		file = fileSystem->OpenFileRead( fileName.c_str(), true );
+	}
 	if ( file == NULL ) {
 		common->Printf( "MVD file not found: %s\n", fileName.c_str() );
 		Clear();
@@ -3598,29 +3625,87 @@ idMultiViewDemo::StartExport
 
 openQ4 MP-22: writes a multi-view demo, or a recording of one player's view,
 as a PNG sequence, exports/<demo>/frame00000.png on: every frame moves the
-match on by 1000/fps milliseconds, whatever the time it took, and the next
-frame's command buffer takes the screenshot of the state it shows. Sound is
-not written yet.
+match on by 1000/fps milliseconds (in whole milliseconds that add up, 33, 33
+and 34 at 30 a second), whatever the time it took, and the next frame's command
+buffer takes the screenshot of the state it shows.
+
+The sound track, exports/<demo>/<demo>.wav, comes from a loopback mixer the
+sound system switches to before the map loads (SoundCapture.h): each exported
+frame mixes exactly its share, so n pictures last as long as the track's
+n * 1000/fps milliseconds. The playback device opens again when the export ends.
 ==================
 */
 bool idMultiViewDemo::StartExport( const char *name, int fps, bool quitAfter ) {
+	if ( state != MVD_IDLE ) {
+		common->Printf( "MVD system is already busy\n" );
+		return false;
+	}
+	idStr base = BuildPlaybackName( name );
+	base.StripPath();
+	base.StripFileExtension();
+	const idStr directory = va( "exports/%s", base.c_str() );
+	const idStr soundTrack = va( "%s/%s.wav", directory.c_str(), base.c_str() );
+	// before the map loads, so its sounds load straight onto the loopback mixer
+	char soundRefusal[160];
+	const bool sound = !base.IsEmpty() && Sound_BeginCapture( soundTrack.c_str(), soundRefusal, sizeof( soundRefusal ) );
+
 	idCmdArgs args;
 	args.AppendArg( "demoExport" );
 	args.AppendArg( name );
 	if ( !StartPlayback( args ) ) {
+		if ( sound ) {
+			soundCaptureResult_t discarded;
+			Sound_EndCapture( discarded );
+			fileSystem->RemoveFile( soundTrack.c_str() );
+		}
 		return false;
 	}
-	idStr base = fileName;
-	base.StripPath();
-	base.StripFileExtension();
 	exporting = true;
+	exportSound = sound;
 	timeDemoQuit = quitAfter;
-	exportStepMS = Max( 1, 1000 / idMath::ClampInt( 1, 120, fps ) );
+	exportFps = idMath::ClampInt( 1, 120, fps );
+	exportSteps = 0;
 	exportFrames = 0;
-	exportDirectory = va( "exports/%s", base.c_str() );
+	exportDirectory = directory;
 	common->Printf( "Exporting '%s' to %s/ at %d frames a second\n", fileName.c_str(), exportDirectory.c_str(),
-		1000 / exportStepMS );
+		exportFps );
+	if ( !sound ) {
+		common->Printf( "The export has no sound track: %s\n", base.IsEmpty() ? "no demo name" : soundRefusal );
+		common->Printf( "MVD_EXPORT_SOUND written=0 reason=\"%s\"\n", base.IsEmpty() ? "no demo name" : soundRefusal );
+	}
 	return true;
+}
+
+/*
+==================
+idMultiViewDemo::FinishExportSound
+
+Finishes the sound track of an export, however the export ended, and opens
+the playback device again.
+==================
+*/
+void idMultiViewDemo::FinishExportSound() {
+	if ( !exportSound ) {
+		return;
+	}
+	exportSound = false;
+	soundCaptureResult_t track;
+	if ( !Sound_EndCapture( track ) ) {
+		return;
+	}
+	if ( !track.written ) {
+		common->Warning( "The export's sound track was not written: %s", track.reason );
+		common->Printf( "MVD_EXPORT_SOUND written=0 reason=\"%s\"\n", track.reason );
+		return;
+	}
+	common->Printf( "Wrote the sound track %s: %.2f seconds, %d Hz, %d channels\n", track.path,
+		static_cast<double>( track.msec ) * 0.001, track.rate, track.channels );
+	if ( !track.complete ) {
+		common->Warning( "The export's sound track is not complete: %s", track.reason );
+	}
+	common->Printf( "MVD_EXPORT_SOUND written=1 file=%s rate=%d channels=%d frames=%lld msec=%lld peak=%d rms=%.1f complete=%d\n",
+		track.path, track.rate, track.channels, static_cast<long long>( track.frames ), static_cast<long long>( track.msec ),
+		track.peak, track.rms, track.complete ? 1 : 0 );
 }
 
 void idMultiViewDemo::Export_f( const idCmdArgs &args ) {
@@ -3680,29 +3765,36 @@ bool idMultiViewDemo::ProcessClientPlaybackRecord( const record_t &record, bool 
 			return false;
 		}
 		// the other clients' commands the server relayed with the snapshot
+		// (openQ4 MP-22: in Quake 4 1.4.2's codec for a retail recording, which
+		// ends the list with any slot past the last client)
 		usercmd_t *last = NULL;
 		while ( true ) {
 			const int client = msg.ReadByte();
-			if ( msg.IsReadOverflowed() || client > MAX_ASYNC_CLIENTS ) {
+			if ( msg.IsReadOverflowed() || ( client > MAX_ASYNC_CLIENTS && !retailSource ) ) {
 				lastError = va( "MVD client snapshot %d has an invalid command list", sequence );
 				return false;
 			}
-			if ( client == MAX_ASYNC_CLIENTS ) {
+			if ( client >= MAX_ASYNC_CLIENTS ) {
 				break;
 			}
 			const int count = msg.ReadByte();
-			if ( msg.IsReadOverflowed() || count < 1 || count > MAX_USERCMD_RELAY ) {
+			const int maxCount = retailSource ? openq4_retail::NETDEMO_MAX_RELAYED_CMDS : MAX_USERCMD_RELAY;
+			if ( msg.IsReadOverflowed() || count < ( retailSource ? 0 : 1 ) || count > maxCount ) {
 				lastError = va( "MVD client snapshot %d has an invalid command count", sequence );
 				return false;
 			}
 			for ( int j = 0; j < count; j++ ) {
 				usercmd_t &cmd = playbackUsercmds[ ( gameFrame + j ) & ( MAX_USERCMD_BACKUP - 1 ) ][ client ];
-				if ( !idAsyncNetwork::ReadUserCmdDelta( msg, cmd, last ) ) {
+				if ( retailSource ? !openq4_retail::ReadRelayedUsercmd( msg, cmd, last ) :
+					 !idAsyncNetwork::ReadUserCmdDelta( msg, cmd, last ) ) {
 					lastError = va( "MVD client snapshot %d has a truncated command", sequence );
 					return false;
 				}
 				cmd.gameFrame = gameFrame + j;
 				cmd.duplicateCount = 0;
+				if ( retailSource ) {
+					cmd.gameTime = gameTime + j * ticMsec;	// 1.4.2 sends no command times
+				}
 				last = &cmd;
 			}
 			for ( int j = count; j < MAX_USERCMD_BACKUP; j++ ) {
@@ -4303,6 +4395,8 @@ void idMultiViewDemo::StopPlayback( const char *reason ) {
 	}
 	const idStr stoppedFile = fileName;
 	const idStr stoppedReason = reason != NULL ? reason : "stopped";
+	// an export stopped early keeps the sound track of what it wrote
+	FinishExportSound();
 	game->SetDemoState( DEMO_NONE, false, false );
 	if ( sessLocal.sw != NULL ) {
 		sessLocal.sw->SetSlowmoSpeed( 1.0f );
@@ -4333,8 +4427,9 @@ void idMultiViewDemo::FinishPlayback( const char *reason, bool warning ) {
 	const bool timed = timeDemo || exporting;
 	const bool quitAfter = timeDemoQuit;
 	if ( exporting ) {
+		FinishExportSound();
 		common->Printf( "MVD_EXPORT frames=%d directory=%s fps=%d complete=%d\n", exportFrames,
-			exportDirectory.c_str(), 1000 / Max( 1, exportStepMS ), warning ? 0 : 1 );
+			exportDirectory.c_str(), exportFps, warning ? 0 : 1 );
 	}
 	if ( timeDemo && timeDemoFrames > 0 ) {
 		const float seconds = Max( 1, timeDemoLastFrameTime - timeDemoStartTime ) * 0.001f;
@@ -4468,7 +4563,7 @@ bool idMultiViewDemo::ProcessPlaybackRecord( const record_t &record, bool &finis
 	}
 
 	if ( record.type == MVD_RECORD_RELIABLE ) {
-		if ( !MVD_ValidateReliablePayload( record.payload, record.version, lastError ) ) {
+		if ( !MVD_ValidateReliablePayload( record.payload, record.version, lastError, retailSource ) ) {
 			return false;
 		}
 		const int gameFrame = static_cast<int>( MVD_ReadLittleUInt( record.payload.Ptr() ) );
@@ -4518,6 +4613,13 @@ bool idMultiViewDemo::ProcessPlaybackRecord( const record_t &record, bool &finis
 		msg.Init( record.payload.Ptr() + 12, record.payload.Num() - 12 );
 		msg.SetSize( record.payload.Num() - 12 );
 		msg.BeginReading();
+		if ( retailSource && cvarSystem->GetCVarInteger( "net_retailDemoDebug" ) > 2 ) {
+			idStr bytes;
+			for ( int b = 0; b < 24 && 12 + b < record.payload.Num(); b++ ) {
+				bytes += va( "%02x", record.payload[ 12 + b ] );
+			}
+			common->Printf( "retail server snapshot %d (%d bytes): %s\n", sequence, record.payload.Num() - 12, bytes.c_str() );
+		}
 		if ( !game->ClientReadServerDemoSnapshot(
 				sequence, gameFrame, gameTime, msg, record.version >= 2 ) ) {
 			lastError = va( "game module rejected MVD snapshot %d", sequence );
@@ -4648,8 +4750,11 @@ void idMultiViewDemo::RunPlaybackFrame() {
 	if ( exporting ) {
 		// openQ4 MP-22: an export frame is 1000/fps of the match; the screenshot of
 		// the frame shown runs first in the next frame's command buffer
-		elapsed = exportStepMS;
+		elapsed = DemoExportStepMsec( exportSteps++, exportFps );
 		if ( playbackGameTime > header.startGameTime ) {
+			// this frame's sound mixes the picture's share of the track, so the
+			// track lasts exportFrames * 1000 / fps milliseconds
+			Sound_CaptureAdvance( DemoExportStepMsec( exportFrames, exportFps ) );
 			cmdSystem->BufferCommandText( CMD_EXEC_APPEND,
 				va( "screenshot \"%s/frame%05d.png\"\n", exportDirectory.c_str(), exportFrames++ ) );
 		}
@@ -4788,6 +4893,9 @@ idMultiViewDemo::QueryFileInfo
 ==================
 */
 bool idMultiViewDemo::QueryFileInfo( const char *name, mvdFileInfo_t &info ) {
+	if ( openq4_retail::IsRetailNetDemoName( name ) ) {
+		return QueryRetailFileInfo( name, info );
+	}
 	info = mvdFileInfo_t();
 	lastError.Clear();
 	const idStr path = BuildPlaybackName( name );
@@ -5090,7 +5198,7 @@ bool idMultiViewDemo::QueryFileInfo( const char *name, mvdFileInfo_t &info ) {
 		} else if ( record.type == MVD_RECORD_RELIABLE ) {
 			liveStreamStarted = true;
 			if ( info.clientView || !haveMapState || !haveNetworkState ||
-				 !MVD_ValidateReliablePayload( record.payload, record.version, lastError ) ) {
+				 !MVD_ValidateReliablePayload( record.payload, record.version, lastError, retailSource ) ) {
 				if ( lastError.IsEmpty() ) {
 					lastError = "MVD live stream began before initialization completed";
 				}
@@ -5187,6 +5295,21 @@ bool idMultiViewDemo::Inspect( const idCmdArgs &args ) {
 	if ( path.IsEmpty() ) {
 		common->Warning( "Unsafe or empty MVD path" );
 		return false;
+	}
+	if ( openq4_retail::IsRetailNetDemoName( path.c_str() ) ) {
+		// openQ4 MP-22: a retail network demo's container summary
+		mvdFileInfo_t info;
+		if ( !QueryRetailFileInfo( path.c_str(), info ) ) {
+			common->Warning( "Invalid network demo '%s': %s", path.c_str(), info.error.c_str() );
+			return false;
+		}
+		common->Printf( "Quake 4 network demo '%s'\n", path.c_str() );
+		common->Printf( "  version %u, protocol %u.%u, %s\n", info.formatMajor, info.protocolMajor, info.protocolMinor,
+			info.clientView ? va( "recorded by %s (their view only)", info.viewName.c_str() ) : "recorded by the server (every player)" );
+		common->Printf( "  map: %s, game type: %s, server: %s\n", info.mapName.c_str(), info.gameType.c_str(), info.serverName.c_str() );
+		common->Printf( "  duration: %.1f seconds, players: %s\n", info.durationMS / 1000.0f, info.players.c_str() );
+		common->Printf( "  playable: %s%s%s\n", info.compatible ? "yes" : "no", info.compatible ? "" : " - ", info.error.c_str() );
+		return info.compatible;
 	}
 	idFile *source = fileSystem->OpenFileRead( path.c_str(), true );
 	if ( source == NULL ) {
@@ -5519,6 +5642,29 @@ void idMultiViewDemo::Play_f( const idCmdArgs &args ) {
 	}
 }
 
+/*
+==================
+idMultiViewDemo::TimeDemo_f
+
+openQ4 MP-22: playNetTimeDemo, from the multiplayer game module as playNetDemo.
+==================
+*/
+void idMultiViewDemo::TimeDemo_f( const idCmdArgs &args ) {
+	if ( args.Argc() != 2 ) {
+		common->Printf( "usage: %s <demo>\n", args.Argv( 0 ) );
+		return;
+	}
+	if ( idStr::Icmp( cvarSystem->GetCVarString( "com_activeGameModule" ), "game_mp" ) != 0 ) {
+		cvarSystem->SetCVarString( "com_nextGameModule", "game_mp" );
+		idCmdArgs reloadArgs;
+		reloadArgs.AppendArg( "playNetTimeDemo" );
+		reloadArgs.AppendArg( args.Argv( 1 ) );
+		cmdSystem->SetupReloadGameModule( reloadArgs );
+		return;
+	}
+	idAsyncNetwork::multiViewDemo.StartTimeDemo( args.Argv( 1 ), false );
+}
+
 void idMultiViewDemo::Info_f( const idCmdArgs &args ) {
 	idAsyncNetwork::multiViewDemo.Inspect( args );
 }
@@ -5800,4 +5946,394 @@ void idMultiViewDemo::AutoTrack_f( const idCmdArgs &args ) {
 	}
 	const int mode = idMath::ClampInt( 0, 2, autoTrack->GetInteger() );
 	common->Printf( "MVD_AUTOTRACK mode=%s team=%s\n", modes[mode], autoTrackTeam->GetString() );
+}
+
+/*
+==================
+idMultiViewDemo::OpenRetailNetDemo
+
+openQ4 MP-22: a retail Quake 4 1.4.2 network demo. Every length in the file is
+checked and its packets decoded first (RetailNetDemo.cpp), then its events are
+written as this player's own records, in memory, and played from there: a
+client demo as a client-view recording, a server demo as a server-view one.
+The game module reads the recorded game data in the 1.4.2 layout, which the
+recording's protocol, 2.85, selects, and the recording's decl numbering is
+rebuilt from the paks it names.
+==================
+*/
+bool idMultiViewDemo::OpenRetailNetDemo() {
+	idFile *source = fileSystem->OpenFileRead( fileName.c_str(), true );
+	if ( source == NULL ) {
+		lastError = "file not found";
+		return false;
+	}
+	const int length = source->Length();
+	if ( length <= 0 || length > openq4_retail::NETDEMO_MAX_FILE_BYTES ) {
+		fileSystem->CloseFile( source );
+		lastError = "the file is empty or larger than any network demo openQ4 reads";
+		return false;
+	}
+	idList<byte> bytes;
+	bytes.SetNum( length );
+	const int read = source->Read( bytes.Ptr(), length );
+	fileSystem->CloseFile( source );
+	if ( read != length ) {
+		lastError = "could not read the network demo";
+		return false;
+	}
+
+	openq4_retail::retailNetDemo_t demo;
+	if ( !openq4_retail::ParseContainer( bytes.Ptr(), length, demo, lastError ) ) {
+		return false;
+	}
+	const int fps = demo.serverInfo.GetInt( "si_fps", "60" );
+	if ( fps != common->GetUserCmdHz() ) {
+		lastError = va( "recorded at %d game frames a second, and openQ4 runs %d", fps, common->GetUserCmdHz() );
+		return false;
+	}
+	idStr missing;
+	if ( openq4_retail::MissingPaks( demo, missing ) > 0 ) {
+		lastError = va( "recorded with paks this installation does not have: %s", missing.c_str() );
+		return false;
+	}
+	if ( !openq4_retail::Decode( bytes.Ptr(), length, demo, Max( 1, common->GetUserCmdMSec() ), lastError ) ) {
+		return false;
+	}
+
+	openq4_retail::BuildDeclRemap( demo );
+	retailEntityDefs = openq4_retail::RetailDeclCount( DECL_ENTITYDEF );
+	idFile_Memory stream( "retail network demo" );
+	if ( !BuildRetailStream( demo, stream ) ) {
+		openq4_retail::ClearDeclRemap();
+		return false;
+	}
+	retailStream.SetNum( stream.Length() );
+	memcpy( retailStream.Ptr(), stream.GetDataPtr(), stream.Length() );
+	file = new idFile_Memory( fileName.c_str(), reinterpret_cast<const char *>( retailStream.Ptr() ), retailStream.Num() );
+	retailSource = true;
+	common->Printf( "Read Quake 4 1.4.2 %s demo '%s': %d packets, %d snapshots, %d reliable messages%s%s\n",
+		demo.serverDemo ? "server" : "client", fileName.c_str(), static_cast<int>( demo.packets.size() ),
+		demo.snapshotCount, demo.reliableCount,
+		demo.droppedPackets > 0 ? va( ", %d packets the recording client dropped", demo.droppedPackets ) : "",
+		idStr::Icmp( demo.endReason, "complete" ) ? va( ", ending where %s", demo.endReason.c_str() ) : "" );
+	return true;
+}
+
+/*
+==================
+idMultiViewDemo::BuildRetailStream
+
+Writes a decoded retail demo as a format 1.3 recording: the header, metadata,
+map state and network state, then one record per event and the end record.
+==================
+*/
+bool idMultiViewDemo::BuildRetailStream( openq4_retail::retailNetDemo_t &demo, idFile_Memory &out ) {
+	idFile *const savedFile = file;
+	file = &out;
+	recordCount = 0;
+	auto finish = [&]( bool result ) {
+		file = savedFile;
+		recordCount = 0;
+		return result;
+	};
+
+	const bool server = demo.serverDemo;
+	int schemaMajor = 1;
+	int schemaMinor = 0;
+	game->GetMVDSchemaVersion( schemaMajor, schemaMinor );
+	header.formatMajor = MVD_FORMAT_MAJOR;
+	header.formatMinor = MVD_FORMAT_MINOR;
+	header.requiredFeatures = server ? MVD_SERVER_VIEW_REQUIRED_FEATURES : MVD_CLIENT_VIEW_REQUIRED_FEATURES;
+	header.optionalFeatures = MVD_OPTIONAL_CLEAN_END | MVD_OPTIONAL_USERINFO;
+	header.protocolMajor = static_cast<unsigned short>( demo.protocolMajor );
+	header.protocolMinor = static_cast<unsigned short>( demo.protocolMinor );
+	header.gameSchemaVersion = MVD_PackSchemaVersion( schemaMajor, schemaMinor );
+	header.usercmdHz = static_cast<unsigned int>( common->GetUserCmdHz() );
+	header.startGameFrame = demo.gameFrame;
+	header.startGameTime = demo.gameTime;
+	header.snapshotDelay = 0;
+	header.contentChecksum = static_cast<unsigned int>( declManager->GetChecksum() );
+	header.indexOffset = 0;
+	if ( !WriteHeader() ) {
+		return finish( false );
+	}
+
+	// metadata: what the library and the deck show
+	idDict metadata;
+	metadata.Set( "format", "Quake 4 1.4.2 network demo" );
+	metadata.Set( "engineVersion", demo.serverInfo.GetString( "si_version" ) );
+	metadata.Set( "map", demo.serverInfo.GetString( "si_map" ) );
+	metadata.Set( "gameType", demo.serverInfo.GetString( "si_gameType" ) );
+	metadata.Set( "serverName", demo.serverInfo.GetString( "si_name" ) );
+	if ( !server ) {
+		metadata.Set( "view", "client" );
+		metadata.SetInt( "viewClient", demo.clientNum );
+		metadata.Set( "viewName", demo.userInfo[ demo.clientNum ].GetString( "ui_name" ) );
+	}
+	idFile_Memory metadataPayload( "retail metadata" );
+	metadata.WriteToFileHandle( &metadataPayload );
+	if ( !WriteRecord( MVD_RECORD_METADATA, 1, 0, metadataPayload.GetDataPtr(), metadataPayload.Length(), false ) ) {
+		return finish( false );
+	}
+
+	// map state: the server info, the synced cvars openQ4 also synchronizes, the players
+	idDict serverInfo = demo.serverInfo;
+	serverInfo.Delete( "si_password" );
+	serverInfo.Delete( "password" );
+	idDict synced;
+	const idDict *networkSynced = cvarSystem->MoveCVarsToDict( CVAR_NETWORKSYNC );
+	for ( int i = 0; i < demo.syncedCVars.GetNumKeyVals(); i++ ) {
+		const idKeyValue *kv = demo.syncedCVars.GetKeyVal( i );
+		if ( kv != NULL && networkSynced != NULL && networkSynced->FindKey( kv->GetKey() ) != NULL ) {
+			synced.Set( kv->GetKey(), kv->GetValue() );
+		}
+	}
+	idFile_Memory mapState( "retail map state" );
+	mapState.WriteUnsignedInt( MAX_ASYNC_CLIENTS );
+	serverInfo.WriteToFileHandle( &mapState );
+	synced.WriteToFileHandle( &mapState );
+	for ( int i = 0; i < MAX_ASYNC_CLIENTS; i++ ) {
+		demo.userInfo[i].WriteToFileHandle( &mapState );
+	}
+	if ( !WriteRecord( MVD_RECORD_MAP_STATE, 1, MVD_RECORD_FLAG_REQUIRED, mapState.GetDataPtr(), mapState.Length(), false ) ) {
+		return finish( false );
+	}
+
+	// network state: a client demo's engine part first, then the game's bytes as 1.4.2 wrote them
+	const int ticMsec = Max( 1, common->GetUserCmdMSec() );
+	idFile_Memory networkState( "retail network state" );
+	if ( !server ) {
+		networkState.WriteUnsignedChar( static_cast<unsigned char>( demo.clientNum ) );
+		networkState.WriteInt( demo.snapshotSequence );
+		networkState.WriteInt( demo.snapshotGameFrame );
+		networkState.WriteInt( demo.snapshotGameTime );
+		networkState.WriteInt( demo.gameFrame );
+		networkState.WriteInt( demo.gameTime );
+		idList<byte> commands;
+		int count = 0;
+		for ( size_t i = 0; i < demo.initialUsercmds.size(); i++ ) {
+			const openq4_retail::retailUsercmd_t &retailCmd = demo.initialUsercmds[i];
+			if ( retailCmd.gameFrame < demo.snapshotGameFrame ||
+				 retailCmd.gameFrame >= demo.snapshotGameFrame + MAX_USERCMD_BACKUP ) {
+				continue;
+			}
+			usercmd_t cmd;
+			openq4_retail::ToUsercmd( retailCmd, cmd );
+			byte buffer[128];
+			idBitMsg msg;
+			msg.Init( buffer, sizeof( buffer ) );
+			idAsyncNetwork::WriteUserCmdDelta( msg, cmd, NULL );
+			const int start = commands.Num();
+			commands.SetNum( start + 7 + msg.GetSize() );
+			const int littleFrame = LittleLong( retailCmd.gameFrame );
+			memcpy( commands.Ptr() + start, &littleFrame, 4 );
+			commands[ start + 4 ] = static_cast<byte>( demo.initialUsercmdClients[i] );
+			commands[ start + 5 ] = static_cast<byte>( msg.GetSize() & 0xff );
+			commands[ start + 6 ] = static_cast<byte>( msg.GetSize() >> 8 );
+			memcpy( commands.Ptr() + start + 7, msg.GetData(), msg.GetSize() );
+			count++;
+		}
+		networkState.WriteInt( count );
+		if ( commands.Num() > 0 ) {
+			networkState.Write( commands.Ptr(), commands.Num() );
+		}
+	}
+	networkState.Write( demo.gameNetworkInfo.Ptr(), demo.gameNetworkInfo.Num() );
+	if ( !WriteRecord( MVD_RECORD_NETWORK_STATE, server ? 1 : MVD_NETWORK_STATE_CLIENT_VERSION, MVD_RECORD_FLAG_REQUIRED,
+			networkState.GetDataPtr(), networkState.Length(), false ) ) {
+		return finish( false );
+	}
+
+	// the events
+	const int headerBytes = 4 + 1 + 4 + 4 + 4 + 1 + 2;	// the snapshot's engine header
+	int snapshots = 0;
+	int reliables = 0;
+	int lastFrame = demo.gameFrame;
+	int lastTime = demo.gameTime;
+	for ( size_t e = 0; e < demo.events.size(); e++ ) {
+		const openq4_retail::retailEvent_t &event = demo.events[e];
+		const int frame = Max( lastFrame, event.frame );
+		const int time = Max( lastTime, event.time );
+		lastFrame = frame;
+		lastTime = time;
+		idFile_Memory payload( "retail event" );
+		payload.WriteInt( frame );
+		payload.WriteInt( time );
+		unsigned short type = 0;
+		switch ( event.type ) {
+			case openq4_retail::RETAIL_EVENT_SNAPSHOT:
+				if ( event.data.Num() < headerBytes ) {
+					lastError = "a decoded snapshot is shorter than its header";
+					return finish( false );
+				}
+				if ( server ) {
+					type = MVD_RECORD_SNAPSHOT;
+					payload.WriteInt( ++snapshots );
+					payload.Write( event.data.Ptr() + headerBytes, event.data.Num() - headerBytes );
+				} else {
+					// the client's frame, then the message with openQ4's command slack
+					// (none reported) after the 1.4.2 header
+					type = MVD_RECORD_CLIENT_SNAPSHOT;
+					payload.WriteInt( frame );
+					payload.Write( event.data.Ptr(), headerBytes );
+					const byte noSlack[2] = { 0xff, 0x7f };
+					payload.Write( noSlack, sizeof( noSlack ) );
+					payload.Write( event.data.Ptr() + headerBytes, event.data.Num() - headerBytes );
+					snapshots++;
+				}
+				break;
+			case openq4_retail::RETAIL_EVENT_GAME_RELIABLE:
+				if ( server ) {
+					// a server demo's game reliables begin with their route
+					if ( event.data.Num() < 3 ) {
+						continue;
+					}
+					type = MVD_RECORD_RELIABLE;
+					// 1.4.2 also routed each player's copy to the demo's own slot
+					// (32), which the game shows only to a free camera; its reader
+					// took any other client outside 0 to 31 as no client, as -1 is
+					const int routeClient = static_cast<signed char>( event.data[1] );
+					if ( routeClient < -1 || routeClient > MAX_ASYNC_CLIENTS ||
+						 ( routeClient == MAX_ASYNC_CLIENTS && event.data[0] != DEMO_RECORD_CLIENTNUM ) ) {
+						idList<byte> routed = event.data;
+						routed[1] = static_cast<byte>( -1 );
+						payload.Write( routed.Ptr(), routed.Num() );
+						reliables++;
+						break;
+					}
+				} else {
+					type = MVD_RECORD_CLIENT_RELIABLE;
+				}
+				payload.Write( event.data.Ptr(), event.data.Num() );
+				reliables++;
+				break;
+			case openq4_retail::RETAIL_EVENT_APPLY_SNAPSHOT:
+				if ( server ) {
+					continue;
+				}
+				type = MVD_RECORD_CLIENT_APPLY;
+				payload.WriteInt( event.sequence );
+				reliables++;
+				break;
+			case openq4_retail::RETAIL_EVENT_USERINFO:
+				if ( event.client < 0 || event.client >= MAX_ASYNC_CLIENTS ) {
+					continue;
+				}
+				type = MVD_RECORD_USERINFO;
+				payload.WriteUnsignedChar( static_cast<unsigned char>( event.client ) );
+				event.info.WriteToFileHandle( &payload );
+				break;
+			case openq4_retail::RETAIL_EVENT_USERCMD: {
+				if ( server ) {
+					continue;
+				}
+				type = MVD_RECORD_CLIENT_USERCMD;
+				usercmd_t cmd;
+				openq4_retail::ToUsercmd( event.cmd, cmd );
+				cmd.gameTime = event.cmd.gameFrame * ticMsec;
+				byte buffer[128];
+				idBitMsg msg;
+				msg.Init( buffer, sizeof( buffer ) );
+				idAsyncNetwork::WriteUserCmdDelta( msg, cmd, NULL );
+				payload.WriteInt( event.cmd.gameFrame );
+				payload.Write( msg.GetData(), msg.GetSize() );
+				break;
+			}
+			default:
+				continue;
+		}
+		if ( !WriteRecord( type, 1, 0, payload.GetDataPtr(), payload.Length(), false ) ) {
+			return finish( false );
+		}
+	}
+
+	idFile_Memory end( "retail end" );
+	end.WriteInt( Max( lastFrame, demo.endFrame ) );
+	end.WriteInt( Max( lastTime, demo.endTime ) );
+	end.WriteInt( snapshots );
+	end.WriteInt( reliables );
+	end.WriteInt( recordCount );
+	if ( !WriteRecord( MVD_RECORD_END, 1, 0, end.GetDataPtr(), end.Length(), false ) ) {
+		return finish( false );
+	}
+	return finish( true );
+}
+
+/*
+==================
+idMultiViewDemo::QueryRetailFileInfo
+
+The library's summary of a retail network demo, from its container alone.
+==================
+*/
+bool idMultiViewDemo::QueryRetailFileInfo( const char *name, mvdFileInfo_t &info ) {
+	info = mvdFileInfo_t();
+	info.retail = true;
+	const idStr path = BuildPlaybackName( name );
+	if ( path.IsEmpty() ) {
+		info.error = "unsafe or empty demo path";
+		return false;
+	}
+	idFile *source = fileSystem->OpenFileRead( path.c_str(), true );
+	if ( source == NULL ) {
+		info.error = "file not found";
+		return false;
+	}
+	info.fileSize = source->Length();
+	if ( info.fileSize <= 0 || info.fileSize > openq4_retail::NETDEMO_MAX_FILE_BYTES ) {
+		fileSystem->CloseFile( source );
+		info.error = "the file is empty or larger than any network demo openQ4 reads";
+		return false;
+	}
+	idList<byte> bytes;
+	bytes.SetNum( info.fileSize );
+	const int read = source->Read( bytes.Ptr(), info.fileSize );
+	fileSystem->CloseFile( source );
+	if ( read != info.fileSize ) {
+		info.error = "could not read the network demo";
+		return false;
+	}
+	openq4_retail::retailNetDemo_t demo;
+	demo.protocolMajor = 0;
+	demo.protocolMinor = 0;
+	if ( !openq4_retail::ParseContainer( bytes.Ptr(), info.fileSize, demo, info.error ) ) {
+		// the header still says which release recorded it
+		info.protocolMajor = static_cast<unsigned short>( Max( 0, demo.protocolMajor ) );
+		info.protocolMinor = static_cast<unsigned short>( Max( 0, demo.protocolMinor ) );
+		return false;
+	}
+	info.valid = true;
+	info.formatMajor = static_cast<unsigned short>( demo.version );
+	info.protocolMajor = static_cast<unsigned short>( demo.protocolMajor );
+	info.protocolMinor = static_cast<unsigned short>( demo.protocolMinor );
+	info.clientView = !demo.serverDemo;
+	info.cleanEnd = true;
+	info.durationMS = Max( 0, demo.packets.back().time - demo.packets.front().time );
+	info.mapName = demo.serverInfo.GetString( "si_map" );
+	info.gameType = demo.serverInfo.GetString( "si_gameType" );
+	info.serverName = demo.serverInfo.GetString( "si_name" );
+	if ( info.clientView ) {
+		info.viewName = demo.userInfo[ demo.clientNum ].GetString( "ui_name" );
+	}
+	for ( int i = 0; i < demo.playerSlots.Num(); i++ ) {
+		const char *player = demo.userInfo[ demo.playerSlots[i] ].GetString( "ui_name" );
+		if ( player[0] != '\0' ) {
+			if ( !info.players.IsEmpty() ) {
+				info.players += ", ";
+			}
+			info.players += player;
+		}
+	}
+	const int fps = demo.serverInfo.GetInt( "si_fps", "60" );
+	idStr missing;
+	if ( fps != common->GetUserCmdHz() ) {
+		info.error = va( "recorded at %d game frames a second", fps );
+	} else if ( openq4_retail::MissingPaks( demo, missing ) > 0 ) {
+		info.error = va( "needs paks this installation does not have: %s", missing.c_str() );
+	} else if ( !game->IsDemoProtocolCompatible( ASYNC_PROTOCOL_MINOR, demo.protocolMinor ) ) {
+		info.error = "the game module does not read Quake 4 1.4.2 game data";
+	} else {
+		info.compatible = true;
+	}
+	return true;
 }

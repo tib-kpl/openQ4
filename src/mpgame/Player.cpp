@@ -5158,7 +5158,7 @@ void idPlayer::DrawHUD( idUserInterface *_hud ) {
 	if ( vehicleController.IsDriving( ) ) {
 		if ( !gameDebug.IsHudActive( DBGHUD_ANY ) ) {
 			vehicleController.DrawHUD( );
-			if ( cursor && health > 0 ) {			
+			if ( cursor && health > 0 && weaponWheelBlend <= 0.01f ) {			
 				// mekberg: adjustable crosshair size.
 				int crossSize = cvarSystem->GetCVarInteger( "g_crosshairSize" );
 				crossSize = crossSize - crossSize % 8;
@@ -5220,8 +5220,9 @@ void idPlayer::DrawHUD( idUserInterface *_hud ) {
 			if ( weapon && weapon->GetZoomGui() && zoomed && !IsVRHandAiming() ) {
 				weapon->GetZoomGui()->Redraw( gameLocal.time );
 			}
-			// openQ4 VR: the weapon hand aims, so a screen-centre crosshair would lie
-			if ( cursor && health > 0 && !IsVRHandAiming() ) {
+			// openQ4 VR: the weapon hand aims, so a screen-centre crosshair would lie.
+			// The weapon wheel hides it, as it does over a vehicle's.
+			if ( cursor && health > 0 && !IsVRHandAiming() && weaponWheelBlend <= 0.01f ) {
 				// Pass the current weapon to the cursor gui for custom crosshairs
 				int crossSize = cvarSystem->GetCVarInteger( "g_crosshairSize" );
 				crossSize = crossSize - crossSize % 8;
@@ -5624,8 +5625,10 @@ bool idPlayer::Give( const char *statname, const char *value, bool dropped, bool
 		}
 		health = Min( health + atoi( value ), CLASSIC_HEALTH_CAP );
 	} else if ( !idStr::Icmp( statname, "armor_tier" ) ) {
-		// openQ4: Classic tiered armour
-		if ( !rvClassicRules::GiveArmor( this, value ) ) {
+		// openQ4: Classic tiered armour. Scout trades armour for speed, so its
+		// carrier takes none, as the stock armour above (boundaryArmor 0) and the
+		// buy menu already refuse it.
+		if ( PowerUpActive( POWERUP_SCOUT ) || !rvClassicRules::GiveArmor( this, value ) ) {
 			return false;
 		}
 	} else if ( !idStr::Icmp( statname, "bonushealth" ) ) {
@@ -5819,12 +5822,13 @@ float idPlayer::PowerUpModifier( int type ) {
 
 	if ( PowerUpActive( POWERUP_QUADDAMAGE ) ) {
 		switch( type ) {
+			// openQ4: the Classic ruleset's quad damage is Quake 2's, four times
 			case PMOD_PROJECTILE_DAMAGE: {
-				mod *= 3.0f;
+				mod *= gameLocal.IsClassicRuleset() ? 4.0f : 3.0f;
 				break;
 			}
 			case PMOD_MELEE_DAMAGE: {
-				mod *= 3.0f;
+				mod *= gameLocal.IsClassicRuleset() ? 4.0f : 3.0f;
 				break;
 			}
 			case PMOD_PROJECTILE_DEATHPUSH: {
@@ -6332,6 +6336,14 @@ void idPlayer::ClearPowerup( int i ) {
 
  	inventory.powerups &= ~( 1 << i );
 	inventory.powerupEndTime[ i ] = 0;
+
+	// openQ4: Classic drains only mega health, so the health Regeneration builds
+	// past the limit (up to twice it) stayed for good once the powerup ran out.
+	// It drains the way mega health's does, a point a second down to the limit.
+	if ( i == POWERUP_REGENERATION && gameLocal.isServer && gameLocal.IsClassicRuleset() &&
+		 health > inventory.maxHealth && !ClassicMegaHealthActive() ) {
+		classicMegaDecayTime = gameLocal.time + CLASSIC_MEGA_DECAY_PULSE;
+	}
 
 	//if the player doesn't have quad, regen, haste or invisibility remaining on him, remove the power up overlay.
 	if ( !( 
@@ -9146,6 +9158,7 @@ void idPlayer::UpdateFocus( void ) {
 			hud->SetStateInt( "hideInteractive", 0 );
 #endif
 
+			focusGuiPoint = start + ( end - start ) * pt.fraction;
 			SetFocus ( FOCUS_GUI, FOCUS_GUI_TIME, ent, ui );
 			break;
 		}
@@ -9725,6 +9738,10 @@ void idPlayer::UpdateViewAngles( void ) {
 	if ( ( weaponWheelActive || ( usercmd.buttons & ( BUTTON_WEAPONWHEEL | BUTTON_QUICKCHAT ) ) != 0 ) && !spectating && health > 0 &&
 		 !vrTrackedAim ) {
 		UpdateDeltaViewAngles( viewAngles );
+		// The gun's turning sway reads this ring by frame number. A held view
+		// that skipped it left the slots of the last 64 tics in place, and the
+		// raised gun under the wheel shook through that old turning history.
+		loggedViewAngles[ gameLocal.framenum & (NUM_LOGGED_VIEW_ANGLES-1) ] = viewAngles;
 		return;
 	}
 	int i;
@@ -9738,6 +9755,7 @@ void idPlayer::UpdateViewAngles( void ) {
 		if ( !vrTrackedAim ) {
 			UpdateDeltaViewAngles( viewAngles );
 		}
+		loggedViewAngles[ gameLocal.framenum & (NUM_LOGGED_VIEW_ANGLES-1) ] = viewAngles;
 		return;
 	}
 
@@ -9747,6 +9765,7 @@ void idPlayer::UpdateViewAngles( void ) {
 		if ( !vrTrackedAim ) {
 			UpdateDeltaViewAngles( viewAngles );
 		}
+		loggedViewAngles[ gameLocal.framenum & (NUM_LOGGED_VIEW_ANGLES-1) ] = viewAngles;
 		return;
 	}
 
@@ -10815,6 +10834,12 @@ idPlayer::PerformImpulse
 */
 void idPlayer::PerformImpulse( int impulse ) {
 
+	// openQ4: the weapon controls choose on an open weapon wheel, and nothing
+	// goes to the server until its release equips the choice.
+	if ( HandleWeaponWheelImpulse( impulse ) ) {
+		return;
+	}
+
 	if ( gameLocal.isClient ) {
 		idBitMsg	msg;
 		byte		msgBuf[MAX_EVENT_PARAM_SIZE];
@@ -11849,7 +11874,8 @@ void idPlayer::UpdateHud( void ) {
 
 	if ( gameLocal.isMultiplayer && initialJoinMenuPending ) {
 		initialJoinMenuPending = false;
-		if ( !cvarSystem->GetCVarBool( "ui_autoJoin" ) ) {
+		// openQ4 MP-22: a demo's recorded player has nothing to join
+		if ( !cvarSystem->GetCVarBool( "ui_autoJoin" ) && gameLocal.GetDemoState() != DEMO_PLAYING ) {
 			gameLocal.mpGame.ShowInitialJoinMenu();
 		}
 	}
@@ -16931,7 +16957,8 @@ void idPlayer::ReadFromSnapshot( const idBitMsgDelta &msg ) {
 	decodedDeltaViewAngles[2] = msg.ReadDeltaFloat( 0.0f );
 	decodedHealth = msg.ReadShort();
 	decodedArmor = msg.ReadByte();
-	if ( gameLocal.IsClassicRuleset() ) {
+	// openQ4 MP-22: Quake 4 1.4.2 had no classic ruleset fields
+	if ( gameLocal.IsClassicRuleset() && !gameLocal.RetailSnapshotFormat() ) {
 		decodedArmorTier = msg.ReadBits( CLASSIC_ARMOR_TIER_BITS );
 		decodedHookState = msg.ReadBits( CLASSIC_HOOK_STATE_BITS );
 		if ( decodedHookState == CLASSIC_HOOK_FLYING ) {
@@ -16951,7 +16978,12 @@ void idPlayer::ReadFromSnapshot( const idBitMsgDelta &msg ) {
 			msg.MarkReadOverflowed();
 		}
 	}
-	decodedLastDamageDef = msg.ReadBits( gameLocal.entityDefBits );
+	decodedLastDamageDef = gameLocal.NetworkDeclIndex( DECL_ENTITYDEF, msg.ReadBits( gameLocal.entityDefBits ) );
+	if ( decodedLastDamageDef < 0 || decodedLastDamageDef >= declManager->GetNumDecls( DECL_ENTITYDEF ) ) {
+		// openQ4 MP-22: no definition in a retail recording's numbering
+		msg.MarkReadOverflowed();
+		decodedLastDamageDef = 0;
+	}
 	decodedLastDamageDir = msg.ReadDir( 9 );
 	decodedLastDamageLocation = msg.ReadShort();
 	newIdealWeapon = msg.ReadBits( -idMath::BitsForInteger( MAX_WEAPONS ) );
@@ -16980,7 +17012,12 @@ void idPlayer::ReadFromSnapshot( const idBitMsgDelta &msg ) {
 	}
 	decodedInBuyZone = msg.ReadBits( 1 ) != 0;
 	decodedCash = msg.ReadLong();
-	ReadWeaponModsFromSnapshot( msg, decodedWeaponMods );
+	if ( gameLocal.RetailSnapshotFormat() ) {
+		// openQ4 MP-22: nor weapon mods
+		memcpy( decodedWeaponMods, inventory.weaponMods, sizeof( decodedWeaponMods ) );
+	} else {
+		ReadWeaponModsFromSnapshot( msg, decodedWeaponMods );
+	}
 	if ( msg.IsReadOverflowed() ) {
 		return;
 	}
@@ -17409,7 +17446,8 @@ void idPlayer::ReadPlayerStateFromSnapshot( const idBitMsgDelta &msg ) {
 
 	inventory.weapons = msg.ReadShort();
 	inventory.armor = msg.ReadByte();
-	inventory.powerups = msg.ReadBits( POWERUP_MAX );
+	// openQ4 MP-22: Quake 4 1.4.2 had sixteen powerups, sent in a short
+	inventory.powerups = msg.ReadBits( gameLocal.RetailSnapshotFormat() ? 16 : POWERUP_MAX );
 
 	for( i = 0; i < MAX_AMMO; i++ ) {
  		ammo = msg.ReadBits( ASYNC_PLAYER_INV_AMMO_BITS );
@@ -17422,7 +17460,8 @@ void idPlayer::ReadPlayerStateFromSnapshot( const idBitMsgDelta &msg ) {
  		}
 	}
 
-	int powerup_max = POWERUP_MAX;
+	// openQ4 MP-22: Quake 4 1.4.2 sent the end times of its sixteen powerups
+	int powerup_max = gameLocal.RetailSnapshotFormat() ? 16 : POWERUP_MAX;
 	for ( i = 0; i < powerup_max; i ++ ) {
 		inventory.powerupEndTime[ i ] = msg.ReadLong();
 	}

@@ -12,6 +12,9 @@ openQ4 records and plays back two main kinds of demo:
 - **Your own view of a match**, recorded on any server you join, is a `.mvd`
   file too (**after 0.15.0**). It holds what you saw, so it plays back from
   your point of view only.
+- **Quake 4 1.4.2 network demos** (`.ndmo85` files), recorded by the original
+  game, play too (**after 0.15.0**). See
+  [Watch a Quake 4 1.4.2 network demo](#watch-a-quake-4-142-network-demo).
 
 Both appear in the **Demos** library, with the controls each format supports.
 
@@ -88,6 +91,35 @@ Use the **Auto-Track** button, or `demoAutoTrack killer`, `demoAutoTrack action`
 or `demoAutoTrack off`. Add `marine` or `strogg` to watch one team only.
 Choosing a player yourself, or pressing attack or jump, hands the camera back to
 you.
+
+### Watch a Quake 4 1.4.2 network demo
+
+> **After 0.15.0.** This describes the development build.
+
+The original Quake 4 records multiplayer demos with `recordNetDemo`. Version
+1.4.2 names them by network protocol, so its files end in `.ndmo85`, and it
+installs two of its own in `q4mp/demos`: `id_perftest.ndmo85` (one player's
+view of a match on Over The Edge) and `id_serverdemo.ndmo85` (the server's
+recording of the same match).
+
+Copy a `.ndmo85` file into the `demos/` folder in your openQ4 save path. It then
+appears in **Demos**, with its map, length and players, and plays with **Play**.
+You can also enter `playNetDemo id_perftest.ndmo85` in the console.
+
+- A demo a player recorded shows that player's view, with their HUD and the
+  match as they saw it. You can pause, change speed, step frames and seek;
+  seeking back replays the demo from the start.
+- A demo a server recorded starts on the free camera. Follow any player or fly
+  around the match, as in a multi-view demo.
+- `playNetTimeDemo id_perftest.ndmo85`, or `timeDemo id_perftest.ndmo85`, plays
+  one as a benchmark (see [Time a demo](#time-a-demo)).
+
+A network demo plays when it was recorded at 60 game frames a second (the
+standard setting) and your Quake 4 installation has the game data it was
+recorded with; a full installation does. Otherwise the library says why it
+cannot play. Demos from Quake 4 releases before 1.4.2 (`.netdemo` files) use an
+older layout: the library lists them as **Legacy** and does not play them. A
+damaged file is refused, with the reason in the console, and never stops openQ4.
 
 ### Playback console commands
 
@@ -204,6 +236,7 @@ file is.
 
 The familiar Quake 4 commands `recordNetDemo`, `stopNetDemo` and `playNetDemo`
 use this system too. Their files are `.mvd`, not the old `.netdemo` format.
+**After 0.15.0**, `playNetDemo` also plays a Quake 4 1.4.2 `.ndmo85` file.
 
 ### Record your view on any server
 
@@ -270,7 +303,20 @@ to the display's rate.
 own view, as one PNG picture every thirtieth of a second of the match, in
 `exports/match_name/` in your save path (`frame00000.png` on); add `quit` to
 quit afterwards. Any video editor or encoder turns the pictures into a video.
-Sound is not exported yet.
+
+The sound comes with it: `exports/match_name/match_name.wav` is the match as
+you would have heard it, at your sound device's rate and in its speaker layout
+(stereo, or 5.1 and so on), and exactly as long as the pictures. Nothing plays
+through your speakers while the export runs; your sound device comes back when
+it ends. To make a video with `ffmpeg`:
+
+```text
+ffmpeg -framerate 30 -i frame%05d.png -i match_name.wav -c:v libx264 -pix_fmt yuv420p -c:a aac match_name.mp4
+```
+
+Use the same number for `-framerate` as you gave `demoExport`. The sound track
+needs sound to be on (`s_noSound 0`); otherwise, or if your sound library cannot
+mix into a file, the console says why and only the pictures are written.
 
 ### Add markers and notes
 
@@ -308,8 +354,9 @@ recording with no complete snapshot cannot be recovered.
 | openQ4 MVD `.mvd` 1.0–1.2 | Supported, from game versions openQ4 still recognises | Pause, speed, step, and replay-based seek (replays from the start) | Free camera over the whole match, player follow and auto-tracking |
 | openQ4 `.mvd` of one player's view (after 0.15.0) | Supported | Pause, speed, step, and replay-based seek (replays from the start) | The recorder's view only |
 | openQ4 render `.demo`, including campaign demos | Supported | Pause, speed, step, level markers, and fast seeking from the nearest keyframe (older recordings replay from the start) | The recorded view only |
-| Retail Quake 4 render `.demo` | Not supported yet | None | None |
-| Retail Quake 4 `.netdemo` | Not supported yet | None | None |
+| Retail Quake 4 render `.demo` (after 0.15.0) | Supported | Pause, speed, step, and replay-based seek (replays from the start) | The recorded view only |
+| Quake 4 1.4.2 network demo `.ndmo85` (after 0.15.0) | Supported | Pause, speed, step, and replay-based seek (replays from the start) | A player's recording: their view only. A server's recording: free camera and player follow |
+| Retail Quake 4 `.netdemo`, before 1.4.2 | Not supported | None | None |
 | Command `.cdemo` | Developer use only | Play and stop only | Whatever the recording did |
 | `.mvd.part`, `.part`, `.ucmd` | Incomplete and not playable (`mvdRecover` can save an interrupted `.mvd.part`) | None | None |
 
@@ -332,7 +379,18 @@ of the file is damaged, playback skips ahead to the next keyframe or level,
 at most ten seconds later, tells you in the console how much was lost, and
 carries on to the end.
 
-**Retail Quake 4** `.demo` and `.netdemo` files use different formats. The
+**Retail Quake 4 render demos** (after 0.15.0): a `.demo` recorded with the
+original game's `recordDemo` plays like any other render demo. Put it in the
+`demos/` folder of your save path; the library lists it as **Retail Quake 4
+render demo** with its level, and `playDemo name` plays it from the console.
+It shows the view, the HUD, the screens in the world, the effects and the sound
+the original game recorded, with your openQ4 graphics settings. It needs the
+same Quake 4 game files as the recording: a demo of a level or effect your
+installation does not have stops with a message. A damaged file stops with a
+warning in the console and returns to the menu. Seeking replays the demo from
+its start.
+
+**Quake 4 `.netdemo` files from before 1.4.2** use a different format. The
 library marks them as **Legacy** and keeps **Play** unavailable rather than
 risk playing them wrongly.
 

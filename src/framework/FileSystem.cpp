@@ -1569,6 +1569,7 @@ public:
 	virtual fsFileOrigin_t	GetFileOrigin( const char *relativePath );
 	bool					IsShippedPack( const pack_t *pak ) const;
 	void					ListLoadedPacks( idStrList &entries ) const;	// FS_ListLoadedPacks
+	bool					FilePack( const char *relativePath, int &checksum, idStr &gameDir );	// FS_FilePack
 	virtual idFile *		GetNewFileMemory( void );
 	virtual idFile *		GetNewFilePermanent( void );
 	virtual idFile *		OpenFileReadFlags( const char *relativePath, int searchFlags, pack_t **foundInPak = NULL, bool allowCopyFiles = true, const char* gamedir = NULL );
@@ -1774,6 +1775,7 @@ idCVar	idFileSystemLocal::fs_searchAddons( "fs_searchAddons", "0", CVAR_SYSTEM |
 idCVar	idFileSystemLocal::fs_validateOfficialPaks( "fs_validateOfficialPaks", "1", CVAR_SYSTEM | CVAR_INIT | CVAR_BOOL, "verify required official q4base media pk4 checksums on startup" );
 idCVar	idFileSystemLocal::fs_cacheVerifiedPaks( "fs_cacheVerifiedPaks", "1", CVAR_SYSTEM | CVAR_INIT | CVAR_BOOL, "skip re-hashing an openQ4 runtime pack whose size, times, file id and zip directory are unchanged since it passed its checksum check; 0 hashes every pack at every startup" );
 idCVar	idFileSystemLocal::fs_cacheLooseDirectories( "fs_cacheLooseDirectories", "1", CVAR_SYSTEM | CVAR_BOOL, "during a level load, remember which loose search-path directories do not exist, so a lookup skips them instead of failing an open in each (case-insensitive filesystems only)" );
+static idCVar fs_reusePackHandles( "fs_reusePackHandles", "1", CVAR_SYSTEM | CVAR_BOOL, "reuse idle read handles of a pk4 instead of opening the pack file again for every member read" );
 
 idFileSystemLocal	fileSystemLocal;
 idFileSystem *		fileSystem = &fileSystemLocal;
@@ -2357,12 +2359,32 @@ void idFileSystemLocal::CreateOSPath( const char *OSPath ) {
 	}
 
 	idStr path( OSPath );
+
+	// Usually the file's directory already exists. One stat of it then answers
+	// for every component, instead of a mkdir per component for every file
+	// written (a dozen for a generated cache). The check is made each time, so
+	// a directory removed while the engine runs is still recreated.
+	char *lastSeparator = NULL;
 	for( ofs = &path[ 1 ]; *ofs ; ofs++ ) {
-		if ( *ofs == PATHSEPERATOR_CHAR ) {	
-			// create the directory
-			*ofs = 0;
-			Sys_Mkdir( path );
-			*ofs = PATHSEPERATOR_CHAR;
+		if ( *ofs == PATHSEPERATOR_CHAR ) {
+			lastSeparator = ofs;
+		}
+	}
+	bool directoryExists = true;
+	if ( lastSeparator != NULL ) {
+		*lastSeparator = 0;
+		directoryExists = FS_IsOSDirectory( path );
+		*lastSeparator = PATHSEPERATOR_CHAR;
+	}
+
+	if ( !directoryExists ) {
+		for( ofs = &path[ 1 ]; *ofs ; ofs++ ) {
+			if ( *ofs == PATHSEPERATOR_CHAR ) {
+				// create the directory
+				*ofs = 0;
+				Sys_Mkdir( path );
+				*ofs = PATHSEPERATOR_CHAR;
+			}
 		}
 	}
 
@@ -5694,6 +5716,9 @@ void idFileSystemLocal::FreePack( pack_t *pack ) const {
 	}
 
 	if ( pack->handle ) {
+		// idle member-read handles of this pack, and any a reader still holds,
+		// must not be handed to the next pack opened at the same path
+		unzReleaseIdleHandles( pack->pakFilename );
 		unzClose( pack->handle );
 	}
 
@@ -6330,6 +6355,10 @@ void idFileSystemLocal::ListLoadedPacks( idStrList &entries ) const {
 
 void FS_ListLoadedPacks( idStrList &entries ) {
 	fileSystemLocal.ListLoadedPacks( entries );
+}
+
+bool FS_FilePack( const char *relativePath, int &checksum, idStr &gameDir ) {
+	return fileSystemLocal.FilePack( relativePath, checksum, gameDir );
 }
 
 void FS_RaiseDeferredContentPackFailure( void ) {
@@ -7349,6 +7378,41 @@ fsFileOrigin_t idFileSystemLocal::GetFileOrigin( const char *relativePath ) {
 
 /*
 =====================
+idFileSystemLocal::FilePack
+
+openQ4 MP-22: the checksum and game directory of the pak a read of relativePath
+would come from, without reading it or marking the pak referenced; loose copies
+are passed over. False when no pak holds it. A retail network demo numbers only
+the decls of Quake 4's own paks.
+=====================
+*/
+bool idFileSystemLocal::FilePack( const char *relativePath, int &checksum, idStr &gameDir ) {
+	checksum = 0;
+	gameDir.Clear();
+	if ( !searchPaths || relativePath == NULL || relativePath[0] == '\0' ) {
+		return false;
+	}
+	pack_t *pak = NULL;
+	packMemberProbe_t probe;
+	idFile *loose = OpenFileReadSearch( relativePath, FSFLAG_SEARCH_PAKS | FSFLAG_PURE_NOREF, &pak, false, NULL, &probe );
+	if ( loose != NULL ) {
+		CloseFile( loose );
+		return false;
+	}
+	if ( !probe.found || pak == NULL ) {
+		return false;
+	}
+	checksum = pak->checksum;
+	idStr directory = pak->pakFilename;
+	directory.BackSlashesToSlashes();
+	directory.StripFilename();
+	directory.StripTrailing( '/' );
+	directory.ExtractFileName( gameDir );
+	return true;
+}
+
+/*
+=====================
 idFileSystemLocal::GetPureServerChecksums
 =====================
 */
@@ -7867,7 +7931,8 @@ idFile_InZip * idFileSystemLocal::ReadFileFromZip( pack_t *pak, fileInPack_t *pa
 	FILE *			fp;
 	idFile_InZip *file = new idFile_InZip();
 
-	// open a new file on the pakfile
+	// open a new file on the pakfile (or take an idle handle of the same pack)
+	unzSetHandleReuse( fs_reusePackHandles.GetBool() );
 	file->z = unzReOpen( pak->pakFilename, pak->handle );
 	if ( file->z == NULL ) {
 		common->FatalError( "Couldn't reopen %s", pak->pakFilename.c_str() );

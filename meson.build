@@ -232,6 +232,13 @@ foreach version_line : version_metadata_result.stdout().strip().split('\n')
   endif
 endforeach
 
+# A tree without git history (GitHub's "Download ZIP", an exported tree) has no
+# commit count, so it builds as build 0. Its saves load only in that same build.
+if openq4_commit_count == '0'
+  warning('No git history found: this build is numbered 0. Its savegames load only in this exact build. ' +
+    'Clone the repository with git (full history) for a numbered build.')
+endif
+
 build_engine = get_option('build_engine')
 build_games = get_option('build_games')
 build_game_sp = get_option('build_game_sp')
@@ -993,6 +1000,7 @@ if get_option('build_native_tests')
     files(
       'tools/tests/native/LevelLoadCacheFormatTest.cpp',
       'src/framework/LevelLoadCacheFormat.cpp',
+      'src/idlib/CryptoHash.cpp',
     ),
     include_directories: root_include_dir,
     install: false,
@@ -1100,6 +1108,18 @@ if get_option('build_native_tests')
     timeout: 30,
   )
 
+  openq4_depth_of_field_core_test = executable(
+    'openq4-depth-of-field-core-test',
+    files('tools/tests/native/DepthOfFieldCoreTest.cpp'),
+    include_directories: root_include_dir,
+    install: false,
+  )
+  test(
+    'openq4-depth-of-field-core',
+    openq4_depth_of_field_core_test,
+    timeout: 30,
+  )
+
   openq4_renderer_contracts_test = executable(
     'openq4-renderer-contracts-test',
     files(
@@ -1180,6 +1200,14 @@ if get_option('build_native_tests')
     install: false,
   )
   test('openq4-sound-memory-trim', openq4_sound_memory_trim_test, timeout: 30)
+
+  openq4_sound_capture_test = executable(
+    'openq4-sound-capture-test',
+    files('tools/tests/native/SoundCaptureTest.cpp'),
+    include_directories: root_include_dir,
+    install: false,
+  )
+  test('openq4-sound-capture', openq4_sound_capture_test, timeout: 30)
 
   openq4_voice_packet_test = executable(
     'openq4-voice-packet-test',
@@ -2454,6 +2482,7 @@ endif
 glew_dep = disabler()
 glew_dedicated_dep = disabler()
 stb_vorbis_dep = disabler()
+zlibng_dep = disabler()
 openal_dep = disabler()
 sdl3_dep = disabler()
 macos_graphics_bridge_dep = disabler()
@@ -2485,6 +2514,17 @@ if build_engine
   # openQ4's VFS callback entry point keeps compressed streams bounded without
   # extracting PK4 members. A system copy does not contain that small extension.
   stb_vorbis_dep = subproject('stb_vorbis', default_options: fallback_opt).get_variable('stb_vorbis_dep')
+
+  # PK4 members inflate through zlib-ng's native zng_* API, so it cannot clash
+  # with a system zlib that another dependency brings in. The pinned wrap is
+  # always built and linked statically: a system zlib-ng is usually a shared
+  # library, which would add a runtime file to every package and a DT_NEEDED
+  # entry the dedicated-server allowlist rejects. zlib-ng picks its SIMD
+  # inflate and CRC-32 paths at run time on x64 and ARM64.
+  zlibng_dep = subproject(
+    'zlib-ng',
+    default_options: fallback_opt + ['tests=disabled', 'gzfileop=false', 'zlib-compat=false'],
+  ).get_variable('zlib_ng_dep')
 
   if host_system == 'android'
     if android_deps_root == ''
@@ -2612,7 +2652,7 @@ if build_engine
     endif
   endif
 
-  deps = [glew_dep, openal_dep, stb_vorbis_dep]
+  deps = [glew_dep, openal_dep, stb_vorbis_dep, zlibng_dep]
 
   if host_system == 'windows'
     windows_shell_dep = cc.find_library('shell32', required: true)
@@ -2696,7 +2736,7 @@ if renderer_module_only_client
     compile_args: true,
     includes: true,
   )
-  client_deps = [glew_headers_dep, openal_dep, stb_vorbis_dep]
+  client_deps = [glew_headers_dep, openal_dep, stb_vorbis_dep, zlibng_dep]
   if host_system == 'windows'
     client_deps += [
       cc.find_library('Dbghelp', required: true),
@@ -2911,6 +2951,7 @@ if windows_gl_free_ded
     glew_dedicated_dep,
     openal_dep,
     stb_vorbis_dep,
+    zlibng_dep,
     cc.find_library('Dbghelp', required: true),
     cc.find_library('bcrypt', required: true),
     cc.find_library('Iphlpapi', required: true),
@@ -2922,7 +2963,7 @@ if windows_gl_free_ded
   ]
 endif
 if build_engine and host_system == 'linux'
-  # Keep compile-time OpenAL declarations and the static GLEW/vorbis code used
+  # Keep compile-time OpenAL declarations and the static GLEW/vorbis/zlib-ng code used
   # by the common engine sources, but give the dedicated target no client-side
   # audio, graphics, window-system, or SDL link dependency.
   openal_headers_dep = openal_dep.partial_dependency(
@@ -2933,6 +2974,7 @@ if build_engine and host_system == 'linux'
     glew_dedicated_dep,
     openal_headers_dep,
     stb_vorbis_dep,
+    zlibng_dep,
     dependency('threads', required: true),
     cc.find_library('dl', required: true),
   ]
@@ -4037,6 +4079,7 @@ install_data('LICENSES/KHRONOS-GLES-MIT.txt', install_dir: install_root_dir / 'l
 install_data('LICENSES/RmlUi.txt', install_dir: install_root_dir / 'licenses')
 install_data('LICENSES/JsonCpp.txt', install_dir: install_root_dir / 'licenses')
 install_data('LICENSES/libtess2.txt', install_dir: install_root_dir / 'licenses')
+install_data('LICENSES/zlib-ng.txt', install_dir: install_root_dir / 'licenses')
 install_data('LICENSES/MD4.txt', install_dir: install_root_dir / 'licenses')
 if build_openxr
   # the client links the Khronos OpenXR loader statically

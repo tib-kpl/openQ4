@@ -47,6 +47,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "RendererMetrics.h"
 #include "ScenePackets.h"
 #include "MotionBlurCore.h"
+#include "DepthOfFieldCore.h"
 #include "ARBHeatHazeDepthReject.h"
 
 #ifndef GL_FRAMEBUFFER_SRGB
@@ -4759,6 +4760,268 @@ static void RB_STD_MotionBlur( void ) {
 	}
 }
 
+/*
+=====================
+Depth of field
+
+The r_dof camera (cheat cvars, for promotional captures) and the game's
+request (the weapon wheel's focus on the view weapon); DepthOfField.cpp
+resolves both into one depthOfFieldSettings_t and DepthOfFieldCore.h packs
+the uniform block that glprogs/dof.fs reads. Runs before motion blur and
+bloom, on the main scene view only, so the HUD and menus stay sharp. The
+Vulkan port is VK_Post_DepthOfField in Vulkan/vk_PostProcess.cpp.
+=====================
+*/
+enum rbDofTarget_t {
+	RB_DOF_FOCUS0 = 0,
+	RB_DOF_FOCUS1,
+	RB_DOF_PREFILTER,
+	RB_DOF_TILES,
+	RB_DOF_TILES_DILATED,
+	RB_DOF_GATHER,
+	RB_DOF_POSTFILTER,
+	RB_DOF_TARGET_COUNT
+};
+
+static const char *const rbDofTargetNames[RB_DOF_TARGET_COUNT] = {
+	"_dofFocus0", "_dofFocus1", "_dofPrefilter", "_dofTiles", "_dofTilesDilated", "_dofGather", "_dofPostfilter"
+};
+
+static newShaderStage_t rbDofStage;
+static bool rbDofStageInitialized = false;
+static idImage *rbDofImages[RB_DOF_TARGET_COUNT];
+static idRenderTexture *rbDofRenderTextures[RB_DOF_TARGET_COUNT];
+static int rbDofFocusCurrent = RB_DOF_FOCUS0;
+static bool rbDofFocusValid = false;
+static int rbDofFocusMsec = 0;
+static const idRenderWorldLocal *rbDofFocusWorld = NULL;
+static int rbDofFocusVideoRestart = -1;
+
+static void RB_InitDepthOfFieldStage( void ) {
+	if ( rbDofStageInitialized ) {
+		return;
+	}
+	memset( &rbDofStage, 0, sizeof( rbDofStage ) );
+	rbDofStage.glslProgram = true;
+	idStr::Copynz( rbDofStage.glslProgramName, "dof.fs", sizeof( rbDofStage.glslProgramName ) );
+	rbDofStage.numShaderParms = 1;
+	idStr::Copynz( rbDofStage.shaderParmNames[0], "dofParams", sizeof( rbDofStage.shaderParmNames[0] ) );
+	rbDofStage.shaderParmNumRegisters[0] = 4;
+	static const char *const textures[4] = { "Scene", "DepthBuffer", "AuxA", "AuxB" };
+	rbDofStage.numShaderTextures = 4;
+	for ( int i = 0; i < 4; i++ ) {
+		idStr::Copynz( rbDofStage.shaderTextureNames[i], textures[i], sizeof( rbDofStage.shaderTextureNames[i] ) );
+	}
+	rbDofStageInitialized = true;
+}
+
+/*
+=====================
+RB_DepthOfFieldAvailable
+
+Whether this back end can draw the depth of field at all; the game asks so
+the weapon wheel can keep its own soft focus when it cannot.
+=====================
+*/
+bool RB_DepthOfFieldAvailable( void ) {
+	if ( r_skipPostProcess.GetBool() || !glConfig.GLSLProgramAvailable ) {
+		return false;
+	}
+	RB_InitDepthOfFieldStage();
+	return R_ValidateGLSLProgram( &rbDofStage );
+}
+
+static void RB_ForgetDepthOfFieldFocus( void ) {
+	rbDofFocusValid = false;
+	rbDofFocusMsec = 0;
+}
+
+static bool RB_EnsureDepthOfFieldTarget( int index, int width, int height ) {
+	idImageOpts opts;
+	opts.textureType = TT_2D;
+	opts.format = FMT_RGBA16F;
+	opts.width = Max( 1, width );
+	opts.height = Max( 1, height );
+	opts.numLevels = 1;
+	opts.isPersistant = true;
+	rbDofImages[index] = globalImages->ScratchImage( rbDofTargetNames[index], &opts, TF_LINEAR, TR_CLAMP, TD_DEFAULT );
+	if ( rbDofImages[index] == NULL ) {
+		return false;
+	}
+	if ( rbDofRenderTextures[index] == NULL ) {
+		rbDofRenderTextures[index] = tr.CreateRenderTexture( rbDofImages[index], NULL );
+	} else if ( rbDofRenderTextures[index]->GetWidth() != opts.width || rbDofRenderTextures[index]->GetHeight() != opts.height ) {
+		tr.ResizeRenderTexture( rbDofRenderTextures[index], opts.width, opts.height );
+	}
+	return rbDofRenderTextures[index] != NULL;
+}
+
+static void RB_BindDepthOfFieldProgram( const depthOfFieldBlock_t &block, idImage *primary, idImage *depth,
+		idImage *auxA, idImage *auxB ) {
+	idImage *const inputs[4] = { primary, depth, auxA, auxB };
+	for ( int i = 3; i >= 0; i-- ) {
+		GL_SelectTexture( i );
+		( inputs[i] != NULL ? inputs[i] : globalImages->blackImage )->Bind();
+	}
+	glUseProgramObjectARB( (GLhandleARB)rbDofStage.glslProgramObject );
+	for ( int i = 0; i < rbDofStage.numShaderTextures; i++ ) {
+		if ( rbDofStage.shaderTextureLocations[i] >= 0 ) {
+			glUniform1iARB( rbDofStage.shaderTextureLocations[i], i );
+		}
+	}
+	if ( rbDofStage.shaderParmLocations[0] >= 0 ) {
+		glUniform4fvARB( rbDofStage.shaderParmLocations[0], DOF_BLOCK_VECTORS, &block.v[0][0] );
+	}
+}
+
+static void RB_UnbindDepthOfFieldProgram( void ) {
+	glUseProgramObjectARB( 0 );
+	for ( int i = 3; i >= 0; i-- ) {
+		GL_SelectTexture( i );
+		globalImages->BindNull();
+	}
+}
+
+static void RB_DrawDepthOfFieldPass( int targetIndex, const depthOfFieldBlock_t &block, idImage *primary,
+		idImage *depth, idImage *auxA, idImage *auxB ) {
+	idRenderTexture *target = rbDofRenderTextures[targetIndex];
+	const int width = target->GetWidth();
+	const int height = target->GetHeight();
+	RB_BindPostProcessRenderTexture( target, width, height );
+	RB_BeginFullscreenPostProcessPass( 0, 0, width, height );
+	RB_BindDepthOfFieldProgram( block, primary, depth, auxA, auxB );
+	RB_DrawFullscreenPostProcessQuadUnitUV();
+	RB_UnbindDepthOfFieldProgram();
+	RB_EndFullscreenPostProcessPass();
+}
+
+static void RB_STD_DepthOfField( void ) {
+	if ( !RB_IsMainScenePostProcessView() ) {
+		return;
+	}
+	const int viewportWidth = backEnd.viewDef->viewport.x2 - backEnd.viewDef->viewport.x1 + 1;
+	const int viewportHeight = backEnd.viewDef->viewport.y2 - backEnd.viewDef->viewport.y1 + 1;
+	depthOfFieldSettings_t settings;
+	if ( !R_DepthOfField_ResolveView( backEnd.viewDef, viewportWidth, viewportHeight, settings ) ) {
+		RB_ForgetDepthOfFieldFocus();
+		return;
+	}
+	if ( !RB_DepthOfFieldAvailable() ) {
+		static bool warned = false;
+		if ( !warned ) {
+			warned = true;
+			common->Warning( "OpenGL: the depth of field program is unavailable" );
+		}
+		return;
+	}
+	idImage *sceneImage = globalImages->currentRenderImage;
+	idImage *depthImage = globalImages->currentDepthImage;
+	if ( sceneImage == NULL || depthImage == NULL ) {
+		return;
+	}
+	const bool targetsReady =
+		RB_EnsureDepthOfFieldTarget( RB_DOF_FOCUS0, 1, 1 )
+		&& RB_EnsureDepthOfFieldTarget( RB_DOF_FOCUS1, 1, 1 )
+		&& RB_EnsureDepthOfFieldTarget( RB_DOF_PREFILTER, settings.gatherWidth, settings.gatherHeight )
+		&& RB_EnsureDepthOfFieldTarget( RB_DOF_TILES, settings.tileWidth, settings.tileHeight )
+		&& RB_EnsureDepthOfFieldTarget( RB_DOF_TILES_DILATED, settings.tileWidth, settings.tileHeight )
+		&& RB_EnsureDepthOfFieldTarget( RB_DOF_GATHER, settings.gatherWidth, settings.gatherHeight )
+		&& RB_EnsureDepthOfFieldTarget( RB_DOF_POSTFILTER, settings.gatherWidth, settings.gatherHeight );
+	if ( !targetsReady ) {
+		return;
+	}
+
+	RB_LogComment( "---------- RB_STD_DepthOfField ----------\n" );
+	RB_CaptureCurrentRenderImage( viewportWidth, viewportHeight );
+	if ( !backEnd.currentDepthCopied ) {
+		RB_CaptureCurrentDepthImage( viewportWidth, viewportHeight );
+	}
+	const int sceneTextureWidth = sceneImage->GetOpts().width;
+	const int sceneTextureHeight = sceneImage->GetOpts().height;
+	const int depthTextureWidth = depthImage->GetOpts().width;
+	const int depthTextureHeight = depthImage->GetOpts().height;
+	if ( sceneTextureWidth <= 0 || sceneTextureHeight <= 0 || depthTextureWidth <= 0 || depthTextureHeight <= 0 ) {
+		return;
+	}
+	const float sceneUVScale[2] = {
+		static_cast<float>( viewportWidth ) / static_cast<float>( sceneTextureWidth ),
+		static_cast<float>( viewportHeight ) / static_cast<float>( sceneTextureHeight )
+	};
+	const float depthUVScale[2] = {
+		static_cast<float>( viewportWidth ) / static_cast<float>( depthTextureWidth ),
+		static_cast<float>( viewportHeight ) / static_cast<float>( depthTextureHeight )
+	};
+	const float depthProjection[2] = {
+		backEnd.viewDef->projectionMatrix[10],
+		backEnd.viewDef->projectionMatrix[14]
+	};
+
+	// The autofocus history belongs to one world and one GL context.
+	if ( rbDofFocusWorld != backEnd.viewDef->renderWorld || rbDofFocusVideoRestart != tr.videoRestartCount ) {
+		RB_ForgetDepthOfFieldFocus();
+		rbDofFocusWorld = backEnd.viewDef->renderWorld;
+		rbDofFocusVideoRestart = tr.videoRestartCount;
+	}
+
+	idRenderTexture *originalRenderTexture = backEnd.renderTexture;
+	depthOfFieldBlock_t block;
+	idImage *focusImage = NULL;
+	if ( settings.autoFocus ) {
+		const float elapsed = R_DepthOfField_FocusElapsed( rbDofFocusMsec );
+		const float blend = DepthOfFieldCore_FocusBlend( R_DepthOfField_FocusSpeed(), elapsed );
+		const int next = rbDofFocusCurrent == RB_DOF_FOCUS0 ? RB_DOF_FOCUS1 : RB_DOF_FOCUS0;
+		DepthOfFieldCore_FillBlock( block, settings, DOF_PASS_FOCUS, viewportWidth, viewportHeight,
+			depthProjection, sceneUVScale, depthUVScale, blend, rbDofFocusValid );
+		RB_DrawDepthOfFieldPass( next, block, NULL, depthImage, rbDofImages[rbDofFocusCurrent], NULL );
+		rbDofFocusCurrent = next;
+		rbDofFocusValid = true;
+		focusImage = rbDofImages[rbDofFocusCurrent];
+	} else {
+		RB_ForgetDepthOfFieldFocus();
+	}
+
+	DepthOfFieldCore_FillBlock( block, settings, DOF_PASS_PREFILTER, viewportWidth, viewportHeight,
+		depthProjection, sceneUVScale, depthUVScale, 1.0f, false );
+	RB_DrawDepthOfFieldPass( RB_DOF_PREFILTER, block, sceneImage, depthImage, focusImage, NULL );
+	DepthOfFieldCore_FillBlock( block, settings, DOF_PASS_TILE_MAX, viewportWidth, viewportHeight,
+		depthProjection, sceneUVScale, depthUVScale, 1.0f, false );
+	RB_DrawDepthOfFieldPass( RB_DOF_TILES, block, rbDofImages[RB_DOF_PREFILTER], NULL, NULL, NULL );
+	DepthOfFieldCore_FillBlock( block, settings, DOF_PASS_TILE_DILATE, viewportWidth, viewportHeight,
+		depthProjection, sceneUVScale, depthUVScale, 1.0f, false );
+	RB_DrawDepthOfFieldPass( RB_DOF_TILES_DILATED, block, rbDofImages[RB_DOF_TILES], NULL, NULL, NULL );
+	DepthOfFieldCore_FillBlock( block, settings, DOF_PASS_GATHER, viewportWidth, viewportHeight,
+		depthProjection, sceneUVScale, depthUVScale, 1.0f, false );
+	RB_DrawDepthOfFieldPass( RB_DOF_GATHER, block, rbDofImages[RB_DOF_PREFILTER], NULL,
+		rbDofImages[RB_DOF_TILES_DILATED], NULL );
+	DepthOfFieldCore_FillBlock( block, settings, DOF_PASS_POSTFILTER, viewportWidth, viewportHeight,
+		depthProjection, sceneUVScale, depthUVScale, 1.0f, false );
+	RB_DrawDepthOfFieldPass( RB_DOF_POSTFILTER, block, rbDofImages[RB_DOF_GATHER], NULL, NULL, NULL );
+
+	RB_RestorePostProcessTarget( originalRenderTexture, viewportWidth, viewportHeight );
+	RB_BeginFullscreenPostProcessPass(
+		backEnd.viewDef->viewport.x1 + backEnd.viewDef->scissor.x1,
+		backEnd.viewDef->viewport.y1 + backEnd.viewDef->scissor.y1,
+		backEnd.viewDef->scissor.x2 - backEnd.viewDef->scissor.x1 + 1,
+		backEnd.viewDef->scissor.y2 - backEnd.viewDef->scissor.y1 + 1 );
+	DepthOfFieldCore_FillBlock( block, settings, DOF_PASS_COMPOSITE, viewportWidth, viewportHeight,
+		depthProjection, sceneUVScale, depthUVScale, 1.0f, false );
+	RB_BindDepthOfFieldProgram( block, sceneImage, depthImage, focusImage, rbDofImages[RB_DOF_POSTFILTER] );
+	RB_DrawFullscreenPostProcessQuadUnitUV();
+	RB_UnbindDepthOfFieldProgram();
+	GL_SelectTexture( 0 );
+	RB_EndFullscreenPostProcessPass();
+
+	// The scene changed after the capture above; later passes take a fresh copy.
+	backEnd.currentRenderCopied = false;
+	static bool logged = false;
+	if ( !logged ) {
+		logged = true;
+		common->Printf( "OpenGL: first depth of field pass drew (%s, %d samples, %dx%d gather)\n",
+			settings.weaponFocus ? "view weapon focus" : ( settings.autoFocus ? "autofocus" : "manual focus" ),
+			settings.samples, settings.gatherWidth, settings.gatherHeight );
+	}
+}
+
 enum rbBloomExtractUniformIndex_t {
 	RB_BLOOM_EXTRACT_UNIFORM_INV_TEX_SIZE = 0,
 	RB_BLOOM_EXTRACT_UNIFORM_THRESHOLD,
@@ -7899,6 +8162,232 @@ void RB_ApplyColorMappingsToBackBuffer( void ) {
 }
 
 /*
+====================
+RB_DesktopStereo_Composite
+
+openQ4 desktop stereoscopic 3D (r_stereo3D): draws a frame's two eyes and its
+premultiplied screen layer into the bound window in one of the
+stereo3DLayout_t layouts. Vulkan/shaders/post_stereo.frag is the same
+program; keep the two in step. Every image is a bottom-up OpenGL texture, so
+uv (0,0) is the window's bottom-left here as there.
+====================
+*/
+static GLhandleARB rbStereoProgram = 0;
+static GLhandleARB rbStereoShaders[2] = { 0, 0 };
+static int rbStereoProgramGeneration = 0;
+static bool rbStereoProgramFailed = false;
+static GLint rbStereoLeftLocation = -1;
+static GLint rbStereoRightLocation = -1;
+static GLint rbStereoScreenLocation = -1;
+static GLint rbStereoParamsLocation = -1;
+static GLint rbStereoScreenWeightLocation = -1;
+
+static void RB_FreeDesktopStereoProgram( void ) {
+	if ( rbStereoProgram != 0 && glConfig.isInitialized && rbStereoProgramGeneration == tr.glContextGeneration ) {
+		for ( int i = 0; i < 2; i++ ) {
+			if ( rbStereoShaders[i] != 0 ) {
+				glDetachObjectARB( rbStereoProgram, rbStereoShaders[i] );
+				glDeleteObjectARB( rbStereoShaders[i] );
+			}
+		}
+		glDeleteObjectARB( rbStereoProgram );
+	}
+	rbStereoProgram = 0;
+	rbStereoShaders[0] = rbStereoShaders[1] = 0;
+	rbStereoProgramGeneration = 0;
+}
+
+static bool RB_EnsureDesktopStereoProgram( void ) {
+	if ( rbStereoProgramGeneration != tr.glContextGeneration ) {
+		// a new context forgets the program, and any failure of the old one
+		rbStereoProgram = 0;
+		rbStereoShaders[0] = rbStereoShaders[1] = 0;
+		rbStereoProgramFailed = false;
+	}
+	if ( rbStereoProgram != 0 ) {
+		return true;
+	}
+	if ( rbStereoProgramFailed || !glConfig.GLSLProgramAvailable ) {
+		return false;
+	}
+	rbStereoProgramFailed = true;
+
+	static const char *vertexSource =
+		"void main() {\n"
+		"	gl_Position = ftransform();\n"
+		"	gl_TexCoord[0] = gl_MultiTexCoord0;\n"
+		"}\n";
+	static const char *fragmentSource =
+		"uniform sampler2D LeftEye;\n"
+		"uniform sampler2D RightEye;\n"
+		"uniform sampler2D ScreenLayer;\n"
+		"uniform vec4 params;\n"			// x: layout, y: window height, z: eye height, w: eyes drawn
+		"uniform float screenWeight;\n"
+		"\n"
+		"vec3 Over( vec4 layer, vec3 below ) {\n"
+		"	return layer.rgb + below * ( 1.0 - layer.a );\n"
+		"}\n"
+		"vec3 ToLinear( vec3 c ) {\n"
+		"	return pow( max( c, vec3( 0.0 ) ), vec3( 2.2 ) );\n"
+		"}\n"
+		"vec3 FromLinear( vec3 c ) {\n"
+		"	return pow( clamp( c, 0.0, 1.0 ), vec3( 1.0 / 2.2 ) );\n"
+		"}\n"
+		"\n"
+		"void main() {\n"
+		"	vec2 uv = gl_TexCoord[0].st;\n"
+		"	float mode = params.x;\n"
+		"	float eyes = params.w;\n"
+		"	if ( mode > 3.5 && mode < 4.5 ) {\n"
+		"		vec4 layer = texture2D( ScreenLayer, uv ) * screenWeight;\n"
+		"		vec3 left = ToLinear( Over( layer, texture2D( LeftEye, uv ).rgb * eyes ) );\n"
+		"		vec3 right = ToLinear( Over( layer, texture2D( RightEye, uv ).rgb * eyes ) );\n"
+		"		vec3 color;\n"
+		"		color.r = dot( vec3( 0.456, 0.500, 0.176 ), left ) + dot( vec3( -0.043, -0.088, -0.002 ), right );\n"
+		"		color.g = dot( vec3( -0.040, -0.038, -0.016 ), left ) + dot( vec3( 0.378, 0.734, -0.018 ), right );\n"
+		"		color.b = dot( vec3( -0.015, -0.021, -0.005 ), left ) + dot( vec3( -0.072, -0.113, 1.226 ), right );\n"
+		"		gl_FragColor = vec4( FromLinear( color ), 1.0 );\n"
+		"		return;\n"
+		"	}\n"
+		"	vec2 eyeUV = uv;\n"
+		"	vec2 screenUV = uv;\n"
+		"	float rightEye = 0.0;\n"
+		"	if ( mode < 2.5 ) {\n"
+		"		rightEye = step( 0.5, uv.x );\n"
+		"		eyeUV.x = uv.x * 2.0 - rightEye;\n"
+		"		screenUV = eyeUV;\n"
+		"	} else if ( mode < 3.5 ) {\n"
+		"		rightEye = 1.0 - step( 0.5, uv.y );\n"
+		"		eyeUV.y = uv.y * 2.0 - ( 1.0 - rightEye );\n"
+		"		screenUV = eyeUV;\n"
+		"	} else {\n"
+		"		float row = floor( ( 1.0 - uv.y ) * params.y );\n"
+		"		rightEye = mod( row, 2.0 );\n"
+		"		eyeUV.y = 1.0 - ( floor( row * 0.5 ) + 0.5 ) / params.z;\n"
+		"	}\n"
+		"	vec3 eye = mix( texture2D( LeftEye, eyeUV ).rgb, texture2D( RightEye, eyeUV ).rgb, rightEye ) * eyes;\n"
+		"	gl_FragColor = vec4( Over( texture2D( ScreenLayer, screenUV ) * screenWeight, eye ), 1.0 );\n"
+		"}\n";
+
+	const char *sources[2] = { vertexSource, fragmentSource };
+	const GLenum types[2] = { GL_VERTEX_SHADER_ARB, GL_FRAGMENT_SHADER_ARB };
+	const char *stages[2] = { "vertex shader compile", "fragment shader compile" };
+	GLhandleARB shaders[2] = { 0, 0 };
+	for ( int i = 0; i < 2; i++ ) {
+		shaders[i] = glCreateShaderObjectARB( types[i] );
+		if ( shaders[i] == 0 ) {
+			break;
+		}
+		const GLcharARB *source = (const GLcharARB *)sources[i];
+		glShaderSourceARB( shaders[i], 1, &source, NULL );
+		glCompileShaderARB( shaders[i] );
+		GLint compiled = GL_FALSE;
+		glGetObjectParameterivARB( shaders[i], GL_OBJECT_COMPILE_STATUS_ARB, &compiled );
+		if ( compiled == GL_FALSE ) {
+			RB_PrintGLSLInfoLog( shaders[i], stages[i], "builtin/desktop_stereo" );
+			glDeleteObjectARB( shaders[i] );
+			shaders[i] = 0;
+			break;
+		}
+	}
+	if ( shaders[0] == 0 || shaders[1] == 0 ) {
+		for ( int i = 0; i < 2; i++ ) {
+			if ( shaders[i] != 0 ) {
+				glDeleteObjectARB( shaders[i] );
+			}
+		}
+		return false;
+	}
+
+	GLhandleARB program = glCreateProgramObjectARB();
+	glAttachObjectARB( program, shaders[0] );
+	glAttachObjectARB( program, shaders[1] );
+	glLinkProgramARB( program );
+	GLint linked = GL_FALSE;
+	glGetObjectParameterivARB( program, GL_OBJECT_LINK_STATUS_ARB, &linked );
+	if ( linked == GL_FALSE ) {
+		RB_PrintGLSLInfoLog( program, "program link", "builtin/desktop_stereo" );
+		for ( int i = 0; i < 2; i++ ) {
+			glDetachObjectARB( program, shaders[i] );
+			glDeleteObjectARB( shaders[i] );
+		}
+		glDeleteObjectARB( program );
+		return false;
+	}
+
+	rbStereoProgram = program;
+	rbStereoShaders[0] = shaders[0];
+	rbStereoShaders[1] = shaders[1];
+	rbStereoProgramGeneration = tr.glContextGeneration;
+	rbStereoLeftLocation = glGetUniformLocationARB( program, "LeftEye" );
+	rbStereoRightLocation = glGetUniformLocationARB( program, "RightEye" );
+	rbStereoScreenLocation = glGetUniformLocationARB( program, "ScreenLayer" );
+	rbStereoParamsLocation = glGetUniformLocationARB( program, "params" );
+	rbStereoScreenWeightLocation = glGetUniformLocationARB( program, "screenWeight" );
+	if ( rbStereoLeftLocation < 0 || rbStereoRightLocation < 0 || rbStereoScreenLocation < 0
+			|| rbStereoParamsLocation < 0 || rbStereoScreenWeightLocation < 0 ) {
+		common->Warning( "GLSL builtin/desktop_stereo is missing required uniforms" );
+		RB_FreeDesktopStereoProgram();
+		return false;
+	}
+	rbStereoProgramFailed = false;
+	common->Printf( "Loaded built-in GLSL program 'builtin/desktop_stereo'\n" );
+	return true;
+}
+
+bool RB_DesktopStereo_CompositeAvailable( void ) {
+	return glConfig.GLSLProgramAvailable && !rbStereoProgramFailed;
+}
+
+bool RB_DesktopStereo_Composite( idImage *left, idImage *right, idImage *screen, int layout,
+		int windowWidth, int windowHeight, int eyeHeight, bool eyesDrawn, bool screenDrawn ) {
+	if ( windowWidth <= 0 || windowHeight <= 0 || !RB_EnsureDesktopStereoProgram() ) {
+		return false;
+	}
+	// an input the frame did not draw is weighted out; any image stands in
+	idImage *fallback = globalImages->blackImage;
+	idImage *images[3] = {
+		eyesDrawn && left != NULL ? left : fallback,
+		eyesDrawn && right != NULL ? right : fallback,
+		screenDrawn && screen != NULL ? screen : fallback
+	};
+	if ( images[0] == NULL || images[1] == NULL || images[2] == NULL ) {
+		return false;
+	}
+
+	RB_LogComment( "---------- RB_DesktopStereo_Composite ----------\n" );
+	glViewport( 0, 0, windowWidth, windowHeight );
+	RB_BeginFullscreenPostProcessPass( 0, 0, windowWidth, windowHeight );
+	for ( int i = 0; i < 3; i++ ) {
+		GL_SelectTexture( i );
+		images[i]->Bind();
+	}
+	GL_SelectTexture( 0 );
+
+	glUseProgramObjectARB( rbStereoProgram );
+	glUniform1iARB( rbStereoLeftLocation, 0 );
+	glUniform1iARB( rbStereoRightLocation, 1 );
+	glUniform1iARB( rbStereoScreenLocation, 2 );
+	const GLfloat params[4] = {
+		static_cast<GLfloat>( layout ),
+		static_cast<GLfloat>( windowHeight ),
+		static_cast<GLfloat>( Max( eyeHeight, 1 ) ),
+		eyesDrawn ? 1.0f : 0.0f
+	};
+	glUniform4fvARB( rbStereoParamsLocation, 1, params );
+	glUniform1fARB( rbStereoScreenWeightLocation, screenDrawn ? 1.0f : 0.0f );
+
+	RB_DrawFullscreenPostProcessQuadUnitUV();
+	glUseProgramObjectARB( 0 );
+	for ( int i = 2; i >= 0; i-- ) {
+		GL_SelectTexture( i );
+		globalImages->BindNull();
+	}
+	RB_EndFullscreenPostProcessPass();
+	return true;
+}
+
+/*
 =====================
 RB_BakeTextureMatrixIntoTexgen
 =====================
@@ -8382,6 +8871,12 @@ static bool RB_SoftParticleStageEligible( const drawSurf_t *surf, const shaderSt
 	if ( globalImages == NULL || globalImages->currentDepthImage == NULL || backEnd.viewDef == NULL ) {
 		return false;
 	}
+	// A mirror's oblique near plane (R_SetupObliqueNearPlane) makes depth
+	// depend on more than eye z, so the fade's linearised depth would be wrong:
+	// such a view draws its particles plain, on both renderers.
+	if ( backEnd.viewDef->obliqueNearPlane ) {
+		return false;
+	}
 
 	return RB_SoftParticleStageContractSupported( surf, pStage );
 }
@@ -8854,6 +9349,7 @@ void RB_ShutdownScenePostProcess( void ) {
 
 	RB_FreeBuiltinMaterialGLSLPrograms();
 	RB_FreeColorMappingProgram();
+	RB_FreeDesktopStereoProgram();
 
 	RB_Volumetric_GL_Shutdown();
 	RB_DestroyPostProcessRenderTexture( rbSceneRenderTexture );
@@ -9618,18 +10114,6 @@ void RB_T_FillDepthBuffer( const drawSurf_t *surf ) {
 	tri = surf->geo;
 	shader = surf->material;
 
-	// update the clip plane if needed
-	if ( backEnd.viewDef->numClipPlanes && surf->space != backEnd.currentSpace ) {
-		GL_SelectTexture( 1 );
-		
-		idPlane	plane;
-
-		R_GlobalPlaneToLocal( surf->space->modelMatrix, backEnd.viewDef->clipPlanes[0], plane );
-		plane[3] += 0.5;	// the notch is in the middle
-		glTexGenfv( GL_S, GL_OBJECT_PLANE, plane.ToFloatPtr() );
-		GL_SelectTexture( 0 );
-	}
-
 	if ( !shader->IsDrawn() ) {
 		return;
 	}
@@ -9806,8 +10290,11 @@ void RB_T_FillDepthBuffer( const drawSurf_t *surf ) {
 =====================
 RB_STD_FillDepthBuffer
 
-If we are rendering a subview with a near clip plane, use a second texture
-to force the alpha test to fail when behind that clip plane
+A mirror view's clip plane is the projection's near plane
+(R_SetupObliqueNearPlane), so the depth fill needs no clip of its own. Doom 3
+clipped only here, through an alpha-notch texture on a second unit: no other
+pass and no Vulkan pass honoured it, and on this renderer the notch could fail
+alpha-tested surfaces in the view, so OpenGL and Vulkan mirrors disagreed.
 =====================
 */
 void RB_STD_FillDepthBuffer( drawSurf_t **drawSurfs, int numDrawSurfs ) {
@@ -9817,15 +10304,6 @@ void RB_STD_FillDepthBuffer( drawSurf_t **drawSurfs, int numDrawSurfs ) {
 	}
 
 	RB_LogComment( "---------- RB_STD_FillDepthBuffer ----------\n" );
-
-	// enable the second texture for mirror plane clipping if needed
-	if ( backEnd.viewDef->numClipPlanes ) {
-		GL_SelectTexture( 1 );
-		globalImages->alphaNotchImage->Bind();
-		glDisableClientState( GL_TEXTURE_COORD_ARRAY );
-		glEnable( GL_TEXTURE_GEN_S );
-		glTexCoord2f( 1, 0.5 );
-	}
 
 	// the first texture will be used for alpha tested surfaces
 	GL_SelectTexture( 0 );
@@ -9843,13 +10321,6 @@ void RB_STD_FillDepthBuffer( drawSurf_t **drawSurfs, int numDrawSurfs ) {
 	glStencilFunc( GL_ALWAYS, 1, 255 );
 
 	RB_RenderDrawSurfListWithFunction( drawSurfs, numDrawSurfs, RB_T_FillDepthBuffer );
-
-	if ( backEnd.viewDef->numClipPlanes ) {
-		GL_SelectTexture( 1 );
-		globalImages->BindNull();
-		glDisable( GL_TEXTURE_GEN_S );
-		GL_SelectTexture( 0 );
-	}
 
 }
 
@@ -9958,14 +10429,6 @@ static int RB_STD_FillDepthBufferFiltered( drawSurf_t **drawSurfs, int numDrawSu
 		return 0;
 	}
 
-	if ( backEnd.viewDef->numClipPlanes ) {
-		GL_SelectTexture( 1 );
-		globalImages->alphaNotchImage->Bind();
-		glDisableClientState( GL_TEXTURE_COORD_ARRAY );
-		glEnable( GL_TEXTURE_GEN_S );
-		glTexCoord2f( 1, 0.5 );
-	}
-
 	GL_SelectTexture( 0 );
 	glEnableClientState( GL_TEXTURE_COORD_ARRAY );
 
@@ -9976,13 +10439,6 @@ static int RB_STD_FillDepthBufferFiltered( drawSurf_t **drawSurfs, int numDrawSu
 	glStencilFunc( GL_ALWAYS, 1, 255 );
 
 	const int rendered = RB_RenderDrawSurfListWithFilter( drawSurfs, numDrawSurfs, RB_T_FillDepthBuffer, filter );
-
-	if ( backEnd.viewDef->numClipPlanes ) {
-		GL_SelectTexture( 1 );
-		globalImages->BindNull();
-		glDisable( GL_TEXTURE_GEN_S );
-		GL_SelectTexture( 0 );
-	}
 
 	return rendered;
 }
@@ -17902,6 +18358,9 @@ void	RB_STD_DrawView( void ) {
 
 	// Apply SSAO before bloom and tonemapping so indirect shadowing modulates the lit scene.
 	RB_STD_SSAO();
+
+	// Depth of field before motion blur and bloom, as a camera would.
+	RB_STD_DepthOfField();
 
 	// Apply camera motion blur before bloom.
 	RB_STD_MotionBlur();

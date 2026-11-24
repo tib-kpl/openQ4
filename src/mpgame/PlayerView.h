@@ -87,7 +87,14 @@ private:
 	void ResetRetainedViewEffects();
 	void RetainedRecoveryFade( const idVec4 &color, int duration );
 	void DrawRetainedViewEffects( bool wheelOnly = false );
+	void RequestViewDepthOfField( bool allowed, const renderView_t &view, const renderViewDepthOfField_t &scene );
+	// Depth of field on a focused in-world GUI: how far it has faded in (0..1),
+	// the eased focus distance and the game time it was last advanced.
+	float guiFocusBlend = 0, guiFocusDistance = 0;
+	int guiFocusTime = -1;
 	idUserInterface *presentationFx = NULL;
+	// The renderer draws the wheel's scene focus as depth of field this frame.
+	bool wheelSceneFocus = false;
 	int deathFxStart = -1, recoveryFxUntil = 0;
 	bool recoverySequence = false;
 	int crashFxStart = -1, crashFxDuration = 0;
@@ -97,6 +104,8 @@ private:
 	void				SingleView( idUserInterface *hud, const renderView_t *view, int renderFlags = RF_NORMAL );
 	// openQ4 VR: the 3D pass once per headset eye, the HUD on the virtual screen
 	void				VRView( idUserInterface *hud, const renderView_t *view, const vrFrameState_t &vrFrame, float trackingYaw );
+	// openQ4: desktop stereoscopic 3D (r_stereo3D); false renders the flat view
+	bool				StereoView( idUserInterface *hud, const renderView_t *view, int eyeLiquidContents );
 // RAVEN END
 	void				DoubleVision( idUserInterface *hud, const renderView_t *view, int offset );
 	void				BerserkVision( idUserInterface *hud, const renderView_t *view );

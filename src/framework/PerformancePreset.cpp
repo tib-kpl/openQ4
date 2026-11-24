@@ -7,44 +7,48 @@ namespace openq4 {
 namespace {
 static const std::array<PerformancePreset,PerformancePresetCount> Presets{{
 	// The three bottom recipes are for hardware at and below the documented
-	// minimum (4 GiB RAM, a 1 GiB ARB2-class GPU). Lowering resolution alone left
-	// every rendering feature in place, so the two lowest also draw no shadows:
+	// minimum (4 GiB RAM, a 1 GiB ARB2-class GPU). No preset lowers the render
+	// scale or the display resolution, so none of the three draws shadows:
 	// no shadow volumes are built, submitted or filled. They also skip the
 	// light-grid indirect pass, an openQ4 addition to retail lighting that costs a
 	// full-screen pass, a depth copy and the map's grid atlases in shared memory.
-	// Their 30 Hz cap also stands automatic temporal AA down (r_temporalAA 2):
-	// a 75% scene is stretched rather than reconstructed from history.
+	// The two lowest cap at 30 Hz, which also stands automatic temporal AA down
+	// (r_temporalAA 2).
 	//
 	// Minimum is the floor: software and limited renderers, 2 GiB systems.
 	{ "minimum", 0, "low",
-		50, 0, 0, 30,
+		0, 0, 30,
 		1, 512, 1, 1, 1, 1,
 		0, 512, 1, 0, 0, 0, 0, 0, 0, 8, 3,
-		0, 1, 24, 512, 1, 1, 0, 0, 2048, 4, 1, 4, 0, 1, 0, 1 },
+		0, 1, 24, 512, 1, 1, 0, 0, 2048, 4, 1, 4, 0, 1, 0, 1, 0 },
 	// Low Power is the battery and small-board recipe: Raspberry Pi, low-memory
 	// phones and an explicit power request. No shadows, 30 Hz.
 	{ "lowpower", 0, "low",
-		75, 0, 0, 30,
+		0, 0, 30,
 		1, 1024, 1, 1, 1, 1,
 		0, 512, 1, 0, 0, 0, 0, 0, 0, 8, 3,
-		0, 1, 32, 512, 1, 1, 0, 0, 2048, 4, 1, 4, 0, 1, 0, 1 },
-	// Low is the documented minimum PC: the original stencil shadows at 60 Hz,
-	// with Low Power's reduced scene and texture sizes.
+		0, 1, 32, 512, 1, 1, 0, 0, 2048, 4, 1, 4, 0, 1, 0, 1, 0 },
+	// Low is the documented minimum PC at 60 Hz: Low Power's recipe with 2x
+	// anisotropic filtering. A GPU of the Intel Iris Xe class holds 60 Hz at
+	// 1080p only without the stencil shadows and the light grid: with them that
+	// GPU held Low at 43-50 Hz in combat (docs/dev/ui/performance-presets.md,
+	// "Low-end measurements").
+	// Performance is the first tier that draws them.
 	{ "low", 0, "low",
-		75, 0, 0, 60,
+		0, 0, 60,
 		2, 1024, 1, 1, 1, 1,
-		0, 512, 1, 0, 0, 0, 0, 0, 1, 8, 3,
-		0, 1, 32, 512, 1, 1, 0, 0, 2048, 4, 1, 4, 0, 1, 1, 1 },
+		0, 512, 1, 0, 0, 0, 0, 0, 0, 8, 3,
+		0, 1, 32, 512, 1, 1, 0, 0, 2048, 4, 1, 4, 0, 1, 0, 1, 0 },
 	{ "performance", 1, "baseline",
-		85, 0, 1, 60,
+		0, 1, 60,
 		2, 0, 0, 0, 1, 0,
 		0, 1024, 2, 0, 0, 0, 0, 0, 1, 16, 4,
-		0, 1, 40, 512, 5, 5, 0, 0, 2048, 8, 3, 8, 0, 1, 1, 1 },
+		0, 1, 40, 512, 5, 5, 0, 0, 2048, 8, 3, 8, 0, 1, 1, 1, 0 },
 	{ "balanced", 2, "baseline",
-		100, 2, 1, 120,
+		2, 1, 120,
 		4, 0, 0, 0, 1, 0,
 		0, 1024, 0, 0, 0, 0, 0, 0, 1, 16, 4,
-		0, 1, 48, 512, 5, 5, 0, 0, 2048, 8, 3, 8, 0, 1, 1, 1 },
+		0, 1, 48, 512, 5, 5, 0, 0, 2048, 8, 3, 8, 0, 1, 1, 1, 0 },
 	// The three top recipes are built from measured feature costs to hold a
 	// refresh class on the reference machine (RTX 4060 Laptop, 2560x1440, both
 	// backends, every timed scene; docs/dev/performance-report.md section 11):
@@ -55,20 +59,20 @@ static const std::array<PerformancePreset,PerformancePresetCount> Presets{{
 	// used (their cube maps were its largest cost), and SMAA high replaces MSAA.
 	// Keep unlimited updates: a low budget can make moving shadows stale.
 	{ "enhanced", 2, "modern",
-		100, 0, 2, 144,
+		0, 2, 144,
 		16, 0, 0, 0, 1, 0,
 		1, 1024, 0, 1, 1, 1, 0, 0, 1, 16, 4,
-		0, 1, 48, 512, 5, 5, 0, 0, 4096, 12, 5, 8, 0, 0, 1, 1 },
+		0, 1, 48, 512, 5, 5, 0, 0, 4096, 12, 5, 8, 0, 0, 1, 1, 1 },
 	// Quality shadow-maps every light class: 2048 projected maps with PCSS and
 	// 512 point cubes, with 2x MSAA under SMAA high. Sunlight and distant
 	// sources are cascaded (spotlights keep one map): Quake 4 lights outdoor
 	// areas with a few huge lights, whose single map is ~25 world units a
 	// texel at the player and loses most near shadows outdoors.
 	{ "quality", 3, "modern",
-		100, 2, 2, 144,
+		2, 2, 144,
 		16, 0, 0, 0, 1, 0,
 		1, 2048, 0, 1, 1, 1, 0, 0, 1, 32, 4,
-		0, 1, 48, 512, 9, 9, 2, 0, 4096, 20, 5, 8, 1, 1, 1, 0 },
+		0, 1, 48, 512, 9, 9, 2, 0, 4096, 20, 5, 8, 1, 1, 1, 0, 1 },
 	// image_usePrecompressedTextures stays at 1 here even though retail's top
 	// machine spec used 0. In openQ4 that cvar also gates user-supplied DDS
 	// replacement packs, so 0 silently discarded a player's high-resolution BC7
@@ -81,28 +85,31 @@ static const std::array<PerformancePreset,PerformancePresetCount> Presets{{
 	// together). Sunlight is cascaded as on Quality; spotlight cascades and
 	// motion blur are left to Maximum.
 	{ "ultra", 3, "high-end",
-		100, 4, 3, 240,
+		4, 3, 240,
 		16, 0, 0, 0, 1, 0,
 		1, 4096, 0, 1, 1, 1, 0, 0, 1, 32, 4,
-		0, 1, 48, 512, 13, 9, 2, 0, 8192, 32, 5, 8, 1, 1, 1, 0 },
+		0, 1, 48, 512, 13, 9, 2, 0, 8192, 32, 5, 8, 1, 1, 1, 0, 1 },
 	// Maximum requests every supported quality maximum and carries no frame-rate
 	// target (FPS-02): it is the choice for players who want everything on.
 	// MSAA is 8 samples, the most the Vulkan renderer draws, so Maximum is one
 	// image on both renderers (FPS-05); 16 stays a manual choice for OpenGL.
-	// Render scale stays native. CRT and exposure/strength
+	// Point cubes are 1024, not 2048: a 2048 cube is 96 MB, so the default
+	// r_shadowMapPointCacheMegs held five and a Vulkan view's pool twelve, and
+	// views with a hundred shadowing point lights (mcc_landing) put most of
+	// them on stencil shadows (#258).
+	// CRT and exposure/strength
 	// controls are artistic preferences, not quality levels; experimental
 	// rendering modes stay opt-in.
 	{ "maximum", 3, "high-end",
-		100, 8, 3, 240,
+		8, 3, 240,
 		16, 0, 0, 0, 1, 0,
 		1, 4096, 0, 1, 1, 1, 1, 0, 1, 32, 4,
-		0, 1, 48, 2048, 13, 13, 2, 1, 16384, 32, 5, 16, 1, 1, 1, 1 }
+		0, 1, 48, 1024, 13, 13, 2, 1, 16384, 32, 5, 16, 1, 1, 1, 1, 1 }
 }};
 static const std::array<const char*,PerformancePresetTargetCount> Targets{{
 	"com_performancePreset",
 	"com_machineSpec",
 	"r_rendererBenchmarkPreset",
-	"r_screenFraction",
 	"r_multiSamples",
 	"r_postAA",
 	"com_maxfps",
@@ -138,7 +145,7 @@ static const std::array<const char*,PerformancePresetTargetCount> Targets{{
 	"r_skipBump", "r_skipSpecular", "r_skipSky", "image_picmip",
 	"r_shadowMapCSM", "r_shadowMapCascadeCount", "r_shadowMapProjectedCSM",
 	"r_shadowMapCascadeStabilize", "r_motionBlurObjectVectors",
-	"r_shadowMapHashedAlpha", "r_shadowMapTranslucentReceivers"
+	"r_shadowMapHashedAlpha", "r_shadowMapTranslucentReceivers", "r_depthOfField"
 }};
 bool EqualAscii(std::string_view a,std::string_view b) noexcept {
  if(a.size()!=b.size())return false;
@@ -167,7 +174,6 @@ bool ExpandPerformancePreset(const PerformancePreset& preset,PerformancePresetAs
   PerformancePresetAssignments candidate{{
   {"com_machineSpec",preset.machineSpec},
   {"r_rendererBenchmarkPreset",std::string(preset.rendererBenchmarkPreset)},
-  {"r_screenFraction",preset.screenFraction},
   {"r_multiSamples",preset.multiSamples},
 #if defined(__ANDROID__)
   // SMAA cost this handheld GPU 20 frames per second in combat (40 against 60 in the same
@@ -225,6 +231,7 @@ bool ExpandPerformancePreset(const PerformancePreset& preset,PerformancePresetAs
   {"r_motionBlurObjectVectors",1},
   {"r_shadowMapHashedAlpha",1},
   {"r_shadowMapTranslucentReceivers",1},
+  {"r_depthOfField",preset.depthOfField},
   {"com_performancePreset",std::string(preset.name)}
   }};
   static_assert(std::is_nothrow_move_assignable_v<PerformancePresetAssignments>);
@@ -289,8 +296,8 @@ PerformancePresetDetection DetectPerformancePreset(const PerformancePresetSignal
  // The Pi's own hint above is stricter; Apple and discrete GPUs are not boards.
  const bool armBoard=PerformancePresetIsArmBoard(signals);
  if(armBoard&&tier>Performance){tier=Performance;result.reason=Reason::ArmBoard;}
- // Reduce the recommendation for the actual drawable, independently of the
- // currently selected render scale. Never change window size or display mode.
+ // Lower the tier for the actual drawable. Never change the render scale, the
+ // window size or the display mode: the scene stays at the player's choice.
  // Each resolution class above 1440p costs one tier, so an 8 GiB card is
  // Balanced at 4K and a 16 GiB card Quality; 24 GiB carries Ultra through 4K.
  const bool validSize=signals.drawableWidth>0&&signals.drawableWidth<=32768&&
@@ -306,7 +313,6 @@ PerformancePresetDetection DetectPerformancePreset(const PerformancePresetSignal
  if(tier>ceiling){tier=ceiling;result.reason=Reason::Resolution;}
  if((signals.logicalCpus<4||signals.logicalCpus>4096)&&tier>Performance){tier=Performance;result.reason=Reason::Cpu;}
  result.preset=&Presets[tier];
- result.screenFraction=result.preset->screenFraction;
  // The tier's cap is a default for a manual choice; a detected start presents
  // at the display's own rate instead, so a 240 Hz panel is not held at 120.
  // A power-limited device keeps its tier's cap when that is the lower one: a
@@ -317,34 +323,13 @@ PerformancePresetDetection DetectPerformancePreset(const PerformancePresetSignal
   if(!powerLimited||signals.displayRefreshHz<result.maxFps)result.maxFps=signals.displayRefreshHz;
  }
  result.postAA=(signals.postAAAvailable||signals.modernEffects)?result.preset->postAA:0;
- // A tier change alone leaves Performance rendering 6 million pixels on a
- // 4K iGPU. Bound scene work as well, using existing selectable scale steps.
- // Capacity is only a conservative starting point, never a throughput claim.
- long long budget=PerformancePresetClassPixels(1080);
- if(tier==Minimum)budget=PerformancePresetClassPixels(540);
- else if(tier<=Low)budget=PerformancePresetClassPixels(720);
- // A flagship phone keeps the 1080p class; smaller ones render a 720p scene.
- else if(signals.mobile){if(ram<PerformancePresetMobileFlagshipRamMB)budget=PerformancePresetClassPixels(720);}
- else if(discrete&&ram>=8192&&vram>2048&&!signals.steamDeck)
-  budget=PerformancePresetClassPixels((ram>=15360&&vram>=PerformancePresetVram8GiB)?2160:1440);
- result.scenePixelBudget=static_cast<int>(budget);
- if(validSize){
-  static constexpr int scales[]={100,85,75,50,25,10};
-  for(const int scale:scales){
-   if(scale>result.preset->screenFraction)continue;
-   // Products fit in int64 even at the largest accepted drawable (32768^2).
-   if(pixels*scale*scale<=budget*10000||scale==10){result.screenFraction=scale;break;}
-  }
-  if(result.screenFraction<result.preset->screenFraction)result.reason=Reason::Resolution;
- }
  return result;
 }
 bool ResolveDetectedPerformancePreset(const PerformancePresetDetection& detection,PerformancePreset& output) noexcept{
- if(!detection.preset||detection.screenFraction<10||detection.screenFraction>detection.preset->screenFraction||
-    detection.postAA<0||detection.postAA>detection.preset->postAA||
+ if(!detection.preset||detection.postAA<0||detection.postAA>detection.preset->postAA||
     detection.maxFps<0||detection.maxFps>PerformancePresetMaxDisplayRefreshHz)return false;
  auto resolved=*detection.preset;
- resolved.screenFraction=detection.screenFraction;resolved.postAA=detection.postAA;resolved.maxFps=detection.maxFps;
+ resolved.postAA=detection.postAA;resolved.maxFps=detection.maxFps;
  output=resolved;return true;
 }
 
@@ -386,7 +371,7 @@ template<typename Visit> int VisitFingerprintMachines(Visit&& visit) {
  common[0].gpuClass=RendererGpuClass::Discrete;common[0].videoRamMB=PerformancePresetVram8GiB;common[0].systemRamMB=16384;
  common[0].drawableWidth=2560;common[0].drawableHeight=1440;
  common[1].gpuClass=RendererGpuClass::Integrated;common[1].systemRamMB=16384;common[1].drawableWidth=1920;common[1].drawableHeight=1080;
- common[2].gpuClass=RendererGpuClass::Integrated;common[2].systemRamMB=PerformancePresetMobileFlagshipRamMB+2048;
+ common[2].gpuClass=RendererGpuClass::Integrated;common[2].systemRamMB=12288;
  common[2].drawableWidth=2400;common[2].drawableHeight=1080;
  for(auto& machine:common){machine.logicalCpus=8;machine.modernEffects=machine.postAAAvailable=true;}
  for(int flag=0;flag<7;++flag)for(const auto& machine:common)for(const int hertz:{0,90}){
@@ -420,8 +405,8 @@ std::uint32_t ComputeFingerprint() noexcept {
   const auto found=DetectPerformancePreset(signals);
   hash.Text(found.preset?found.preset->name:"");
   hash.Number(static_cast<int>(found.reason));
-  hash.Number(found.systemRamMB);hash.Number(found.videoRamMB);hash.Number(found.screenFraction);
-  hash.Number(found.postAA);hash.Number(found.scenePixelBudget);hash.Number(found.maxFps);
+  hash.Number(found.systemRamMB);hash.Number(found.videoRamMB);
+  hash.Number(found.postAA);hash.Number(found.maxFps);
  });
  return hash.value;
 }

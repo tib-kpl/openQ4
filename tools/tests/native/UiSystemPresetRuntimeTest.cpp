@@ -42,7 +42,7 @@ struct View {
   // The prompt bar's key caps name their keys from the stock code strings.
   if(const auto at=locale.rfind("_openq4.lang");at!=std::string::npos){const auto code=locale.substr(0,at)+"_code.lang";if(std::ifstream(code))host.Locale(code);}host.expansion=expansion;Json::Value doc;Json::CharReaderBuilder b;auto reader=std::unique_ptr<Json::CharReader>(b.newCharReader());Check(reader->parse(s.data()+s.find('{'),s.data()+s.size(),&doc,&error),error.c_str());
   for(auto& k:doc["state"].getMemberNames())if(k.starts_with("settings.draft.")){auto d=doc["state"][k];StateValue v;auto type=d["type"].asString();if(type=="number")v=d["initial"].asDouble();else if(type=="boolean")v=d["initial"].asBool();else v=d["initial"].asString();host.live.emplace(k.substr(15),v);}
-  Check(host.live.size()==78,"full authored 78-key typed catalog");host.live["com_performancePreset"]=std::string("balanced");host.live["r_brightness"]=1.375;host.live["r_forceAmbient"]=.1375;host.live["r_renderer"]=std::string("best");Check(tx.Begin(Owner).code==SettingsCode::Ok,"begin real transaction");
+  Check(host.live.size()==79,"full authored 79-key typed catalog");host.live["com_performancePreset"]=std::string("balanced");host.live["r_brightness"]=1.375;host.live["r_forceAmbient"]=.1375;host.live["r_renderer"]=std::string("best");Check(tx.Begin(Owner).code==SettingsCode::Ok,"begin real transaction");
   std::vector<Diagnostic> ds;bool loaded=runtime.LoadDocument(s,"guis/menu/settings/system.rui",ds);for(auto& d:ds)std::fprintf(stderr,"%s: %s\n",d.pointer.c_str(),d.message.c_str());Check(loaded,"actual SYSTEM compiles and loads");viewport.width=width;viewport.height=height;viewport.displayScale=density;
   // As the engine adapter lays the page out (UserInterfaceRetained): its 720 dp
   // canvas spans the view's height, at least 960 dp wide, whatever the density.
@@ -81,14 +81,16 @@ struct View {
 struct PageTab { const char* id; std::vector<const char*> order; };
 static const PageTab PageTabs[]={
  {"graphics",{"settings_preset","settings_autodetect","settings_backend","settings_gpu","settings_renderer","settings_ui_scale","settings_text_scale","settings_ui_aspect","settings_reset_sizes"}},
- {"screen",{"settings_display_device","settings_multiscreen","settings_fullscreen","settings_borderless","settings_fullscreen_policy","settings_vsync",
-  "settings_framecap","settings_window_width","settings_window_height","settings_display_mode","settings_custom_width","settings_custom_height","settings_display_refresh"}},
+ // The host starts windowed: the Fullscreen Policy and the exclusive
+ // fullscreen's resolution, custom size and refresh rate wait for Fullscreen.
+ {"screen",{"settings_display_device","settings_multiscreen","settings_fullscreen","settings_borderless","settings_vsync",
+  "settings_framecap","settings_window_width","settings_window_height"}},
  {"image",{"settings_brightness","settings_brightness_number","settings_resolution_scale","settings_msaa","settings_postaa","settings_anisotropy","settings_specular",
   "settings_bump","settings_sky","settings_ambient_enabled","settings_ambient","settings_ambient_number"}},
  // Shadow Maps and Character Self-Shadows wait for Enable Shadows, which the
  // host starts off (Tabs checks them).
  {"effects",{"settings_shadows","settings_irradiance","settings_lightgrid_preload","settings_bloom","settings_ssao","settings_tonemap","settings_motionblur",
-  "settings_crt"}}};
+  "settings_depthoffield","settings_crt"}}};
 static std::string PageDisplay(View& v,const PageTab& tab){auto shown=v.runtime.PresentedValue(("settings-page-"+std::string(tab.id)).c_str(),"display");Check(shown.has_value(),tab.id);return shown->text;}
 // The tabs: each tab_<id> event makes its tab current at once and focuses its
 // first row; Next and Down keep within the tab; a hidden tab's rows cannot act;

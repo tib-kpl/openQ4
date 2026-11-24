@@ -59,11 +59,13 @@ What you get in **0.15.0**, the Multiplayer Edition and the latest release:
 - ⚡ **Built for modern displays.** Widescreen, ultrawide and portrait screens, smooth motion at 144 Hz and beyond, presets with Auto-Detect, and display changes that apply without a restart.
 - 🔺 **Your choice of renderer.** Vulkan is supported on Windows and chosen automatically, with OpenGL as the fallback.
 - 🎯 **Multiplayer your way** (experimental): a Quake 2-style [Classic ruleset](docs/user/classic-ruleset.md) with a grappling hook, [bots that take orders](docs/user/multiplayer.md#give-bots-orders), quick and voice chat, objective markers, a server browser with favourites, [readable chat](docs/user/multiplayer-chat.md), a [buy menu](docs/user/buying.md) with Quake 4's or The Awakening's rules, [Instagib, Quad Hog, weapon arenas and presets](docs/user/server-setup.md#modifiers-and-presets) for any game type, [spectator cameras that follow the action](docs/user/multiplayer.md#spectate), and netcode that draws your shots the moment you fire. Start with the [multiplayer guide](docs/user/multiplayer.md).
-- 📼 **A demo library and player** for full matches and whole campaigns, with markers, fast seeking, Auto-Track and free-fly playback. See [demos](docs/user/multiview-demos.md).
+- 📼 **A demo library and player** for full matches and whole campaigns, with markers, fast seeking, Auto-Track and free-fly playback, and it plays the original Quake 4 1.4.2 network demos too. See [demos](docs/user/multiview-demos.md).
+- 🎬 **Video recording built in.** Press your Record Video key (or type `recordVideo`) to save smooth MP4s of what you play, sound included, ready to upload; MKV, WebM, MOV, AVI and GIF too, all set in the menu. See [Record Video](docs/user/video-capture.md).
 - 🏆 **More to play.** The experimental [Arena Campaign](docs/user/arena-campaign.md) offers bot matches across five tiers of the stock maps, with boss matches and saved progress.
 - 🔊 **Sound as designed.** [Room reverb](docs/user/gameplay-settings.md#room-reverb) for every map, subtitles and a separate dialogue volume.
 - 🌍 **Twelve languages**, including German, Brazilian Portuguese, Czech, Hungarian, Turkish and Ukrainian. See [Languages](docs/user/languages.md).
 - 🌊 **Real liquids.** Swim, wade and drown in water, and take damage in slime and lava, in maps built for them. See [Liquids](docs/user/liquids.md).
+- 🕶️ **Stereoscopic 3D without a headset** on 3D TVs and monitors, side-by-side video glasses, passive 3D displays or red/cyan glasses, switched on in the menu. See [Stereoscopic 3D](docs/user/stereoscopic-3d.md).
 - 🥽 **VR through OpenXR** (experimental), with your own body in the headset. [Try it](docs/user/vr.md#quick-start) and [tell us how it runs](https://github.com/themuffinator/openQ4/issues/new?template=vr-headset-report.yml).
 - 🧪 **Experimental extras**: an [Android app](docs/user/android-setup.md), a [level editor](docs/user/level-editor.md), [PBR materials](docs/user/pbr-materials.md) for mods and [enhanced physics](docs/user/gameplay-settings.md#enhanced-physics) for ragdolls and debris.
 
@@ -118,7 +120,7 @@ These guides describe 0.15.0. Anything new in 0.15.0 is marked **New in 0.15.0**
 - [Getting Started](docs/user/getting-started.md): install, first launch and common questions
 - [Client Settings](docs/user/client-settings.md): where the most useful options live
 - [Display Settings](docs/user/display-settings.md) · [Input Settings](docs/user/input-settings.md) · [Gameplay Settings](docs/user/gameplay-settings.md) · [Steam Deck](docs/user/steam-deck.md)
-- [Languages](docs/user/languages.md) · [VR](docs/user/vr.md) (experimental) · [Android Setup](docs/user/android-setup.md) (experimental)
+- [Languages](docs/user/languages.md) · [Stereoscopic 3D](docs/user/stereoscopic-3d.md) · [VR](docs/user/vr.md) (experimental) · [Android Setup](docs/user/android-setup.md) (experimental)
 
 **Play**
 - [Campaigns](docs/user/campaigns.md) · [The Awakening](docs/user/awakening.md): choosing and installing a campaign
@@ -186,6 +188,7 @@ These guides describe 0.15.0. Anything new in 0.15.0 is marked **New in 0.15.0**
 - **Raven Software** and **Ritual Entertainment**: Quake 4: The Awakening, the unreleased expansion
 - **Chris Robinson and the [OpenAL Soft](https://openal-soft.org/) contributors**: cross-platform OpenAL runtime bundled in macOS packages
 - **Sam Lantinga and the [SDL contributors](https://github.com/libsdl-org/SDL/tree/release-3.4.18)**: cross-platform window, input and microphone support, including the dummy audio driver used in automated voice tests; SDL uses the zlib licence
+- **Jean-loup Gailly, Mark Adler and the [zlib-ng contributors](https://github.com/zlib-ng/zlib-ng/tree/2.3.3)**: zlib-licensed inflate and CRC-32 for reading PK4 packs, with run-time SIMD selection; [licence notice](LICENSES/zlib-ng.txt)
 - **Sean Barrett and the [stb_vorbis contributors](https://github.com/nothings/stb/blob/master/stb_vorbis.c)**: MIT/public-domain Vorbis decoding; openQ4 adds a virtual-filesystem callback path for bounded compressed streaming
 - **The Khronos Group and [glslang contributors](https://github.com/KhronosGroup/glslang/tree/16.6.0)**: GLSL-to-SPIR-V compiler used by the Vulkan renderer; its complete licence ships under `licenses/`
 - **[The Khronos Group, Valve Corporation and LunarG](https://github.com/KhronosGroup/OpenXR-SDK/tree/release-1.1.65)**: Apache-2.0 OpenXR loader and headers behind [VR mode](docs/user/vr.md); [licence notice](LICENSES/openxr-sdk.txt)

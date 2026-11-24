@@ -66,7 +66,7 @@ CATALOG = {
         "image_downSizeBump", "image_downSizeSpecular", "image_ignoreHighQuality", "image_writeGeneratedImages", "r_motionBlur",
         "r_shadowMapCSM", "r_shadowMapProjectedCSM", "r_shadowMapCascadeStabilize", "r_motionBlurObjectVectors",
         "r_shadowMapHashedAlpha", "r_shadowMapTranslucentReceivers", "r_useShadowMap", "s_useEAXReverb",
-        "r_shadowMapCharacterSelfShadow")},
+        "r_shadowMapCharacterSelfShadow", "r_depthOfField")},
     **{key: ("boolean", True) for key in ("r_shadowMapPointLights", "r_hdrSceneTarget")},
     **{key: ("number", 0) for key in (
         "r_brightness", "r_customHeight", "r_customWidth", "r_displayRefresh", "r_forceAmbient", "r_mode", "r_multiSamples",
@@ -90,7 +90,7 @@ EDITS = ("com_performancePreset", "r_bloom", "r_borderless", "r_brightness", "r_
          "image_writeGeneratedImages", "r_motionBlur", "r_rendererBenchmarkPreset", "r_rendererUploadFrameBuffers",
          "r_rendererUploadMegs", "r_shadowMapMaxUpdatesPerView", "r_shadowMapSize", "r_useShadowMap", "s_maxEmitterChannels",
          "s_maxSoundsPerShader", "s_numberOfSpeakers", "s_useEAXReverb", "ui_retainedScale", "ui_retainedTextScale",
-         "r_shadowMapCharacterSelfShadow")
+         "r_shadowMapCharacterSelfShadow", "r_depthOfField")
 RENDER_SLOTS = 32                         # the renderer device list (RenderingSettings)
 PROFILES = ("minimum", "lowpower", "low", "performance", "balanced", "enhanced", "quality", "ultra", "maximum")   # PerformancePreset.cpp
 # The service's values as presentation variables: each its name and state.
@@ -522,6 +522,10 @@ def dialogs(doc: Document) -> list:
     doc.bind("confirmation-message.text", "confirmation-message", "text", st("settings.message"))
     doc.bind("confirmation-countdown.text", "confirmation-countdown", "text",
              {"op": "numberText", "args": [op("ceil", st("settings.remaining"))], "decimals": 0})
+    # The Keep countdown only means something while Keep is offered; during
+    # recovery it would read 0 under "Settings need attention" (#260).
+    doc.bind("confirmation-countdown.display", "confirmation-countdown", "display",
+             op("select", st("settings.canConfirm"), "block", "none"))
     confirm = dialog(doc, "confirmation", "#str_229993", [message, countdown], [keep, revert, retry], st("settings.confirmationVisible"),
                      "settings_revert", "confirmationBack")
 
@@ -565,7 +569,7 @@ def system_document() -> dict:
               "#str_41092", "#str_229946", "#str_229947", "#str_229975", "#str_229948", "#str_229949", "#str_229945", "#str_200148",
               "#str_200160", "#str_200161", "#str_200162", "#str_223009", "#str_41082", "#str_41088", "#str_41084", "#str_41094",
               "#str_223002", "#str_223003", "#str_41090", "#str_41107", "#str_42820", "#str_41103", "#str_232513", "#str_232548",
-              "#str_232550", "#str_232552", "#str_232553")
+              "#str_232550", "#str_232552", "#str_232553", "#str_232914")
     x = value_column(labels)
     draft = lambda key: st(f"settings.draft.{key}")
     edit = lambda key: f"edit.{key}"
@@ -632,11 +636,14 @@ def system_document() -> dict:
              op("select", st("settings.display.spanAvailable"), "#str_230088", "#str_230089"))
     fullscreen = row(doc, "settings_fullscreen", "#str_200147", "toggle", x, value=draft("r_fullscreen"), action=edit("r_fullscreen"))
     gate(doc, "settings_fullscreen", QUIET, None)
+    # Borderless shapes only a window and the Fullscreen Policy only
+    # fullscreen (RenderSystem_init.cpp, sdl3_backend.cpp): each waits for
+    # Fullscreen's draft to reach it.
     borderless = row(doc, "settings_borderless", "#str_229909", "toggle", x, value=draft("r_borderless"), action=edit("r_borderless"))
-    gate(doc, "settings_borderless", QUIET, None)
+    gate(doc, "settings_borderless", both(QUIET, no(draft("r_fullscreen"))), opacity=dim(no(draft("r_fullscreen")), 0.45))
     policy = choice(doc, "settings_fullscreen_policy", "#str_229910", x, edit("r_fullscreenDesktop"), draft("r_fullscreenDesktop"),
                     [(("#str_229911", 0), True), (("#str_229911", 1), False)])
-    gate(doc, "settings_fullscreen_policy", QUIET, None)
+    gate(doc, "settings_fullscreen_policy", both(QUIET, draft("r_fullscreen")), opacity=dim(draft("r_fullscreen"), 0.45))
     msaa = choice(doc, "settings_msaa", "#str_41093", x, edit("r_multiSamples"), draft("r_multiSamples"),
                   listed("#str_230020", (0, 2, 4, 8, 16)))
     gate(doc, "settings_msaa", both(QUIET, st("settings.msaaAvailable")), opacity=dim(st("settings.msaaAvailable"), 0.45))
@@ -656,9 +663,13 @@ def system_document() -> dict:
                       listed("#str_232549", (30, 60, 75, 90, 120, 144, 165, 240, 360, 0)))
     gate(doc, "settings_framecap", EDITABLE)
     windowed = no(draft("r_fullscreen"))
-    exclusive = no(draft("r_fullscreenDesktop"))
-    # Android's window manager owns the window: its size cannot be typed.
+    # display resolution, custom size and refresh rate size only an
+    # exclusive fullscreen (r_fullscreen 1, r_fullscreenDesktop 0); window
+    # takes window size and desktop fullscreen desktop's.
+    exclusive = both(draft("r_fullscreen"), no(draft("r_fullscreenDesktop")))
+    # Android's window manager owns window: size cannot be typed.
     sizing_live = both(LIVE, st("settings.display.windowSizeEditable"))
+
     width = size_row(doc, "settings_window_width", "#str_229946", x, edit("r_windowWidth"), "r_windowWidth", 320)
     height = size_row(doc, "settings_window_height", "#str_229947", x, edit("r_windowHeight"), "r_windowHeight", 240)
     for ident in ("settings_window_width", "settings_window_height"):
@@ -675,7 +686,7 @@ def system_document() -> dict:
                      [(st(f"settings.display.refresh.{index}.label"), index) for index in range(system_display_catalog.REFRESH_SLOTS)],
                      count=st("settings.display.refresh.optionCount"))
     for ident in ("settings_display_mode", "settings_display_refresh"):
-        gate(doc, ident, both(QUIET, EXCLUSIVE_LISTS), opacity=dim(EXCLUSIVE_LISTS, 0.45))
+        gate(doc, ident, both(QUIET, EXCLUSIVE_LISTS, draft("r_fullscreen")), opacity=dim(both(EXCLUSIVE_LISTS, draft("r_fullscreen")), 0.45))
 
     # IMAGE QUALITY: resolution, anti-aliasing and filtering, and the
     # surfaces the renderer draws; EFFECTS: the lighting and post-processing.
@@ -686,7 +697,10 @@ def system_document() -> dict:
             ("settings_bump", "#str_200162", "r_skipBump", "-enabled"), ("settings_sky", "#str_223009", "r_skipSky", "-enabled"),
             ("settings_bloom", "#str_41082", "r_bloom", None),
             ("settings_tonemap", "#str_41084", "r_hdrToneMap", None), ("settings_shadowmaps", "#str_232552", "r_useShadowMap", None),
-            ("settings_motionblur", "#str_232553", "r_motionBlur", None)):
+            ("settings_motionblur", "#str_232553", "r_motionBlur", None),
+            # The game's depth of field: the weapon wheel's focus and scripted
+            # cinematic focus (r_dof, the capture camera, stays console-only).
+            ("settings_depthoffield", "#str_232914", "r_depthOfField", None)):
         value = draft(setting) if action is None else no(draft(setting))
         toggles[ident] = row(doc, ident, key, "toggle", x, value=value, action=edit(setting) + (action or ""))
     # Ambient Occlusion (REN-10): Off, SSAO, HBAO or GTAO in one choice over r_ssao
@@ -732,7 +746,7 @@ def system_document() -> dict:
     for ident in ("settings_brightness", "settings_brightness_number", "settings_shadows", "settings_specular", "settings_bump",
                   "settings_sky", "settings_bloom", "settings_ssao", "settings_tonemap", "settings_postaa", "settings_ambient_enabled",
                   "settings_ambient", "settings_ambient_number", "settings_crt", "settings_irradiance", "settings_anisotropy",
-                  "settings_motionblur"):
+                  "settings_motionblur", "settings_depthoffield"):
         gate(doc, ident, EDITABLE, None if ident.endswith("_number") else 0.4)
 
     tabs = [
@@ -749,7 +763,7 @@ def system_document() -> dict:
             [heading("#str_232546"), toggles["settings_shadows"], toggles["settings_shadowmaps"], self_shadow, irradiance, preload,
              preload_help, preload_status],
             [heading("#str_232547"), toggles["settings_bloom"], toggles["settings_ssao"], toggles["settings_tonemap"],
-             toggles["settings_motionblur"], crt]]),
+             toggles["settings_motionblur"], toggles["settings_depthoffield"], crt]]),
     ]
 
     # APPLY CHANGES under the columns' trailing end, the service's message

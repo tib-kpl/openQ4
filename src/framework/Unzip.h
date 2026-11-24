@@ -29,6 +29,7 @@ If you have questions concerning this license or the applicable additional terms
 #ifndef __UNZIP_H__
 #define __UNZIP_H__
 
+#include <zlib-ng.h>
 
 #if defined(STRICTUNZIP) || defined(STRICTZIPUNZIP)
 /* like the STRICT of WIN32, we define a pointer that cannot be converted
@@ -87,41 +88,13 @@ typedef struct unz_file_info_internal_s
     unsigned long offset_curfile;/* relative offset of static header 4 unsigned chars */
 } unz_file_info_internal;
 
-typedef void* (*alloc_func) (void* opaque, unsigned int items, unsigned int size);
-typedef void   (*free_func) (void* opaque, void* address);
-
-struct internal_state;
-
-typedef struct z_stream_s {
-    unsigned char    *next_in;  /* next input unsigned char */
-    unsigned int     avail_in;  /* number of unsigned chars available at next_in */
-    unsigned long    total_in;  /* total nb of input unsigned chars read so */
-
-    unsigned char    *next_out; /* next output unsigned char should be put there */
-    unsigned int     avail_out; /* remaining free space at next_out */
-    unsigned long    total_out; /* total nb of unsigned chars output so */
-
-    char     *msg;      /* last error message, NULL if no error */
-    struct internal_state *state; /* not visible by applications */
-
-    alloc_func zalloc;  /* used to allocate the internal state */
-    free_func  zfree;   /* used to free the internal state */
-    unsigned char*     opaque;  /* private data object passed to zalloc and zfree */
-
-    int     data_type;  /* best guess about the data type: ascii or binary */
-    unsigned long   adler;      /* adler32 value of the uncompressed data */
-    unsigned long   reserved;   /* reserved for future use */
-} z_stream;
-
-typedef z_stream *z_streamp;
-
 
 /* file_in_zip_read_info_s contain internal information about a file in zipfile,
     when reading and decompress it */
 typedef struct
 {
 	char  *read_buffer;         /* internal buffer for compressed data */
-	z_stream stream;            /* zLib stream structure for inflate */
+	zng_stream stream;          /* zlib-ng stream structure for inflate */
 
 	unsigned long pos_in_zipfile;       /* position in unsigned char on the zipfile, for fseek*/
 	unsigned long stream_initialised;   /* flag set if stream structure is initialised*/
@@ -188,6 +161,16 @@ extern int unzStringFileNameCompare (const char* fileName1, const char* fileName
 
 extern unzFile unzOpen (const char *path);
 extern unzFile unzReOpen (const char* path, unzFile file);
+
+/*
+  unzReOpen takes an idle read handle of the same pack path when one is
+  available, and unzClose of a reopened handle returns it to that idle list.
+  unzSetHandleReuse turns this on or off; unzReleaseIdleHandles closes a
+  pack's idle handles and retires the ones its readers still hold. Call it
+  before the pack's own handle is closed.
+*/
+extern void unzSetHandleReuse (bool enable);
+extern void unzReleaseIdleHandles (const char* path);
 
 /*
   Open a Zip file. path contain the full pathname (by example,
