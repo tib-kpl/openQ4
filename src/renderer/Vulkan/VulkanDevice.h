@@ -118,6 +118,7 @@ typedef struct vkDeviceContext_s {
 	// All multisample pipelines and depth-image transitions use the same pattern.
 	VkSampleCountFlags sampleLocationCounts;
 	bool				depthClampSupported;
+	bool				shaderViewportIndexLayer;	// a vertex shader may write gl_Layer
 	// Clip-space z follows OpenGL's [-w, w] in hardware
 	// (VK_EXT_depth_clip_control negativeOneToOne on every graphics pipeline):
 	// projections are then used unmodified, and window depth rounds exactly as
@@ -302,6 +303,10 @@ void	VK_Device_BlockPresentation( renderDisplayOutcome_t outcome, VkResult error
 // workload. Shadow-volume draws keep their own c_shadow* counters, which
 // is also what GL does, so they must not be passed here.
 void	VK_Device_CountDrawIndexed( int indexCount, int vertexCount );
+// The index count a surface's draw submits: all of it, or one triangle under
+// r_singleTriangle, as RB_DrawElementsWithCounters draws on OpenGL (the
+// benchmark command's "single tri" row measures the frame without its fill).
+uint32_t	VK_Device_DrawIndexCount( int numIndexes );
 
 // per-heap VMA usage, budget and live allocations (gfxInfo,
 // rendererVulkanMemoryInfo)

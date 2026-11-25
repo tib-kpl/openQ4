@@ -12,6 +12,90 @@ does not restore the withdrawn release. See
 protocol 2.42 and render demo v14 do not interoperate with 0.14.1. Its
 player-facing notes are [releases/v0.15.0.md](releases/v0.15.0.md).
 
+## Point-light shadows cost less processor time on Vulkan, 24 November 2026
+
+- **Less work for every shadowed lamp.** A point light's shadow has six faces,
+  and Vulkan drew each in a pass of its own, twelve when a moving object was
+  added over a stored shadow. Where the graphics driver supports it, all six
+  now go into one pass, as on OpenGL since 18 November. With ten lamps
+  redrawn every frame the shadow pass took a fifth less processor time, and
+  less whenever a moving object stands under a stored lamp. Shadows look
+  exactly as before.
+- **What to do.** Replace the renderer modules. `r_shadowMapPointLayered 0`
+  draws the faces one at a time, for comparison, on both renderers now.
+  Drivers without the needed feature keep the old path by themselves; the log
+  says which is in use.
+- **Not changed.** OpenGL keeps the still scenery of the cascades' whole-light
+  shadow between frames (`r_shadowMapCascadeFarCache`). The same was built
+  and measured for Vulkan and left out: it saved a little processor time and
+  cost the graphics card as much or more, so Vulkan keeps redrawing that map.
+- Details: [Vulkan executor resource profiling](vulkan-resource-profiling.md#shadow-map-savings-from-opengl-24-november-2026)
+  and the roadmap under VK-06.
+
+## Vulkan: settings that did nothing now work, and less copying every frame, 24 November 2026
+
+A pass-by-pass comparison of the Vulkan renderer with OpenGL. Automatic picks
+Vulkan on desktop, so these reached most players.
+
+- **Ambient Light works on Vulkan.** The setting (`r_forceAmbient`) brightened
+  nothing there. It now lifts the picture exactly as on OpenGL.
+- **Weapon FOV works on Vulkan.** The view weapon ignored **Weapon FOV**
+  (`cl_gunfov`, `cl_gunfov_adjust`) and always followed the view's field of
+  view. It now takes its own, and temporal anti-aliasing and motion blur
+  follow it.
+- **Less work per frame on Vulkan.** Level geometry was copied to the
+  graphics card again every frame, the largest single cost of drawing a
+  frame there. It is now copied once and kept, which about halves that work
+  (measured on Air Defense 1; the picture is bit-identical). `r_vkStaticGeometry 0`
+  restores the old behaviour, and `r_vkStaticGeometryMegs` sizes the buffer
+  (96 MiB by default).
+- **Smaller shadow maps on AMD and Apple graphics.** Vulkan shadow maps took
+  a depth format with an unused stencil channel on devices without packed
+  24-bit depth. They now take half the memory there, with the same picture,
+  and the point-light shadow cache keeps its full 64 slots within its budget.
+- **Diagnostics.** `com_speeds` showed a back-end time of zero on both
+  renderers and now shows the frame's. On Vulkan, `r_skipRender`,
+  `r_singleTriangle` (the `benchmark` command's "single tri" row), the debug
+  clear colours and the renderer metrics' command counts now behave as on
+  OpenGL. `rendererVulkanMemoryInfo` reports the resident geometry.
+
+Evidence and the gaps still open are in the roadmap under VK-06 and VK-07 and
+in [Vulkan executor resource profiling](vulkan-resource-profiling.md#resident-static-geometry-24-november-2026).
+
+## Sunlight shadows reach into corners and under ledges, 24 November 2026
+
+- **Shadows from sunlight and distant lamps no longer stop short of the wall
+  or ledge that casts them.** With shadow maps on (Quality and above), a
+  strip just behind a wall, under a roof or at the foot of a rock stayed lit
+  where the original shadows are dark: up to tens of units under a large
+  outdoor light. These lights now record every object the way the original
+  shadows do, by the surfaces facing away from the light, and drop the
+  safety margin that let that light through. Against the original shadows,
+  the area wrongly lit in the worst view of twelve such lights falls from 29
+  to 5 points summed, on OpenGL and Vulkan alike; Hub 2's large fill light
+  goes from 13% of a view to under half a percent.
+- **More of these lights cast the original shape of the level's shadows.**
+  About a fifth of the lamps mounted outside the area they light, those whose
+  stored shadow also holds a grating, now use that stored shadow as well.
+  A grating inside the lit area keeps the holes in its shadow; one that
+  reaches outside it casts solid, as in the original game
+  (`r_shadowMapPrelightCutouts 0` casts every grating solid).
+- **What you need to do.** Nothing. `r_shadowMapDistantFarShell 0` brings
+  back the earlier behaviour; `r_shadowMapDistantFarShellBias` (0 to 1) puts
+  part of the margin back if speckles appear in sunlight on your system. The
+  original stencil shadows and the Balanced tier are unchanged.
+- **What is not shown.** The tube lights of Network 1 still darken part of a
+  grate ring the original shadows leave lit (as before this change), and the
+  lights the map compiler gave no stored shadow keep the earlier behaviour.
+  The area the shadow map darkens where the original shadows do not rises
+  slightly on some lights (a few tenths of a percent of a view). One graphics
+  card on Windows was measured.
+- **Checks.** The stencil parity scan on OpenGL and Vulkan; the moving-door,
+  caster-cycle, Air Defense 1 outdoor and cascade-motion scenarios and the
+  continuous-motion receiver check on both; the in-engine shadow self-tests.
+- **Developer detail:** [the rest of the off-centre lights](shadowmapping-audit-2026-11-09.md#the-rest-of-the-off-centre-lights)
+  and REN-03 in the [roadmap](roadmap.md).
+
 ## Faster pack reads and cache writes, oversized screenshots and cleaner mirrors, from openPR06, 24 November 2026
 
 Fixes and speed-ups first made in openPR06, the PREY port built on openQ4,
@@ -244,27 +328,6 @@ gave the pack-read, cache-write, shader-startup and Ogg improvements.
   airdefense1 gameplay capture's Classic shot shows the fills, the ring, the
   shotgun's arc and arrow. Not yet run: Vulkan.
 
-## Point lights keep their shadows in crowded views on Vulkan, 23 November 2026
-
-- **Lights no longer shine through walls when a view runs out of shadow
-  maps** (#258). Vulkan renders a view's point-light shadows into a bounded
-  pool of cubes, and some views of `mcc_landing` see 240 to 265 lights, more
-  than a hundred of them point lights that cast shadows. A light that found
-  no cube left fell back to its stencil shadows only when they were
-  complete. Most lights also cast from surfaces only shadow maps draw, such
-  as grates, so they drew with no shadow at all. They now draw the stencil
-  shadows they have: the original game's shadows, without the map-only ones.
-  On a 56-spot sweep of `mcc_landing` this cut unshadowed light-frames by 87%
-  on Maximum and 79% on Ultra, and the result matches OpenGL, which renders
-  each cube in turn and never runs out. The rest are lights in the frame they
-  switch to stencil, which has no volumes yet.
-- **Maximum's point-light shadows are 1024 pixels, not 2048.** A 2048 cube
-  is 96 MB, so the default budget held five and a Vulkan view's pool twelve.
-  The preset change brings up the System Check once.
-- Evidence: scripted camera sweeps (no input) on Vulkan and OpenGL, and
-  side-by-side captures against OpenGL. Not yet run: a frame-time
-  comparison.
-
 ## Lighter zoom scopes and cannon optics, smaller HUD files, 23 November 2026
 
 - **Scopes and the cannon draw once.** The user asked for a round of HUD
@@ -301,6 +364,27 @@ gave the pack-read, cache-write, shader-startup and Ogg improvements.
   and after (OpenGL, no input), and `enableWeapon`/`disableWeapon` from the
   console bringing the stance and the gun back and dropping them again.
   Not yet seen: Kane's Strogg body on `mcc_2`, and Vulkan.
+
+## Point lights keep their shadows in crowded views on Vulkan, 23 November 2026
+
+- **Lights no longer shine through walls when a view runs out of shadow
+  maps** (#258). Vulkan renders a view's point-light shadows into a bounded
+  pool of cubes, and some views of `mcc_landing` see 240 to 265 lights, more
+  than a hundred of them point lights that cast shadows. A light that found
+  no cube left fell back to its stencil shadows only when they were
+  complete. Most lights also cast from surfaces only shadow maps draw, such
+  as grates, so they drew with no shadow at all. They now draw the stencil
+  shadows they have: the original game's shadows, without the map-only ones.
+  On a 56-spot sweep of `mcc_landing` this cut unshadowed light-frames by 87%
+  on Maximum and 79% on Ultra, and the result matches OpenGL, which renders
+  each cube in turn and never runs out. The rest are lights in the frame they
+  switch to stencil, which has no volumes yet.
+- **Maximum's point-light shadows are 1024 pixels, not 2048.** A 2048 cube
+  is 96 MB, so the default budget held five and a Vulkan view's pool twelve.
+  The preset change brings up the System Check once.
+- Evidence: scripted camera sweeps (no input) on Vulkan and OpenGL, and
+  side-by-side captures against OpenGL. Not yet run: a frame-time
+  comparison.
 
 ## Depth of field for captures and the weapon wheel, 23 November 2026
 
@@ -435,6 +519,34 @@ gave the pack-read, cache-write, shader-startup and Ogg improvements.
   which AUD-03 and the native-resolution presets changed without re-binding.
   Human judgement while casting, 21:9 and 9:16 captures and the rosters in MVD
   playback remain.
+
+## Record video of the game, 23 November 2026
+
+- **`recordVideo`, `stopVideo` and `toggleVideo`** record the window as it is
+  presented, HUD, menus and console included, with the game's sound, to
+  `baseoq4/videos` in the save folder. `aviGame` and `aviDemo` record video
+  too, in place of their unfinished screenshot path.
+- **Smooth by default.** Single-player and demo recordings run a whole number
+  of game steps per video frame, so the video never stutters; the game slows
+  down instead if encoding falls behind. Online recordings follow the clock.
+- **Good quality out of the box.** MP4, H.264 + AAC, the window's
+  resolution, 60 frames a second, quality 80 (about 7 Mbit/s at 1280x720).
+  On Windows Media Foundation writes it with no other program, on the GPU's
+  encoder where the driver has one. MKV, WebM, MOV and GIF, and HEVC, AV1,
+  VP9 and ProRes, go through the player's own FFmpeg, which uses NVENC, AMF,
+  Quick Sync or VideoToolbox when a test encode passes. Without FFmpeg a
+  recording falls back to a built-in Motion JPEG AVI.
+- **Settings:** `com_videoFormat`, `com_videoCodec`, `com_videoFPS`,
+  `com_videoQuality`, `com_videoBitrate`, `com_videoHeight`, `com_videoAudio`,
+  `com_videoAudioBitrate`, `com_videoTiming`, `com_videoHardware`,
+  `com_videoEncoder`, `com_videoPreset`, `com_videoFFmpeg`, `com_videoFolder`;
+  `videoEncoders` lists what the system has.
+- Evidence (Windows, decoded with FFmpeg 7.1): Media Foundation MP4 on OpenGL
+  and Vulkan, FFmpeg MKV with NVENC in real time (300 of 301 frames
+  distinct), WebM with libvpx and Opus, GIF, the built-in AVI (300 distinct
+  frames, PCM) and `aviGame` at 30 fps, each with audible sound. Not yet run:
+  a multiplayer recording, `aviDemo` of a render demo, Linux and macOS.
+- Render API 37: replace the engine and the renderer modules together.
 
 ## The Classic ruleset plays by its own numbers, 23 November 2026
 
@@ -833,9 +945,11 @@ gave the pack-read, cache-write, shader-startup and Ogg improvements.
 ## Controllers: the one in your hands, aim in degrees, gyro, layouts and haptics, 22 November 2026
 
 - **The controller in your hands is the one in charge.** Every connected
-  controller is ready: press a button or push a stick on another and it takes
-  over, with the prompts changing to its buttons and anything the first one
-  held released. **Settings → Controls → Controller → Active Controller** can
+  controller is ready: put one down, press a button or push a stick on another
+  and it takes over, with the prompts changing to its buttons and anything the
+  first one held released. A remapping tool's or Steam Input's second,
+  virtual copy of the controller you are holding no longer fights it for
+  control, which made turning speed jump about. **Settings → Controls → Controller → Active Controller** can
   keep one controller in charge instead, which helps with a Steam Deck and an
   external pad, or a remapping tool's second, virtual controller.
 - **Losing your controller no longer leaves you helpless.** In single-player

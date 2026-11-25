@@ -203,6 +203,9 @@ On every platform, openQ4 never draws a half-finished shadow: it rejects incompl
 | `r_shadowMapStableAlphaHash` | `1` | `0..1` | Keeps that cutout pattern fixed to the world, so it doesn't crawl as the camera moves. |
 | `r_shadowMapTranslucentReceivers` | `1` | `0..1` | Lets see-through surfaces receive shadows like solid ones, as `r_stencilTranslucentShadows` does for the original shadows. |
 | `r_shadowMapCasterCulling` | `2` | `0..4` | Which side of an object's surfaces the shadow records. `2` (automatic) matches the original shadows: a lamp behind a one-sided panel shines through it, and solid props keep a grounded contact shadow. `0` records both sides, `1` the side facing the light, `3` the side facing away for every object, and `4` is the earlier automatic mode, kept for comparison. |
+| `r_shadowMapDistantFarShell` | `1` | `0..1` | Sunlight and other distant lights record every object by the rule the original shadows use, the surfaces facing away from the light, and keep almost no bias (`r_shadowMapDistantFarShellBias`). Shadows then reach into corners and under ledges as the original ones do, where they used to stop short by up to tens of units. `0` restores the earlier behaviour. **Not in 0.15.0.** |
+| `r_shadowMapPrelightCasters` | `1` | `0..2` | What the level's own geometry casts into the shadow of a light mounted outside the area it lights (sunlight, distant fill lights): `1` uses the shadow volume the map compiler stored for that light, so the shadow matches the original one; `0` casts each surface whole, as in 0.15.0; `2` uses the stored volume for every light that has one. **Not in 0.15.0.** |
+| `r_shadowMapPrelightCutouts` | `1` | `0..1` | With `r_shadowMapPrelightCasters`, a grate or other see-through surface inside such a light's area keeps the holes in its shadow. `0` casts it solid, as the original shadows do. **Not in 0.15.0.** |
 
 ### Sharpness and memory
 
@@ -271,6 +274,7 @@ Shadow artifacts usually come in two kinds: speckles or stripes on a lit surface
 | `r_shadowMapNormalOffsetScale` | `1.0` | `0..8` | Nudges the shadow lookup off sloped surfaces. Helps with stripes, but too high moves contact edges, especially on large lights. |
 | `r_shadowMapDistantNormalOffsetDepth` | `1` | `0..1` | For sunlight and other distant lights, sizes that nudge to the shadow pixel at each surface's distance from the light, so nearby shadows stay attached. `0` uses one size, the one for the far end of the light. **New in 0.15.0.** |
 | `r_shadowMapReceiverPlaneBias` | `0` | `0..1` | An experimental alternative bias. Leave it off for normal play. |
+| `r_shadowMapDistantFarShellBias` | `0` | `0..1` | How much of the bias above sunlight and distant lights keep while `r_shadowMapDistantFarShell` is on. Their shadows hold only surfaces facing away from the light, so a lit surface cannot shade itself, and any bias only lets light into the corner behind a wall or under a roof. Raise it in small steps if speckles appear in sunlight. **Not in 0.15.0.** |
 | `r_shadowMapPolygonFactor` | `0.25` | `0..16` | Pushes shadow-casting surfaces back in proportion to their slope while the shadow is drawn. |
 | `r_shadowMapPolygonOffset` | `0.5` | `0..64` | Pushes shadow-casting surfaces back by a fixed amount while the shadow is drawn. |
 | `r_shadowMapPointBias` | `0.00010` | `0..0.05` | Basic point-light bias. |
@@ -310,7 +314,7 @@ These help when reporting a shadow problem. Leave the last five settings at thei
 | `r_shadowMapSkipStencilShadows` | `1` | Skips building original shadows for lights drawn with shadow maps, which saves processor time. A light whose map fails gets them back the next frame. |
 | `r_shadowMapConservativeCasters` | `1` | Lets objects off screen cast shadows onto what you can see. |
 | `r_shadowMapPointCompose` | `1` | Comparison switch: draws a point light's moving objects over its stored shadow instead of redrawing all six faces. |
-| `r_shadowMapPointLayered` | `1` | Comparison switch, OpenGL: draws all six faces of a point light's shadow in one pass where the graphics driver allows it, which saves processor time. `0` draws the faces one at a time. The picture is identical. |
+| `r_shadowMapPointLayered` | `1` | Comparison switch: draws all six faces of a point light's shadow in one pass where the graphics driver allows it, which saves processor time. `0` draws the faces one at a time. The picture is identical. OpenGL since 0.15.0; Vulkan in development builds after it. |
 | `r_shadowMapCacheMovingLights` | `0` | Comparison switch: a moving light gets a new shadow every frame, so it is drawn directly rather than stored. `1` stores it anyway. A light that only changes colour is not moving. |
-| `r_shadowMapCascadeFarCache` | `1` | Comparison switch, OpenGL: keeps the still scenery of the cascades' whole-light map between frames and draws only moving objects over it. `0` redraws it every frame. The picture is identical. **New in 0.15.0.** |
+| `r_shadowMapCascadeFarCache` | `1` | Comparison switch, OpenGL: keeps the still scenery of the cascades' whole-light map between frames and draws only moving objects over it. `0` redraws it every frame. The picture is identical. Vulkan always redraws it: storing it was measured there and cost the graphics card more than it saved. **New in 0.15.0.** |
 | `r_vkShadowSampleResident` | `1` | Comparison switch, Vulkan: reads a stored spotlight shadow in place instead of copying it each frame. The picture is identical. |
