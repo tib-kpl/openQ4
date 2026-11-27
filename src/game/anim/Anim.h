@@ -1,5 +1,5 @@
 // RAVEN BEGIN
-// bdube: note that this file is no longer merged with legacy engine updates
+// bdube: note that this file is no longer merged with Doom3 updates
 //
 // MERGE_DATE 09/30/2004
 
@@ -538,6 +538,7 @@ public:
 	void						SetPlaybackRate( int currentTime, float newRate );
 	float						GetPlaybackRate( void ) const;
 	void						SetStartTime( int startTime );
+	void						ShiftTime( int deltaMsec );
 	int							GetStartTime( void ) const;
 	int							GetEndTime( void ) const;
 	int							GetFrameNumber( int currenttime ) const;
@@ -619,6 +620,9 @@ class idAnimator{
 	bool						HasAnim( const char *name ) const;
 
 	void						ServiceAnims( int fromtime, int totime );
+	// Shift every active animation clock without evaluating frame commands.
+	// Used by the centralized competitive pause pass.
+	void						ShiftTime( int deltaMsec );
 
 // RAVEN BEGIN
 // rjohnson: added flag to ignore AF when checking for animation
@@ -661,6 +665,12 @@ class idAnimator{
 	bool						GetDeltaRotation( int fromtime, int totime, idMat3 &delta ) const;
 	void						GetOrigin( int currentTime, idVec3 &pos ) const;
 	bool						GetBounds( int currentTime, idBounds &bounds );
+	// Bounds of 'model' in a draw-only pose of this animator's skeleton (a
+	// pose between two game tics). Widens the bounds GetBounds last measured
+	// by the distance the joints have travelled since, where the model can;
+	// otherwise the mesh is skinned for them. Leaves 'bounds' alone and
+	// returns false when the model has no posed bounds to give.
+	bool						GetPresentationBounds( const idRenderModel *model, const idJointMat *poseJoints, idBounds &bounds ) const;
 
 	idAnimBlend					*CurrentAnim( int channelNum );
 	void						Clear( int channelNum, int currentTime, int cleartime );
@@ -766,6 +776,11 @@ private:
 	bool						forceUpdate;
 
 	idBounds					frameBounds;
+	// The pose frameBounds was skinned from, while frameBounds is the exact
+	// bounds of the mesh in it (GetPresentationBounds). Never serialized.
+	idJointMat *				frameBoundsJoints;
+	int							frameBoundsNumJoints;
+	bool						frameBoundsJointsValid;
 
 	float						AFPoseBlendWeight;
 	idList<int>					AFPoseJoints;

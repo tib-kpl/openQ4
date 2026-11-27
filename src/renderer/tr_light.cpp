@@ -1094,7 +1094,7 @@ void idRenderWorldLocal::CreateLightDefInteractions( idRenderLightLocal *ldef ) 
 
 			// if any of the edef's interaction match this light, we don't
 			// need to consider it. 
-			if ( r_useInteractionTable.GetBool() && this->interactionTable ) {
+			if ( r_useInteractionTable.GetBool() && this->interactionTable && !ldef->interactionTableDetached ) {
 				// allocating these tables may take several megs on big maps, but it saves 3% to 5% of
 				// the CPU time.  The table is updated at interaction::AllocAndLink() and interaction::UnlinkAndFree()
 				int index = ldef->index * this->interactionTableWidth + edef->index;
@@ -1624,6 +1624,68 @@ bool R_ShadowMapLightSourceOutsideVolume( const renderLight_t &parms ) {
 
 /*
 =================
+R_ShadowMapPrelightVolumeFoldsCaps
+
+dmap leaves the cap ranges out of a volume when a perforated or translucent
+surface casts into it (BuildLightShadows: "can't ever remove front faces"),
+so stencil always draws it with its caps. The caps are still in the index
+list.
+=================
+*/
+bool R_ShadowMapPrelightVolumeFoldsCaps( const srfTriangles_t *shadowTri ) {
+	return shadowTri != NULL && shadowTri->numIndexes > 0
+		&& shadowTri->numShadowIndexesNoFrontCaps >= shadowTri->numIndexes;
+}
+
+/*
+=================
+R_ShadowMapPrelightCapOnCutout
+
+Whether a front cap lies on one of the light's perforated world triangles:
+a cap is a piece of the casting triangle, so its centre lies in that
+triangle's plane and inside it.
+=================
+*/
+static bool R_ShadowMapPrelightCapOnCutout( const idVec3 &a, const idVec3 &b, const idVec3 &c,
+		const idList<shadowMapPrelightCutout_t> *cutouts ) {
+	if ( cutouts == NULL || cutouts->Num() == 0 ) {
+		return false;
+	}
+	const idVec3 centre = ( a + b + c ) * ( 1.0f / 3.0f );
+	for ( int i = 0; i < cutouts->Num(); ++i ) {
+		const shadowMapPrelightCutout_t &cutout = ( *cutouts )[i];
+		if ( !cutout.bounds.ContainsPoint( centre ) ) {
+			continue;
+		}
+		if ( idMath::Fabs( cutout.plane.Distance( centre ) ) > 0.5f ) {
+			continue;
+		}
+		// on the same side of all three edges, with a small margin (the
+		// plane's normal may point either way round the winding)
+		bool inward = true;
+		bool outward = true;
+		for ( int edge = 0; edge < 3; ++edge ) {
+			const idVec3 &from = cutout.v[edge];
+			const idVec3 &to = cutout.v[( edge + 1 ) % 3];
+			const idVec3 across = cutout.plane.Normal().Cross( to - from );
+			const float length = across.Length();
+			if ( length <= idMath::FLOAT_EPSILON ) {
+				inward = outward = false;
+				break;
+			}
+			const float side = ( centre - from ) * across / length;
+			inward = inward && side >= -0.25f;
+			outward = outward && side <= 0.25f;
+		}
+		if ( inward || outward ) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/*
+=================
 R_ShadowMapBuildPrelightCaster
 
 The front caps of a prelight shadow volume as ordinary caster geometry. dmap
@@ -1639,19 +1701,51 @@ discards one copy is drawn: the set is already the one the stencil rule
 selects, and it must not be selected again by a rule or a projection
 handedness that could disagree.
 
-NULL when the volume carries no separate front caps. dmap folds them away
-when a perforated surface casts into the volume, and such a light keeps its
-per-surface casters, which hold the cutouts.
+A volume whose caps dmap folded away (a perforated surface casts into it)
+still holds them: its vertexes come in pairs, a point on the casting geometry
+and then its projection, and a front cap is a triangle on three of the first
+kind. Those caps are taken, less the ones that lie on a perforated world
+triangle (cutouts): those surfaces keep casting into the map surface by
+surface, through their holes, where stencil casts them solid.
+
+NULL when the volume gives no caps.
 =================
 */
-srfTriangles_t *R_ShadowMapBuildPrelightCaster( const srfTriangles_t *shadowTri ) {
+srfTriangles_t *R_ShadowMapBuildPrelightCaster( const srfTriangles_t *shadowTri,
+		const idList<shadowMapPrelightCutout_t> *cutouts ) {
 	if ( shadowTri == NULL || shadowTri->shadowVertexes == NULL || shadowTri->indexes == NULL
 			|| shadowTri->numVerts <= 0 ) {
 		return NULL;
 	}
-	const int first = shadowTri->numShadowIndexesNoFrontCaps;
-	const int count = shadowTri->numIndexes - first;
-	if ( first < 0 || count < 3 || count % 3 != 0 ) {
+	const bool folded = R_ShadowMapPrelightVolumeFoldsCaps( shadowTri );
+	const int first = folded ? 0 : shadowTri->numShadowIndexesNoFrontCaps;
+	const int range = shadowTri->numIndexes - first;
+	if ( first < 0 || range < 3 || range % 3 != 0 || ( folded && ( shadowTri->numVerts & 1 ) != 0 ) ) {
+		return NULL;
+	}
+
+	// the cap triangles, as offsets into the index list
+	idList<int> caps;
+	caps.SetGranularity( 1024 );
+	for ( int i = 0; i < range; i += 3 ) {
+		const glIndex_t *tri = shadowTri->indexes + first + i;
+		if ( folded ) {
+			if ( ( tri[0] & 1 ) != 0 || ( tri[1] & 1 ) != 0 || ( tri[2] & 1 ) != 0 ) {
+				continue;	// a silhouette quad or a rear cap
+			}
+			if ( tri[0] >= shadowTri->numVerts || tri[1] >= shadowTri->numVerts || tri[2] >= shadowTri->numVerts ) {
+				return NULL;
+			}
+			if ( R_ShadowMapPrelightCapOnCutout( shadowTri->shadowVertexes[ tri[0] ].xyz.ToVec3(),
+					shadowTri->shadowVertexes[ tri[1] ].xyz.ToVec3(),
+					shadowTri->shadowVertexes[ tri[2] ].xyz.ToVec3(), cutouts ) ) {
+				continue;
+			}
+		}
+		caps.Append( first + i );
+	}
+	const int count = caps.Num() * 3;
+	if ( count < 3 ) {
 		return NULL;
 	}
 
@@ -1662,7 +1756,7 @@ srfTriangles_t *R_ShadowMapBuildPrelightCaster( const srfTriangles_t *shadowTri 
 	int numVerts = 0;
 	bool valid = true;
 	for ( int i = 0; i < count && valid; ++i ) {
-		const int source = shadowTri->indexes[first + i];
+		const int source = shadowTri->indexes[ caps[i / 3] + i % 3 ];
 		// a front cap lies on the casting geometry: the unprojected vertexes
 		if ( source < 0 || source >= shadowTri->numVerts
 				|| shadowTri->shadowVertexes[source].xyz.w != 1.0f ) {
@@ -1689,9 +1783,10 @@ srfTriangles_t *R_ShadowMapBuildPrelightCaster( const srfTriangles_t *shadowTri 
 		}
 	}
 	for ( int i = 0; i < count; i += 3 ) {
-		const glIndex_t a = remap[ shadowTri->indexes[first + i + 0] ];
-		const glIndex_t b = remap[ shadowTri->indexes[first + i + 1] ];
-		const glIndex_t c = remap[ shadowTri->indexes[first + i + 2] ];
+		const glIndex_t *source = shadowTri->indexes + caps[i / 3];
+		const glIndex_t a = remap[ source[0] ];
+		const glIndex_t b = remap[ source[1] ];
+		const glIndex_t c = remap[ source[2] ];
 		tri->indexes[i + 0] = a;
 		tri->indexes[i + 1] = b;
 		tri->indexes[i + 2] = c;
@@ -1702,6 +1797,87 @@ srfTriangles_t *R_ShadowMapBuildPrelightCaster( const srfTriangles_t *shadowTri 
 	Mem_Free( remap );
 	R_BoundTriSurf( tri );
 	return tri;
+}
+
+/*
+=================
+R_ShadowMapPrelightKeepsCutout
+
+Whether a world surface of a light that casts the static world from its
+prelight caps keeps a caster of its own: a perforated, shadow-casting surface
+that lies inside the light's box, which then casts through its holes. A
+perforated surface that reaches outside the box casts solid from the caps, as
+stencil does, since a surface caster is drawn whole and would shadow from
+where the volume holds nothing (network1's tube lights).
+=================
+*/
+idCVar r_shadowMapPrelightCutouts( "r_shadowMapPrelightCutouts", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL,
+	"with r_shadowMapPrelightCasters, a perforated world surface (a grate) that lies inside the light's box keeps its own caster and shadows through its holes; 0 casts it solid from the prelight caps, as stencil shadows do" );
+
+bool R_ShadowMapPrelightKeepsCutout( const idRenderLightLocal *light, const idMaterial *shader, const srfTriangles_t *geo ) {
+	if ( !r_shadowMapPrelightCutouts.GetBool() ) {
+		return false;
+	}
+	if ( light == NULL || shader == NULL || geo == NULL || light->frustumTris == NULL
+			|| shader->Coverage() != MC_PERFORATED || !shader->SurfaceCastsShadow() ) {
+		return false;
+	}
+	idBounds lightBounds = light->frustumTris->bounds;
+	lightBounds.ExpandSelf( 1.0f );
+	return lightBounds.ContainsPoint( geo->bounds[0] ) && lightBounds.ContainsPoint( geo->bounds[1] );
+}
+
+/*
+=================
+R_ShadowMapCollectPrelightCutouts
+
+The perforated world triangles whose caps a light's prelight caster leaves
+out: those of every world area surface that keeps a caster of its own
+(R_ShadowMapPrelightKeepsCutout).
+=================
+*/
+static void R_ShadowMapCollectPrelightCutouts( const idRenderLightLocal *light,
+		idList<shadowMapPrelightCutout_t> &cutouts ) {
+	cutouts.Clear();
+	if ( light == NULL || light->world == NULL || light->frustumTris == NULL ) {
+		return;
+	}
+	const idBounds &lightBounds = light->frustumTris->bounds;
+	const int numAreas = light->world->NumAreas();
+	for ( int area = 0; area < numAreas; ++area ) {
+		idRenderModel *model = renderModelManager->CheckModel( va( "_area%i", area ) );
+		if ( model == NULL || !model->IsStaticWorldModel() || !model->Bounds().IntersectsBounds( lightBounds ) ) {
+			continue;
+		}
+		for ( int s = 0; s < model->NumSurfaces(); ++s ) {
+			const modelSurface_t *surface = model->Surface( s );
+			const srfTriangles_t *geo = surface != NULL ? surface->geometry : NULL;
+			const idMaterial *shader = surface != NULL ? surface->shader : NULL;
+			if ( geo == NULL || geo->verts == NULL || geo->indexes == NULL
+					|| !R_ShadowMapPrelightKeepsCutout( light, shader, geo ) ) {
+				continue;
+			}
+			for ( int i = 0; i + 2 < geo->numIndexes; i += 3 ) {
+				shadowMapPrelightCutout_t cutout;
+				for ( int corner = 0; corner < 3; ++corner ) {
+					cutout.v[corner] = geo->verts[ geo->indexes[i + corner] ].xyz;
+				}
+				cutout.bounds.Clear();
+				for ( int corner = 0; corner < 3; ++corner ) {
+					cutout.bounds.AddPoint( cutout.v[corner] );
+				}
+				if ( !cutout.bounds.IntersectsBounds( lightBounds ) ) {
+					continue;
+				}
+				cutout.bounds.ExpandSelf( 1.0f );
+				cutout.plane.FromPoints( cutout.v[0], cutout.v[1], cutout.v[2] );
+				if ( cutout.plane.Normal().LengthSqr() < 0.5f ) {
+					continue;	// degenerate
+				}
+				cutouts.Append( cutout );
+			}
+		}
+	}
 }
 
 /*
@@ -1739,14 +1915,20 @@ srfTriangles_t *R_ShadowMapPrelightCaster( idRenderLightLocal *light ) {
 		return NULL;
 	}
 #endif
+	// keyed on the volume and on whether cutouts keep their own casters
+	const int sourceKey = shadowTri->numIndexes * 2 + ( r_shadowMapPrelightCutouts.GetBool() ? 1 : 0 );
 	if ( light->shadowMapPrelightCasterSource != shadowTri
-			|| light->shadowMapPrelightCasterSourceIndexes != shadowTri->numIndexes ) {
+			|| light->shadowMapPrelightCasterSourceIndexes != sourceKey ) {
 		if ( light->shadowMapPrelightCaster != NULL ) {
 			R_FreeStaticTriSurf( light->shadowMapPrelightCaster );
 		}
-		light->shadowMapPrelightCaster = R_ShadowMapBuildPrelightCaster( shadowTri );
+		idList<shadowMapPrelightCutout_t> cutouts;
+		if ( R_ShadowMapPrelightVolumeFoldsCaps( shadowTri ) ) {
+			R_ShadowMapCollectPrelightCutouts( light, cutouts );
+		}
+		light->shadowMapPrelightCaster = R_ShadowMapBuildPrelightCaster( shadowTri, &cutouts );
 		light->shadowMapPrelightCasterSource = shadowTri;
-		light->shadowMapPrelightCasterSourceIndexes = shadowTri->numIndexes;
+		light->shadowMapPrelightCasterSourceIndexes = sourceKey;
 	}
 	return light->shadowMapPrelightCaster;
 }
@@ -1796,18 +1978,45 @@ bool R_ShadowMapPrelightCasterSelfTest( void ) {
 	if ( caster != NULL ) {
 		R_FreeStaticTriSurf( caster );
 	}
-	// a volume whose caps were folded into the silhouette gives none, and
-	// neither does one whose cap reaches a projected vertex
+	// a volume whose caps dmap folded into one range still gives its front
+	// cap (the triangle on three even vertexes), unless the cap lies on a
+	// cutout; and one whose cap reaches a projected vertex gives none
+	volume.numShadowIndexesNoCaps = 24;
 	volume.numShadowIndexesNoFrontCaps = 24;
-	srfTriangles_t *none = R_ShadowMapBuildPrelightCaster( &volume );
+	srfTriangles_t *folded = R_ShadowMapBuildPrelightCaster( &volume );
+	passed = passed && folded != NULL && folded->numVerts == 3 && folded->numIndexes == 6
+		&& folded->bounds[0].Compare( idVec3( 0.0f, 0.0f, 64.0f ), 0.01f )
+		&& folded->bounds[1].Compare( idVec3( 32.0f, 32.0f, 64.0f ), 0.01f );
+	if ( folded != NULL ) {
+		R_FreeStaticTriSurf( folded );
+	}
+	idList<shadowMapPrelightCutout_t> cutouts;
+	shadowMapPrelightCutout_t &cutout = cutouts.Alloc();
+	cutout.v[0].Set( -8.0f, -8.0f, 64.0f );
+	cutout.v[1].Set( 64.0f, -8.0f, 64.0f );
+	cutout.v[2].Set( -8.0f, 64.0f, 64.0f );
+	cutout.bounds.Clear();
+	for ( int i = 0; i < 3; ++i ) {
+		cutout.bounds.AddPoint( cutout.v[i] );
+	}
+	cutout.bounds.ExpandSelf( 1.0f );
+	cutout.plane.FromPoints( cutout.v[0], cutout.v[1], cutout.v[2] );
+	srfTriangles_t *none = R_ShadowMapBuildPrelightCaster( &volume, &cutouts );
+	cutout.plane.SetDist( cutout.plane.Dist() + 8.0f );	// a cutout in another plane leaves it
+	srfTriangles_t *apart = R_ShadowMapBuildPrelightCaster( &volume, &cutouts );
+	passed = passed && none == NULL && apart != NULL && apart->numIndexes == 6;
+	if ( none != NULL ) {
+		R_FreeStaticTriSurf( none );
+	}
+	if ( apart != NULL ) {
+		R_FreeStaticTriSurf( apart );
+	}
+	volume.numShadowIndexesNoCaps = 18;
 	volume.numShadowIndexesNoFrontCaps = 21;
 	indexes[21] = 5;
 	verts[5].xyz.w = 0.0f;
 	srfTriangles_t *projected = R_ShadowMapBuildPrelightCaster( &volume );
-	passed = passed && none == NULL && projected == NULL;
-	if ( none != NULL ) {
-		R_FreeStaticTriSurf( none );
-	}
+	passed = passed && projected == NULL;
 	if ( projected != NULL ) {
 		R_FreeStaticTriSurf( projected );
 	}
@@ -1830,7 +2039,7 @@ bool R_ShadowMapPrelightCasterSelfTest( void ) {
 		common->Printf( "Prelight caster self-test FAILED\n" );
 		return false;
 	}
-	common->Printf( "Prelight caster self-test passed: front caps in both windings, folded and projected caps refused\n" );
+	common->Printf( "Prelight caster self-test passed: front caps in both windings, folded caps recovered less cutouts, projected caps refused\n" );
 	return true;
 }
 
@@ -1897,7 +2106,21 @@ static bool R_InteractionReceiverNeedsStencil( const idInteraction *inter, const
 	}
 	bool needed = false;
 	if ( inter->buildModel != NULL ) {
-		needed = R_ModelReceiverNeedsStencil( inter->buildModel, inter->entityDef->parms );
+		// CreateInteraction takes the entity's verdict from this very model just
+		// before it sets buildModel (R_ShadowMapNoteEntityModel), and builds an
+		// interaction from it for every light the entity touches: the walk of the
+		// model's surfaces is the same one each time.
+		const idRenderEntityLocal *def = inter->entityDef;
+		if ( def->stencilReceiverGeneration == generation
+				&& def->stencilReceiverInstance == inter->buildModel
+				&& def->stencilReceiverInstanceFrame == def->dynamicModelFrameCount
+				&& def->stencilReceiverModel == def->parms.hModel
+				&& def->stencilReceiverSkin == def->parms.customSkin
+				&& def->stencilReceiverShader == def->parms.customShader ) {
+			needed = def->stencilReceiverNeeded;
+		} else {
+			needed = R_ModelReceiverNeedsStencil( inter->buildModel, inter->entityDef->parms );
+		}
 	} else {
 		for ( int i = 0; i < inter->numSurfaces && !needed; ++i ) {
 			needed = VK_MaterialPrograms_NeedsStencil( inter->surfaces[i].shader, NULL );
@@ -1931,56 +2154,209 @@ It stays unknown only for an animating entity that has drawn none; that only
 costs volumes, never a missing shadow.
 
 The verdict is asked once per surface while interactions are built and
-linked, so it is memoized on the view light and recomputed only after one of
-the light's interactions changes state (idInteraction invalidates it).
+linked, so it is memoized on the view light. An interaction that changes
+state afterwards corrects the memo instead of discarding it
+(R_ShadowMapReceiverScanChanged): an animating entity frees and rebuilds its
+interaction with every light it touches in every view, and each of those
+used to cost a walk of that light's whole interaction list.
 =================
 */
+static idCVar r_shadowMapReceiverScanIncremental( "r_shadowMapReceiverScanIncremental", "1", CVAR_RENDERER | CVAR_INTEGER,
+	"Vulkan: how a light's receiver verdict follows its interactions within a view: 0 = read the light's whole "
+	"interaction list again after any of them changes, 1 = test only the interaction that changed and the one the "
+	"verdict rests on, 2 = as 1, and compare every answer with what 0 would give (qualification)", 0, 2,
+	idCmdSystem::ArgCompletion_Integer<0,2> );
+
+static struct shadowMapReceiverScanStats_t {
+	uint64	queries;		// verdicts asked for
+	uint64	scans;			// answered by reading the light's list
+	uint64	scanVisits;		// interactions those scans tested
+	uint64	changes;		// interaction changes that found a verdict to correct
+	uint64	changeTests;	// interactions those corrections tested
+	uint64	discards;		// corrections that had to give the verdict up
+	uint64	compared;		// mode 2: answers compared with the whole-list protocol
+	uint64	mismatches;		// mode 2: answers that differed
+} shadowMapReceiverScanStats;
+
+/*
+=================
+R_ShadowMapInteractionBlocksMaps
+
+One interaction's part of the receiver scan: whether it keeps its light on
+the stencil chain in this view.
+=================
+*/
+static bool R_ShadowMapInteractionBlocksMaps( const idInteraction *inter, const int generation ) {
+	if ( inter->IsDeferred() ) {
+		idRenderEntityLocal *entityDef = inter->entityDef;
+		if ( entityDef->viewCount != tr.viewCount || inter->unbuiltVisitView == tr.viewCount ) {
+			return false;
+		}
+		// An entity the view does not see links no receivers, whatever its
+		// interaction goes on to build: AddActiveInteraction links light
+		// surfaces only inside the entity's scissor, which never grows.
+		// The player's own body and head are such entities in every
+		// first-person frame, and they touch every light near the camera.
+		if ( entityDef->viewEntity == NULL || entityDef->viewEntity->scissorRect.IsEmpty() ) {
+			return false;
+		}
+		// A static model is the model its interactions are built from.
+		const idRenderModel *hModel = entityDef->parms.hModel;
+		if ( hModel != NULL && hModel->IsDynamicModel() == DM_STATIC && entityDef->parms.callback == NULL ) {
+			R_ShadowMapNoteEntityModel( entityDef, hModel );
+		}
+		bool entityNeedsStencil = false;
+		if ( R_EntityReceiverVerdict( entityDef, generation, entityNeedsStencil )
+				&& !entityNeedsStencil ) {
+			return false;
+		}
+		return true;
+	}
+	return R_InteractionReceiverNeedsStencil( inter, generation );
+}
+
+// the whole scan: the first interaction on the light's list that blocks maps, or NULL
+static const idInteraction *R_ShadowMapReceiverScanBlocker( const idRenderLightLocal *lightDef, const int generation ) {
+	for ( const idInteraction *inter = lightDef->firstInteraction; inter != NULL; inter = inter->lightNext ) {
+		shadowMapReceiverScanStats.scanVisits++;
+		if ( R_ShadowMapInteractionBlocksMaps( inter, generation ) ) {
+			return inter;
+		}
+	}
+	return NULL;
+}
+
 static bool R_ShadowMapReceiversAllowMaps( const idRenderLightLocal *lightDef ) {
 	viewLight_t *vLight = lightDef->viewCount == tr.viewCount ? lightDef->viewLight : NULL;
-	if ( vLight != NULL && vLight->shadowMapReceiverScanValid ) {
+	shadowMapReceiverScanStats.queries++;
+	const bool qualify = vLight != NULL && r_shadowMapReceiverScanIncremental.GetInteger() == 2;
+	if ( vLight != NULL && vLight->shadowMapReceiverScanValid && !qualify ) {
 		return vLight->shadowMapReceiverScanAllowsMaps;
 	}
 	const int generation = VK_MaterialPrograms_NeedsStencilGeneration();
-	bool allowsMaps = true;
-	for ( const idInteraction *inter = lightDef->firstInteraction; inter != NULL; inter = inter->lightNext ) {
-		if ( inter->IsDeferred() ) {
-			idRenderEntityLocal *entityDef = inter->entityDef;
-			if ( entityDef->viewCount != tr.viewCount || inter->unbuiltVisitView == tr.viewCount ) {
-				continue;
-			}
-			// An entity the view does not see links no receivers, whatever its
-			// interaction goes on to build: AddActiveInteraction links light
-			// surfaces only inside the entity's scissor, which never grows.
-			// The player's own body and head are such entities in every
-			// first-person frame, and they touch every light near the camera.
-			if ( entityDef->viewEntity == NULL || entityDef->viewEntity->scissorRect.IsEmpty() ) {
-				continue;
-			}
-			// A static model is the model its interactions are built from.
-			const idRenderModel *hModel = entityDef->parms.hModel;
-			if ( hModel != NULL && hModel->IsDynamicModel() == DM_STATIC && entityDef->parms.callback == NULL ) {
-				R_ShadowMapNoteEntityModel( entityDef, hModel );
-			}
-			bool entityNeedsStencil = false;
-			if ( R_EntityReceiverVerdict( entityDef, generation, entityNeedsStencil )
-					&& !entityNeedsStencil ) {
-				continue;
-			}
-			allowsMaps = false;
-			break;
+	if ( qualify ) {
+		// What mode 0 answers here: its memo, read again after any change.
+		if ( !vLight->shadowMapReceiverScanReferenceValid ) {
+			vLight->shadowMapReceiverScanReferenceAllowsMaps =
+				R_ShadowMapReceiverScanBlocker( lightDef, generation ) == NULL;
+			vLight->shadowMapReceiverScanReferenceValid = true;
 		}
-		if ( R_InteractionReceiverNeedsStencil( inter, generation ) ) {
-			allowsMaps = false;
-			break;
+		if ( vLight->shadowMapReceiverScanValid ) {
+			shadowMapReceiverScanStats.compared++;
+			if ( vLight->shadowMapReceiverScanAllowsMaps != vLight->shadowMapReceiverScanReferenceAllowsMaps ) {
+				const uint64 count = ++shadowMapReceiverScanStats.mismatches;
+				if ( ( count & ( count - 1 ) ) == 0 ) {
+					common->Warning( "receiver scan: light %d kept verdict %d where a whole scan gives %d (%llu so far)",
+						lightDef->index, vLight->shadowMapReceiverScanAllowsMaps ? 1 : 0,
+						vLight->shadowMapReceiverScanReferenceAllowsMaps ? 1 : 0,
+						static_cast<unsigned long long>( count ) );
+				}
+				vLight->shadowMapReceiverScanValid = false;
+			}
+		}
+		if ( vLight->shadowMapReceiverScanValid ) {
+			return vLight->shadowMapReceiverScanReferenceAllowsMaps;
 		}
 	}
+	shadowMapReceiverScanStats.scans++;
+	const idInteraction *blocker = R_ShadowMapReceiverScanBlocker( lightDef, generation );
+	const bool allowsMaps = blocker == NULL;
 	if ( vLight != NULL ) {
 		vLight->shadowMapReceiverScanValid = true;
 		vLight->shadowMapReceiverScanAllowsMaps = allowsMaps;
+		vLight->shadowMapReceiverScanBlocker = blocker;
 	}
 	return allowsMaps;
 }
 #endif
+
+/*
+=================
+R_ShadowMapReceiverScanChanged
+
+An interaction of the light was allocated, built, freed or left unbuilt by
+its visit, or (leavingList) is about to leave the light's list. The Vulkan
+receiver scan's memo for the view is corrected from that one interaction.
+
+While the memo allows maps every interaction on the list passed, so the one
+that changed decides alone. While it does not, the scan stopped at its
+blocker and read nothing after it: nothing that happens to another
+interaction changes the verdict as long as the blocker still blocks, and
+once it does not the list has to be read again at the next question.
+
+Between views the game frees and allocates interactions by the thousand and
+nothing asks for a verdict, so the memo is simply dropped there.
+=================
+*/
+void R_ShadowMapReceiverScanChanged( const idRenderLightLocal *lightDef, const idInteraction *inter, const bool leavingList ) {
+	if ( lightDef == NULL || lightDef->viewCount != tr.viewCount || lightDef->viewLight == NULL ) {
+		return;
+	}
+	viewLight_t *vLight = lightDef->viewLight;
+#ifdef OPENQ4_RENDERER_VK_MODULE
+	vLight->shadowMapReceiverScanReferenceValid = false;
+	if ( !vLight->shadowMapReceiverScanValid ) {
+		return;
+	}
+	if ( tr.viewDef == NULL || inter == NULL || r_shadowMapReceiverScanIncremental.GetInteger() == 0 ) {
+		vLight->shadowMapReceiverScanValid = false;
+		vLight->shadowMapReceiverScanBlocker = NULL;
+		return;
+	}
+	shadowMapReceiverScanStats.changes++;
+	// an interaction off the light's list is no part of the verdict
+	const bool listed = !leavingList && ( inter->lightPrev != NULL || lightDef->firstInteraction == inter );
+	const int generation = VK_MaterialPrograms_NeedsStencilGeneration();
+	if ( vLight->shadowMapReceiverScanAllowsMaps ) {
+		if ( listed ) {
+			shadowMapReceiverScanStats.changeTests++;
+			if ( R_ShadowMapInteractionBlocksMaps( inter, generation ) ) {
+				vLight->shadowMapReceiverScanAllowsMaps = false;
+				vLight->shadowMapReceiverScanBlocker = inter;
+			}
+		}
+		return;
+	}
+	const idInteraction *blocker = vLight->shadowMapReceiverScanBlocker;
+	bool stillBlocked = blocker != NULL && ( blocker != inter || listed );
+	if ( stillBlocked ) {
+		shadowMapReceiverScanStats.changeTests++;
+		stillBlocked = R_ShadowMapInteractionBlocksMaps( blocker, generation );
+	}
+	if ( !stillBlocked ) {
+		shadowMapReceiverScanStats.discards++;
+		vLight->shadowMapReceiverScanValid = false;
+		vLight->shadowMapReceiverScanBlocker = NULL;
+	}
+#else
+	(void)inter;
+	(void)leavingList;
+	vLight->shadowMapReceiverScanValid = false;
+#endif
+}
+
+/*
+=================
+R_ShadowMapReceiverScanPrintInfo
+=================
+*/
+void R_ShadowMapReceiverScanPrintInfo( const bool reset ) {
+#ifdef OPENQ4_RENDERER_VK_MODULE
+	const shadowMapReceiverScanStats_t &stats = shadowMapReceiverScanStats;
+	common->Printf( "Vulkan receiver scan: mode=%d queries=%llu scans=%llu scanVisits=%llu changes=%llu changeTests=%llu "
+		"discards=%llu compared=%llu mismatches=%llu\n",
+		r_shadowMapReceiverScanIncremental.GetInteger(),
+		static_cast<unsigned long long>( stats.queries ), static_cast<unsigned long long>( stats.scans ),
+		static_cast<unsigned long long>( stats.scanVisits ), static_cast<unsigned long long>( stats.changes ),
+		static_cast<unsigned long long>( stats.changeTests ), static_cast<unsigned long long>( stats.discards ),
+		static_cast<unsigned long long>( stats.compared ), static_cast<unsigned long long>( stats.mismatches ) );
+	if ( reset ) {
+		memset( &shadowMapReceiverScanStats, 0, sizeof( shadowMapReceiverScanStats ) );
+	}
+#else
+	(void)reset;
+#endif
+}
 
 /*
 =================
@@ -2027,7 +2403,8 @@ R_ShadowMapGatherAtlasRequests
 
 The view's atlas lights: projected, parallel and distant point lights, which
 share one projected atlas that Vulkan allocates afresh for every view. Point
-lights take cubes from a pool no view exhausts and are not among them.
+lights take cubes from a pool and are not among them; what they need of it
+depends on the cache and cannot be counted here (RB_ShadowMapPointPoolHasRoom).
 
 Before the view's interactions are known every such light is counted for two
 blocks, one per receiver ownership, at the smallest tile it may be given: the
@@ -2238,6 +2615,12 @@ bool R_ShadowMapLightWillUseShadowMaps( const idRenderLightLocal *lightDef, cons
 	}
 	if ( pointLightPath ) {
 		if ( !r_shadowMapPointLights.GetBool() || !glConfig.cubeMapAvailable ) {
+			return false;
+		}
+		// What a point light cannot count on is a cube, where the pool that
+		// holds them is bounded and close to full: a pass that finds none
+		// has only these volumes to fall back on in that frame.
+		if ( !RB_ShadowMapPointPoolHasRoom() ) {
 			return false;
 		}
 	} else if ( !R_ShadowMapAtlasHoldsView() ) {
@@ -3433,6 +3816,10 @@ R_AddEffectSurfaces
 void R_AddEffectSurfaces(void) {
 	idRenderWorldLocal* world = tr.viewDef->renderWorld;
 	const int counterMode = bse_frameCounters.GetInteger();
+	// Servicing an effect here can start, move or resize its light, which
+	// rebuilds that light's area references in the middle of the view
+	// (R_CreateLightRefs); bse_frameCounters reports how many were.
+	const int areaRefsAtStart = tr.areaRefCount;
 	int totalDefs = 0;
 	int spawned = 0;
 	int serviced = 0;
@@ -3754,7 +4141,7 @@ void R_AddEffectSurfaces(void) {
 
 	if (counterMode > 0) {
 		common->Printf(
-			"BSE frame %d view %d mode=%d: spawned=%d serviced=%d refreshed=%d deferred=%d rendered=%d defs=%d alive=%d expired=%d surfaces=%d\n",
+			"BSE frame %d view %d mode=%d: spawned=%d serviced=%d refreshed=%d deferred=%d rendered=%d defs=%d alive=%d expired=%d surfaces=%d areaRefs=%d\n",
 			tr.frameCount,
 			tr.viewDef->renderView.viewID,
 			counterMode,
@@ -3766,7 +4153,8 @@ void R_AddEffectSurfaces(void) {
 			totalDefs,
 			alive,
 			expired,
-			renderedSurfaces);
+			renderedSurfaces,
+			tr.areaRefCount - areaRefsAtStart);
 		common->Printf(
 			"BSE drops: notConnected=%d viewSuppress=%d area=%d defFrustum=%d noModel=%d noSurfaces=%d clearedBounds=%d frustum=%d scissor=%d\n",
 			dropNotConnected,
@@ -4074,7 +4462,10 @@ void R_AddModelSurfaces( void ) {
 	for ( int i = static_cast<int>( numViewEntities ) - 1; i >= 0; --i ) {
 		viewEntity_t *vEntity = sortedEntities[i];
 
-		if ( useEntityScissors ) {
+		// An entity that is in the view only to cast a shadow has an empty
+		// rectangle already; intersecting anything into it leaves it empty,
+		// so its bounds are not projected.
+		if ( useEntityScissors && !vEntity->scissorRect.IsEmpty() ) {
 			// calculate the screen area covered by the entity
 			idScreenRect scissorRect = R_CalcEntityScissorRectangle( vEntity );
 			// intersect with the portal crossing scissor rectangle

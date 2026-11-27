@@ -71,6 +71,25 @@
 extern idCVar r_vkShadowFallbackTest;
 extern idCVar r_vkPBRSpecularAA;
 
+// How a projected receiver compares each filter tap (ShadowBlock.filterParams.w):
+// 0 the nearest raw depth, 1 the hardware comparison sampler, 2 raw depths
+// weighted bilinearly in the shader. PCSS-lite reads raw depths for its
+// blocker search, so it cannot use the comparison sampler, and until November
+// 2026 it compared every tap against one texel: nine taps, ten grey levels,
+// the grain turning with the texel. OpenGL 2.1 can do no better, since a
+// texture there has one compare mode. Vulkan weights the four texels itself.
+// r_vkShadowBilinearPCSS 0 restores the nearest compare, which is the picture
+// OpenGL draws.
+static idCVar r_vkShadowBilinearPCSS( "r_vkShadowBilinearPCSS", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE,
+	"filter each PCSS-lite tap of a projected shadow bilinearly (0 = compare against the nearest texel, as OpenGL does)" );
+
+static float VK_Inter_ProjectedTapCompare( const bool hardwareCompare, const int filterMode ) {
+	if ( filterMode == 2 ) {
+		return r_vkShadowBilinearPCSS.GetBool() ? 2.0f : 0.0f;
+	}
+	return hardwareCompare ? 1.0f : 0.0f;
+}
+
 static idCVar r_vkPBRPrepareFailure( "r_vkPBRPrepareFailure", "0", CVAR_RENDERER | CVAR_INTEGER,
 	"diagnostic PBR preparation failure: 0=off, 1-4=coverage pipeline/descriptor/uniform/geometry, 5-8=direct, 9-12=environment, 13=environment image", 0, 13 );
 static idCVar r_vkPBRPrepareFailureAfter( "r_vkPBRPrepareFailureAfter", "0", CVAR_RENDERER | CVAR_INTEGER,
@@ -880,8 +899,8 @@ static bool VK_ClassicInteraction_BuildMappedShadowBlock(
 		mapPass.projected.filter.filterTaps );
 	block.filterParams[ 2 ] = static_cast<float>(
 		mapPass.projected.filter.filterMode );
-	block.filterParams[ 3 ] = mapPass.projected.depthCompare
-		&& mapPass.projected.filter.filterMode != 2 ? 1.0f : 0.0f;
+	block.filterParams[ 3 ] = VK_Inter_ProjectedTapCompare(
+		mapPass.projected.depthCompare, mapPass.projected.filter.filterMode );
 	block.pcssParams[ 0 ] = mapPass.projected.filter.pcssLightRadius;
 	block.pcssParams[ 1 ] = mapPass.projected.filter.pcssMaxRadius;
 	block.pcssParams[ 2 ] = mapPass.projected.filter.effectiveFilterRadius;
@@ -2472,15 +2491,19 @@ static bool VK_PBRHasMatchingDepthCoverage( const drawSurf_t *surf ) {
 static bool VK_PBRDirectMaterial( const drawSurf_t *surf,
 		vkPBRDirectInteraction_t &out ) {
 	memset( &out, 0, sizeof( out ) );
+	// Every ambient stage and interaction draw asks this, and stock content
+	// has no PBR material: answer that before walking the material's stages.
+	if ( surf == NULL || surf->material == NULL || !surf->material->HasPBR() ) {
+		return false;
+	}
 	if ( !r_rendererModernQuality.GetBool() || !r_pbrMaterials.GetBool() || r_skipBump.GetBool()
 			|| r_skipDiffuse.GetBool() || r_skipSpecular.GetBool()
-			|| surf == NULL || surf->material == NULL
 			|| !VK_PBRHasSingleClassicInteractionTopology( surf ) ) {
 		return false;
 	}
 
 	const idMaterial *material = surf->material;
-	if ( !material->HasPBR() || !VK_PBRHasMatchingDepthCoverage( surf ) ) {
+	if ( !VK_PBRHasMatchingDepthCoverage( surf ) ) {
 		return false;
 	}
 	const materialResourceTableRecord_t *resourceRecord =
@@ -2921,7 +2944,7 @@ static void VK_PBR_SubmitPrepared( VkCommandBuffer cmd, const vkPBRPreparedDraw_
 	vkCmdSetDepthWriteEnable( cmd, VK_FALSE );
 	vkCmdSetStencilTestEnable( cmd, VK_FALSE );
 	VK_Device_CountDrawIndexed( prepared.geo->numIndexes, prepared.geo->numVerts );
-	vkCmdDrawIndexed( cmd, uint32_t( prepared.geo->numIndexes ), 1, 0, 0, 0 );
+	vkCmdDrawIndexed( cmd, VK_Device_DrawIndexCount( prepared.geo->numIndexes ), 1, 0, 0, 0 );
 }
 
 bool VK_PBR_NativeOpaqueSurface( const drawSurf_t *surf ) {
@@ -3564,7 +3587,7 @@ static void VK_DrawSingleInteractionMode( const drawInteraction_t *din,
 	vkCmdPushConstants( interPass.cmd, layout,
 			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof( push ), &push );
 	VK_Device_CountDrawIndexed( geo->numIndexes, geo->numVerts );
-	vkCmdDrawIndexed( interPass.cmd, (uint32_t)geo->numIndexes, 1, 0, 0, 0 );
+	vkCmdDrawIndexed( interPass.cmd, VK_Device_DrawIndexCount( geo->numIndexes ), 1, 0, 0, 0 );
 	if ( geo != din->surf->geo && din->surf->geo->numIndexes > 0 ) {
 		// Subsequent classic/material-program stages retain their own subset.
 		VK_Exec_BindTriGeometry( interPass.cmd, interPass.slot, din->surf->geo );
@@ -3728,7 +3751,7 @@ static void VK_DrawCustomLightingStage( const shaderStage_t *surfaceStage,
 					GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE | GLS_DEPTHMASK, false, &customInter ) ) { return; }
 		const srfTriangles_t *geo = customInter.surf->geo;
 		VK_Device_CountDrawIndexed( geo->numIndexes, geo->numVerts );
-		vkCmdDrawIndexed( interPass.cmd, geo->numIndexes, 1, 0, 0, 0 );
+		vkCmdDrawIndexed( interPass.cmd, VK_Device_DrawIndexCount( geo->numIndexes ), 1, 0, 0, 0 );
 		++interPass.drawCount;
 		// The stock descriptor prefix is incompatible with authored programs.
 		// The following stage may reuse this same light and space, so restore
@@ -3886,9 +3909,8 @@ static int VK_Inter_WriteShadowSlice( const viewEntity_t *space ) {
 	block.filterParams[ 2 ] = (float)filterSettings.filterMode;
 	// PCSS-lite requires native blocker depths, irrespective of the general
 	// projected compare preference.
-	block.filterParams[ 3 ] =
-			( r_shadowMapDepthCompare.GetBool() &&
-			  filterSettings.filterMode != 2 ) ? 1.0f : 0.0f;
+	block.filterParams[ 3 ] = VK_Inter_ProjectedTapCompare(
+			r_shadowMapDepthCompare.GetBool(), filterSettings.filterMode );
 	block.pcssParams[ 0 ] = filterSettings.pcssLightRadius;
 	block.pcssParams[ 1 ] = filterSettings.pcssMaxRadius;
 	block.pcssParams[ 2 ] = filterSettings.effectiveFilterRadius;
@@ -4595,7 +4617,7 @@ static bool VK_StencilShadowPass( const drawSurf_t *drawSurfs ) {
 				continue;
 			}
 #endif
-			vkCmdDrawIndexed( cmd, (uint32_t)numIndexes, 1, 0, 0, 0 );
+			vkCmdDrawIndexed( cmd, VK_Device_DrawIndexCount( numIndexes ), 1, 0, 0, 0 );
 			interPass.volumeDrawCount++;
 			backEnd.pc.c_shadowElements++;
 			backEnd.pc.c_shadowIndexes += numIndexes;
@@ -4625,7 +4647,7 @@ static bool VK_StencilShadowPass( const drawSurf_t *drawSurfs ) {
 					VK_STENCIL_OP_DECREMENT_AND_WRAP, VK_COMPARE_OP_ALWAYS );
 			vkCmdSetStencilOp( cmd, backSidedFace, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_INCREMENT_AND_WRAP,
 					VK_STENCIL_OP_INCREMENT_AND_WRAP, VK_COMPARE_OP_ALWAYS );
-			vkCmdDrawIndexed( cmd, (uint32_t)numIndexes, 1, 0, 0, 0 );
+			vkCmdDrawIndexed( cmd, VK_Device_DrawIndexCount( numIndexes ), 1, 0, 0, 0 );
 			interPass.volumeDrawCount++;
 			interPass.volumePreloadCount++;
 			backEnd.pc.c_shadowElements++;
@@ -4638,7 +4660,7 @@ static bool VK_StencilShadowPass( const drawSurf_t *drawSurfs ) {
 				VK_STENCIL_OP_KEEP, VK_COMPARE_OP_ALWAYS );
 		vkCmdSetStencilOp( cmd, backSidedFace, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_DECREMENT_AND_WRAP,
 				VK_STENCIL_OP_KEEP, VK_COMPARE_OP_ALWAYS );
-		vkCmdDrawIndexed( cmd, (uint32_t)numIndexes, 1, 0, 0, 0 );
+		vkCmdDrawIndexed( cmd, VK_Device_DrawIndexCount( numIndexes ), 1, 0, 0, 0 );
 		interPass.volumeDrawCount++;
 		backEnd.pc.c_shadowElements++;
 		backEnd.pc.c_shadowIndexes += numIndexes;
@@ -4772,7 +4794,9 @@ static void VK_CreateSingleDrawInteractions( const drawSurf_t *surf ) {
 	// Only the final decomposition submit may own a complete PBR BRDF.
 	// The topology check also makes every intermediate flush impossible for an
 	// admitted material; false admission leaves every classic draw untouched.
-	const bool pbrOwnerEligible = VK_PBRHasSingleClassicInteractionTopology( surf );
+	// Stock content has no PBR material, and VK_PBRDirectMaterial admits none
+	// without one, so such a surface skips the walk over its stages.
+	const bool pbrOwnerEligible = surfaceShader->HasPBR() && VK_PBRHasSingleClassicInteractionTopology( surf );
 	for ( int lightStageNum = 0 ; lightStageNum < lightStageCount ; lightStageNum++ ) {
 		if ( preparing && vkPBRTransparentView.failed ) {
 			break;
@@ -6978,7 +7002,7 @@ static void VK_T_BasicFog( const drawSurf_t *surf ) {
 	}
 
 	VK_Device_CountDrawIndexed( (int)( tri->numIndexes ), (int)( tri->numVerts ) );
-	vkCmdDrawIndexed( interPass.cmd, (uint32_t)tri->numIndexes, 1, 0, 0, 0 );
+	vkCmdDrawIndexed( interPass.cmd, VK_Device_DrawIndexCount( tri->numIndexes ), 1, 0, 0, 0 );
 	interPass.fogDrawCount++;
 }
 
@@ -7165,7 +7189,7 @@ static void VK_T_BlendLight( const drawSurf_t *surf ) {
 	}
 
 	VK_Device_CountDrawIndexed( (int)( tri->numIndexes ), (int)( tri->numVerts ) );
-	vkCmdDrawIndexed( interPass.cmd, (uint32_t)tri->numIndexes, 1, 0, 0, 0 );
+	vkCmdDrawIndexed( interPass.cmd, VK_Device_DrawIndexCount( tri->numIndexes ), 1, 0, 0, 0 );
 	interPass.blendDrawCount++;
 }
 

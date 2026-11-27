@@ -32,12 +32,12 @@ def require_before(haystack: str, first: str, second: str, context: str) -> None
 
 
 def main() -> None:
-    multiplayer = read("src/mpgame/MultiplayerGame.cpp")
-    multiplayer_h = read("src/mpgame/MultiplayerGame.h")
-    player = read("src/mpgame/Player.cpp")
-    game_state = read("src/mpgame/mp/GameState.cpp")
-    round_state = read("src/mpgame/mp/RoundGameState.cpp")
-    round_modes_h = read("src/mpgame/mp/RoundModes.h")
+    multiplayer = read("src/game/MultiplayerGame.cpp")
+    multiplayer_h = read("src/game/MultiplayerGame.h")
+    player = read("src/game/Player.cpp")
+    game_state = read("src/game/mp/GameState.cpp")
+    round_state = read("src/game/mp/RoundGameState.cpp")
+    round_modes_h = read("src/game/mp/RoundModes.h")
 
     # The feature is gated by the framework-owned campaign token. Ordinary MP
     # must keep its existing ready-up, spectator and camera paths.
@@ -133,8 +133,12 @@ def main() -> None:
         "if ( gameLocal.isMultiplayer && gameLocal.mpGame.ArenaCampaignLocksPlayers() && !arenaFreeLook ) {\n"
         "\t\t// The Arena entrance and spawn-in freeze facing as well as movement.\n"
         "\t\t// Keep input deltas current so returning to gameplay cannot snap the view.\n"
-        "\t\tif ( !vrTrackedAim ) {\n\t\t\tUpdateDeltaViewAngles( viewAngles );\n\t\t}\n\t\treturn;",
-        "frozen Arena facing without input snap (a tracked VR aim keeps its delta)",
+        "\t\tif ( !vrTrackedAim ) {\n\t\t\tUpdateDeltaViewAngles( viewAngles );\n\t\t}\n"
+        # The held view still logs its angles: the gun's turning sway reads this
+        # ring by frame number and would otherwise replay the last turn.
+        "\t\tloggedViewAngles[ gameLocal.framenum & (NUM_LOGGED_VIEW_ANGLES-1) ] = viewAngles;\n"
+        "\t\treturn;",
+        "frozen Arena facing without input snap or gun sway replay (a tracked VR aim keeps its delta)",
     )
     require(
         player,

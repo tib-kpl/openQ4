@@ -13,11 +13,11 @@ import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MULTIPLAYER_HEADER = ROOT / "src/mpgame/MultiplayerGame.h"
-MULTIPLAYER_SOURCE = ROOT / "src/mpgame/MultiplayerGame.cpp"
-OPERATIONS_SOURCE = ROOT / "src/mpgame/mp/match/MatchOperations.cpp"
-RECOVERY_HEADER = ROOT / "src/mpgame/mp/match/MatchSeriesRecovery.h"
-RECOVERY_SOURCE = ROOT / "src/mpgame/mp/match/MatchSeriesRecovery.cpp"
+MULTIPLAYER_HEADER = ROOT / "src/game/MultiplayerGame.h"
+MULTIPLAYER_SOURCE = ROOT / "src/game/MultiplayerGame.cpp"
+OPERATIONS_SOURCE = ROOT / "src/game/mp/match/MatchOperations.cpp"
+RECOVERY_HEADER = ROOT / "src/game/mp/match/MatchSeriesRecovery.h"
+RECOVERY_SOURCE = ROOT / "src/game/mp/match/MatchSeriesRecovery.cpp"
 
 
 def require(text: str, token: str, context: str) -> None:
@@ -505,7 +505,7 @@ def artifact_status_contract(multiplayer: str) -> None:
 
 def map_shutdown_contract(multiplayer: str) -> None:
     """Execute the actual teardown with map/entity lifetime checked at sealing."""
-    local = (ROOT / "src/mpgame/Game_local.cpp").read_text(encoding="utf-8")
+    local = (ROOT / "src/game/Game_local.cpp").read_text(encoding="utf-8")
     shutdown = function(local, "void idGameLocal::MapShutdown(", "map teardown")
     prepare = function(multiplayer, "void idMultiplayerGame::PrepareForMapShutdown(", "map evidence lifetime")
     harness = r'''
@@ -556,6 +556,10 @@ struct idGameLocal {
     // MP-18: a multiplayer server whose map ends forgets a serverShutdown that already stopped it
     int shutdownMapsEnded=0;
     void ServerShutdownMapEnded(){++shutdownMapsEnded;}
+    // CORE-07: one game module; this fixture is its network-play mode
+    bool mpInteractionsGenerated=false;
+    bool IsMultiplayerMode() const {return true;}
+    void ResetSpecialEffects(){}
     void MapShutdown();
 } gameLocal;
 bool idMultiplayerGame::FinalizeMatchEvidence(bool aborted) {
@@ -790,7 +794,7 @@ def map_asset_preflight_contract(multiplayer: str) -> None:
     scheduling = function(multiplayer,
         "bool idMultiplayerGame::ScheduleCompetitionSeriesMap", "map asset preflight")
     harness = r'''
-#include "mpgame/mp/match/MatchSeries.h"
+#include "game/mp/match/MatchSeries.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -974,7 +978,7 @@ int main() {
         subprocess.run([compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror",
                         *shlex.split(os.environ.get("CXXFLAGS", "")),
                         "-DMP_MATCH_SERIES_STANDALONE_TEST", f"-I{ROOT / 'src'}",
-                        str(cpp), str(ROOT / "src/mpgame/mp/match/MatchSeries.cpp"),
+                        str(cpp), str(ROOT / "src/game/mp/match/MatchSeries.cpp"),
                         "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
 

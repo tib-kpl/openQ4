@@ -191,6 +191,7 @@ jobs:
             tools/tests/console_completion_contract.py \
             tools/tests/console_input_contract.py \
             tools/tests/arb_color_zero_floor_contract.py \
+            tools/tests/script_set_mat_sort_contract.py \
             tools/tests/renderer_show_shadows_color_contract.py \
             tools/tests/renderer_md5r_conversion_contract.py \
             tools/tests/competitive_match_layer.py \
@@ -216,6 +217,7 @@ jobs:
             tools/tests/dmap_tjunction_slivers.py \
             tools/tests/dmap_optimizer_zero_area.py \
             tools/tests/dmap_patch_texture_groups.py \
+            tools/tests/dmap_sky_areas.py \
             tools/tests/idstr_last_color_code.py \
             tools/tests/renderer_silhouette_edges.py \
             tools/tests/fatal_error_startup_safety.py \
@@ -288,6 +290,7 @@ jobs:
             tools/tests/filesystem_write_qpath_safety.py \
             tools/tests/game_class_allocator_alignment.py \
             tools/tests/game_module_completion_safety.py \
+            tools/tests/unified_game_mode_parity_contract.py \
             tools/tests/game_type_module_selection.py \
             tools/tests/gamelibs_staging.py \
             tools/tests/gamelibs_layer_staging.py \
@@ -503,6 +506,7 @@ jobs:
             tools/tests/renderer_native_ui_output.py \
             tools/tests/renderer_mp_flat_items.py \
             tools/tests/renderer_pbr_materials.py \
+            tools/tests/renderer_gles_symbol_closure.py \
             tools/tests/parallax_occlusion_contract.py \
             tools/tests/material_constant_registers_contract.py \
             tools/tests/material_quality_reparse_contract.py \
@@ -532,6 +536,7 @@ jobs:
             tools/tests/renderer_vulkan_probe_safety.py \
             tools/tests/renderer_vulkan_qualification.py \
             tools/tests/renderer_vulkan_shadow_compatibility.py \
+            tools/tests/renderer_vulkan_static_geometry.py \
             tools/tests/renderer_vulkan_world_interaction_compatibility.py \
             tools/tests/renderer_shared_domain_targets.py \
             tools/tests/rigid_body_recovery_diagnostics.py \
@@ -546,6 +551,7 @@ jobs:
             tools/tests/savegame_raw_inventory.py \
             tools/tests/sdl3_input_parity.py \
             tools/tests/sys_event_queue_ownership.py \
+            tools/tests/sdl3_input_coalescing.py \
             tools/tests/event_journal.py \
             tools/tests/event_disposition_storage.py \
             tools/tests/sdl3_input_disposition.py \
@@ -833,6 +839,7 @@ jobs:
           python tools/tests/console_completion_contract.py
           python tools/tests/console_input_contract.py
           python tools/tests/arb_color_zero_floor_contract.py
+          python tools/tests/script_set_mat_sort_contract.py
           python tools/tests/renderer_show_shadows_color_contract.py
           python tools/tests/renderer_md5r_conversion_contract.py
           python tools/tests/competitive_match_layer.py
@@ -850,6 +857,7 @@ jobs:
           python tools/tests/dmap_tjunction_slivers.py
           python tools/tests/dmap_optimizer_zero_area.py
           python tools/tests/dmap_patch_texture_groups.py
+          python tools/tests/dmap_sky_areas.py
           python tools/tests/idstr_last_color_code.py
           python tools/tests/renderer_silhouette_edges.py
           python tools/tests/fatal_error_startup_safety.py
@@ -906,6 +914,7 @@ jobs:
           python tools/tests/filesystem_write_qpath_safety.py
           python tools/tests/game_class_allocator_alignment.py
           python tools/tests/game_module_completion_safety.py
+          python tools/tests/unified_game_mode_parity_contract.py
           python tools/tests/game_type_module_selection.py
           python tools/tests/gamelibs_staging.py
           python tools/tests/gamelibs_layer_staging.py
@@ -1094,6 +1103,7 @@ jobs:
           python tools/tests/renderer_native_ui_output.py
           python tools/tests/renderer_mp_flat_items.py
           python tools/tests/renderer_pbr_materials.py
+          python tools/tests/renderer_gles_symbol_closure.py
           python tools/tests/parallax_occlusion_contract.py
           python tools/tests/material_constant_registers_contract.py
           python tools/tests/material_quality_reparse_contract.py
@@ -1120,6 +1130,7 @@ jobs:
           python tools/tests/renderer_vulkan_md5r_compatibility.py
           python tools/tests/renderer_vulkan_probe_safety.py
           python tools/tests/renderer_vulkan_shadow_compatibility.py
+          python tools/tests/renderer_vulkan_static_geometry.py
           python tools/tests/renderer_vulkan_world_interaction_compatibility.py
           python tools/tests/renderer_shared_domain_targets.py
           python tools/tests/rigid_body_recovery_diagnostics.py
@@ -1134,6 +1145,7 @@ jobs:
           python tools/tests/savegame_raw_inventory.py
           python tools/tests/sdl3_input_parity.py
           python tools/tests/sys_event_queue_ownership.py
+          python tools/tests/sdl3_input_coalescing.py
           python tools/tests/event_journal.py
           python tools/tests/event_disposition_storage.py
           python tools/tests/sdl3_input_disposition.py

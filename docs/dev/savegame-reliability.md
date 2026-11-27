@@ -1875,3 +1875,58 @@ the current candidate on physical Linux hardware. ARM64 contract/build results
 are not ARM64 runtime evidence, and no current v3 macOS runtime result is claimed.
 Cross-platform compilation must not be presented as cross-platform save transfer
 or runtime signoff.
+
+### Original release writer 0.15.0, 26 November 2026
+
+The official `openq4-0.15.0-windows-x64.zip` (SHA-256 `4359c85c…2219`, the
+GitHub release asset digest; source `0fc858e6e`, client `607de7b8…`, campaign
+module `game-sp_x64.dll` `7a9f4c39…`) wrote every save, unchanged, with the
+retail Steam packs and the local Awakening install. `savegame_cross_load.py`
+ran both legs hidden, silent and input-free: the 0.15.0 package writes the save,
+and the current build restores it with game time stopped, saves it again before
+any game time passes, plays 120 tics and saves once more.
+
+| Saves written by 0.15.0 | Maps | Restored, resaved and replayed by the current build |
+| --- | ---: | --- |
+| 300 tics into each map | 29 Quake 4, 13 The Awakening | 42/42 |
+| 3,000 tics, after `give all`, with the AI free to fight a god-mode player | 42 (m07_race at 1,500: its level ends earlier) | 42/42 |
+
+Every save is payload v5, build 2636, `le64-portable1`, with 569 to 3,284
+saved objects. In every case the restore rebuilds the save's object table
+exactly, class for class, and creates no other object.
+
+Before the fix, five of the 300-tic saves failed after map teardown, the same
+way at 3,000 tics: convoy1, convoy2, convoy2b, core2 and The Awakening's m09.
+Each level has a hover tank, whose machine gun keeps the retained
+`guis/weapons/machinegun_scope.rui`, and that document's source changed on
+23 November (`d038da03c`), so its saved snapshot was refused
+([Retained GUI document revisions](savegame-compatibility-policy.md#retained-gui-document-revisions)).
+Those five now log the earlier-revision note and load. The serializer token
+sequences of every save function match 0.15.0's apart from the two CORE-07
+guards that keep its bytes (`POWERUP_SAVED_COUNT`, `PROJECTILE_SAVED_STUCK`),
+no raw-copied structure changed layout, and no serialized `.gui` changed. Two
+runs that failed while another session re-staged `.install` under them passed
+when repeated. The nail gun's and railgun's retained scopes, which the same
+code reads, did not appear in any 0.15.0 save the sweep made.
+
+### Resuming at a light's switch-off, 26 November 2026
+
+A check of the unified game module found saves of The Awakening's first level
+(`m01_stranarus_trench1`, 300 tics in) that restored with an exact object
+table and then closed the client the moment game time resumed; 0.15.0 froze on
+the same saves. The writer did not matter beyond the moment it saved: saves by
+the pre-merge build and by the current build failed in either build, while
+0.15.0's own save of the level resumed. A debugger showed the cause in the
+renderer, not in the save. The first resumed game frame switches a light off,
+and `FreeLightDef` defers a light that frame still draws (since `8ed86d2d9`,
+4 November); later in the same frame the game's first-frame
+`GenerateAllInteractions` builds the interaction table from `lightDefs`, which
+no longer lists that light; at the frame's end `FreeDeferredLightDefs` frees
+its interactions, finds table slots that are not theirs, and raises a fatal
+error, whose shutdown then fails the same way.
+
+A deferred light now clears its table slots and is marked detached, and no
+table read or write touches a detached light
+(`renderer_deferred_light_interaction_table.py`). All three saves of that
+level resume, play 120 tics and save again; every campaign level's save made
+by the current build does the same in it (42 of 42).

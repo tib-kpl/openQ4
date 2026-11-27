@@ -193,12 +193,9 @@ bool idPlayer::DrawRetainedWeaponWheel() {
 
 float idPlayer::GetWeaponWheelBlend() const {
 	if ( entityNumber != gameLocal.localClientNum ) return 0;
-#ifdef GAME_MPAPI
-	// The quick-chat wheel softens the scene as the weapon wheel does.
+	// The quick-chat wheel softens the scene as the weapon wheel does (it only
+	// opens in network play, so it stays 0 in the campaign).
 	return Max( weaponWheelBlend, quickChatBlend );
-#else
-	return weaponWheelBlend;
-#endif
 }
 
 void idPlayer::DrawWeaponWheel() {
@@ -299,9 +296,10 @@ void idPlayer::ResetWeaponWheel( bool instantRestore ) {
 		weaponWheelBlend = 0.0f;
 		weaponWheelGuiActive = false;
 		if ( weaponWheelGui ) weaponWheelGui->HandleNamedEvent( "close" );
-		#ifndef GAME_MPAPI
-		gameLocal.SetSpecialEffect( SPECIAL_EFFECT_BLUR, false );
-		#endif
+		// the multiplayer library had no game-side blur to clear, even outside a map
+		if ( !gameLocal.IsMultiplayerMode() ) {
+			gameLocal.SetSpecialEffect( SPECIAL_EFFECT_BLUR, false );
+		}
 		if ( !gameLocal.isMultiplayer ) {
 			common->SetGameTimeScale( 1.0f );
 		}
@@ -409,8 +407,17 @@ bool idPlayer::IsWeaponWheelSlotLowAmmo( int slot ) {
 // weapon selection but returns the cursor to the dead zone, which quick chat
 // also uses to cancel on release. Classic retains its cursor sensitivity.
 // openQ4 VR: a tracked aim (BUTTON_VRAIM) steers either selector by turning
-// the weapon hand. Its buttons arrive as a controller's, but it has no stick
-// deflection to read, so it keeps the cursor that follows the aim.
+// the weapon hand, or, without moving the gun off its target, by pushing the
+// weapon-hand stick towards a slot (the engine hands that push over as
+// vr_wheelStickX/Y only while a selector is open). A push past the stick's
+// own threshold points the selector the way a gamepad's does; let go, and the
+// hand steers on from there.
+static bool WeaponWheelVRStick( idVec2 &stick ) {
+	stick.x = cvarSystem->GetCVarFloat( "vr_wheelStickX" );
+	stick.y = cvarSystem->GetCVarFloat( "vr_wheelStickY" );
+	return stick.Length() >= 0.35f;
+}
+
 static void WeaponWheelAdvanceCursor( const usercmd_t &cmd, idVec2 &cursor, int &lastMouseX, int &lastMouseY, idAngles &lastAngles ) {
 	const int mouseDx = cmd.mx - lastMouseX;
 	const int mouseDy = cmd.my - lastMouseY;
@@ -428,7 +435,11 @@ static void WeaponWheelAdvanceCursor( const usercmd_t &cmd, idVec2 &cursor, int 
 
 	cursor.x += mouseDx * WEAPON_WHEEL_MOUSE_SENSITIVITY;
 	cursor.y += mouseDy * WEAPON_WHEEL_MOUSE_SENSITIVITY;
-	if ( cvarSystem->GetCVarBool( "ui_radialTouchActive" ) ) {
+	idVec2 vrStick;
+	if ( trackedAim && WeaponWheelVRStick( vrStick ) ) {
+		cursor.x = vrStick.x * WEAPON_WHEEL_CURSOR_RADIUS;
+		cursor.y = vrStick.y * WEAPON_WHEEL_CURSOR_RADIUS;
+	} else if ( cvarSystem->GetCVarBool( "ui_radialTouchActive" ) ) {
 		cursor.x = cvarSystem->GetCVarFloat( "ui_radialTouchX" ) * WEAPON_WHEEL_CURSOR_RADIUS;
 		cursor.y = cvarSystem->GetCVarFloat( "ui_radialTouchY" ) * WEAPON_WHEEL_CURSOR_RADIUS;
 	} else if ( !trackedAim && mouseDx == 0 && mouseDy == 0 && cvarSystem->GetCVarBool( "ui_retained" ) && cvarSystem->GetCVarBool( "ui_radialStickActive" ) ) {
@@ -493,12 +504,11 @@ bool idPlayer::HandleWeaponWheelImpulse( int impulse ) {
 }
 
 void idPlayer::UpdateWeaponWheelEffects( void ) {
-#ifndef GAME_MPAPI
-	const float blend = idMath::ClampFloat( 0.0f, 1.0f, weaponWheelBlend );
+	// Network play keeps full speed and draws no wheel blur.
 	if ( gameLocal.isMultiplayer ) {
-		gameLocal.SetSpecialEffect( SPECIAL_EFFECT_BLUR, false );
 		return;
 	}
+	const float blend = idMath::ClampFloat( 0.0f, 1.0f, weaponWheelBlend );
 
 	if ( blend <= 0.0f ) {
 		common->SetGameTimeScale( 1.0f );
@@ -521,7 +531,6 @@ void idPlayer::UpdateWeaponWheelEffects( void ) {
 	gameLocal.SetSpecialEffectParm( SPECIAL_EFFECT_BLUR, 5, WeaponWheelLerp( 24.0f, 16.0f, blend ) );
 	gameLocal.SetSpecialEffectParm( SPECIAL_EFFECT_BLUR, 6, blend );
 	gameLocal.SetSpecialEffectParm( SPECIAL_EFFECT_BLUR, 7, Max( cvarSystem->GetCVarFloat( "r_znear" ), 0.25f ) );
-#endif
 }
 
 void idPlayer::UpdateWeaponWheel( void ) {

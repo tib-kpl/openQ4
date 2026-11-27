@@ -121,7 +121,7 @@ struct Executor {
     vkRing_t vertexRings[2],indexRings[2],uniformRings[2];
     int temporalNativeWidth=0,temporalNativeHeight=0,temporalHistoryGenerationSeen=0;
     VkFormat temporalSwapchainFormat=VK_FORMAT_UNDEFINED,pipelineTargetFormat=VK_FORMAT_R8G8B8A8_UNORM;
-    VkPipeline casterPipeline[2]{},pointCasterPipeline[2]{},displayColorPipeline{},displayColorVRPipelines[2]{};
+    VkPipeline casterPipeline[2]{},pointCasterPipeline[2]{},pointCasterLayeredPipeline[2]{},displayColorPipeline{},displayColorVRPipelines[2]{};
     VkFormat displayColorVRFormat=VK_FORMAT_UNDEFINED; unsigned displayColorVRMapped=0;
     VkDescriptorPool descriptorPool{}; VkDescriptorSet retiredSets[2][4]{}; int numRetiredSets[2]{};
     void *activeRenderTexture=nullptr,*activeColorEntry=nullptr,*activeDepthEntry=nullptr;
@@ -139,6 +139,11 @@ static bool VK_VR_BindWindowStandIn(){assert(!"no VR frame opens without its win
 static bool VK_GuiExecutor_FrameIsOpen(){return vkExec.frameOpen;}
 // Save-preview ownership is covered by the checkpoint capture fixtures.
 static void VK_ConsumeSavePreview(int){}
+// video capture and the resident static geometry are not this double's business
+static void VK_ConsumeVideoFrames(int){}
+static void RB_QueueVideoFrame(){}
+static void VK_StaticGeo_BeginFrame(int){}
+static bool VK_StaticGeo_Flush(){return true;}
 static void RB_QueueSavePreview(){}
 bool VK_Device_RecoverSurface();
 static bool CreateVulkanSurface(void*,unsigned long long* surface){

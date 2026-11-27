@@ -1,5 +1,5 @@
 // RAVEN BEGIN
-// bdube: note that this file is no longer merged with legacy engine updates
+// bdube: note that this file is no longer merged with Doom3 updates
 //
 // MERGE_DATE 09/30/2004
 
@@ -144,6 +144,7 @@ public:
 	virtual bool			LoadAF( const char* keyname = NULL, bool purgeAF = false );
 	void					SetupBody( void );
 
+	virtual void			ThinkMatchPaused( int deltaMsec );
 	virtual void			CheckBlink( void );
 
 	bool					PointVisible(const idVec3& point) const;

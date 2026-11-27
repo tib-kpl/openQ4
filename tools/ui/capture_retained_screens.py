@@ -1295,15 +1295,18 @@ SCENARIOS = {
         'ui_retainedStatus',
     ]),
     # The DISPLAY rows the audit added (Frame Rate Cap, Anisotropic Filtering,
-    # Shadow Maps, Motion Blur) edit the draft, and APPLY CHANGES sets their
+    # Shadows' shadow-map levels, Motion Blur) edit the draft, and APPLY CHANGES sets their
     # CVars: each is stepped, applied and read back.
     'settings-tree-apply': (None, [
         'waitMsec 15000', 'com_maxfps', 'image_anisotropy', 'r_useShadowMap', 'r_motionBlur',
         'openq4_guiAction main_b_settings', 'waitMsec 2000', 'openq4_guiAction set_b_system', 'waitMsec 2000',
-        *[command for tab, row, step in (('screen', 'settings_framecap', 'right'), ('image', 'settings_anisotropy', 'left'),
-                                         ('effects', 'settings_shadowmaps', 'accept'), ('effects', 'settings_motionblur', 'accept'))
+        *[command for tab, row, steps in (('screen', 'settings_framecap', ('right',)), ('image', 'settings_anisotropy', ('left',)),
+                                          # Shadows' list, opened and moved one level down it.
+                                          ('effects', 'settings_shadows', ('accept', 'down', 'accept')),
+                                          ('effects', 'settings_motionblur', ('accept',)))
           for command in (f'openq4_retainedGui event tab_{tab}', 'waitMsec 500', f'openq4_retainedGui focus {row}',
-                          *menu_step(step), 'waitMsec 400', 'openq4_retainedGui event apply', 'waitMsec 2500')],
+                          *[part for step in steps for part in menu_step(step)], 'waitMsec 400', 'openq4_retainedGui event apply',
+                          'waitMsec 2500')],
         'screenshot "screenshots/tree-apply.tga"', 'com_maxfps', 'image_anisotropy', 'r_useShadowMap', 'r_motionBlur',
     ]),
     # The retained CONTROLS page (UI-01): the CONTROLS button opens the page on Move
@@ -1385,6 +1388,27 @@ SCENARIOS = {
     # Opted into, DISPLAY on the SETTINGS page goes one level deeper to the
     # SYSTEM page, captured mid-change and presented; its Back climbs out onto
     # DISPLAY mid-change and at rest.
+    # Menu tooltips (retained_tooltips, WID-012) on GAME OPTIONS: focus a
+    # program set shows none; a keyed step shows the focused row's after
+    # 500 ms, under it; a key hides it; the pointer's row shows its own after
+    # 300 ms beside the pointer; a click hides it; on ACCESSIBILITY the second
+    # column's; and with ui_tooltips 0 none. Each `inspect tooltip` reports the
+    # card's display and bounds.
+    'settings-tooltips': (None, [
+        'waitMsec 9500', 'openq4_retainedGui focus nav_settings', *menu_step('accept'), 'waitMsec 1200',
+        'openq4_retainedGui focus game', *menu_step('accept'), 'waitMsec 1500',
+        'openq4_retainedGui focus game_autoreload', 'waitMsec 900', 'openq4_retainedGui inspect tooltip',
+        *menu_step('down'), 'waitMsec 400', 'openq4_retainedGui inspect tooltip', 'openq4_retainedGui inspect tooltip-text',
+        'screenshot "screenshots/tooltip-focus.tga"',
+        'openq4_retainedGui menu right 1', 'openq4_retainedGui menu right 0', 'waitMsec 900', 'openq4_retainedGui inspect tooltip',
+        'openq4_retainedGui pointer 150 170', 'waitMsec 600', 'openq4_retainedGui report', 'openq4_retainedGui inspect tooltip',
+        'screenshot "screenshots/tooltip-pointer.tga"',
+        'openq4_retainedGui click', 'waitMsec 600', 'openq4_retainedGui inspect tooltip',
+        'openq4_retainedGui event tab_accessibility', 'waitMsec 600', 'openq4_retainedGui pointer 470 110', 'waitMsec 600',
+        'openq4_retainedGui report', 'openq4_retainedGui inspect tooltip', 'screenshot "screenshots/tooltip-accessibility.tga"',
+        'set ui_tooltips 0', 'openq4_retainedGui pointer 470 135', 'waitMsec 900', 'openq4_retainedGui report',
+        'openq4_retainedGui inspect tooltip', 'set ui_tooltips 1',
+    ]),
     'settings-system': (None, [
         'waitMsec 14000', 'openq4_retainedGui focus nav_settings', *menu_step('accept'), 'waitMsec 1200',
         'openq4_retainedGui focus display', 'openq4_retainedGui menu accept 1', 'openq4_retainedGui menu accept 0',
@@ -1437,15 +1461,34 @@ SCENARIOS = {
         'openq4_retainedGui event onBack', 'waitMsec 1500', 'ui_retainedStatus', 'openq4_retainedGui report',
         'screenshot "screenshots/controls-pause-back.tga"',
     ]),
+    # DISPLAY's Shadows is one list over the presets' shadow ladder, and a row
+    # moved off its preset is marked: moved a level down its list, the row shows its
+    # reset mark and Performance Preset reads Custom; the mark returns it; a
+    # level two up is then applied and its settings read back.
+    'settings-shadows': (None, [
+        'waitMsec 15000', 'com_performancePreset', 'r_shadows', 'r_useShadowMap', 'r_shadowMapSize',
+        'openq4_guiAction main_b_settings', 'waitMsec 2000', 'openq4_guiAction set_b_system', 'waitMsec 2000',
+        'openq4_retainedGui event tab_effects', 'waitMsec 500', 'openq4_retainedGui focus settings_shadows',
+        *menu_step('accept'), 'waitMsec 400', 'screenshot "screenshots/shadows-list.tga"',
+        *menu_step('down'), *menu_step('accept'), 'screenshot "screenshots/shadows-changed.tga"',
+        'openq4_retainedGui event tab_graphics', 'waitMsec 500', 'screenshot "screenshots/shadows-preset-custom.tga"',
+        'openq4_retainedGui event tab_effects', 'waitMsec 500', 'openq4_retainedGui focus settings_shadows',
+        *menu_step('down'), 'screenshot "screenshots/shadows-mark-focused.tga"',
+        *menu_step('accept'), 'screenshot "screenshots/shadows-reset.tga"',
+        'openq4_retainedGui focus settings_shadows', *menu_step('accept'), *menu_step('down'), *menu_step('down'), *menu_step('accept'),
+        'openq4_retainedGui event apply', 'waitMsec 2500', 'screenshot "screenshots/shadows-applied.tga"',
+        'com_performancePreset', 'r_shadows', 'r_useShadowMap', 'r_shadowMapSize', 'r_shadowMapPointSize', 'r_shadowMapPointLights',
+        'r_shadowMapAtlasSize', 'r_shadowMapCSM', 'r_shadowMapMaxUpdatesPerView',
+    ]),
     # The settings tree over the paused game: GAME OPTIONS' ACCESSIBILITY tab,
-    # then DISPLAY's Shadow Maps applied in the level, and play resumed.
+    # then DISPLAY's Shadows stepped up a level in the level, and play resumed.
     'settings-tree-pause': ('game/airdefense1', [
         'openq4_assertMenuActivation 10000', 'waitMsec 1200', 'r_useShadowMap', 'openq4_retainedGui focus nav_settings',
         *menu_step('accept'), 'waitMsec 1200', 'openq4_retainedGui focus game', *menu_step('accept'), 'waitMsec 1500',
         'openq4_retainedGui event tab_accessibility', 'waitMsec 500', 'screenshot "screenshots/tree-pause-accessibility.tga"',
         'openq4_retainedGui event onBack', 'waitMsec 1500', 'openq4_retainedGui focus display', *menu_step('accept'),
-        'waitMsec 1500', 'openq4_retainedGui event tab_effects', 'waitMsec 500', 'openq4_retainedGui focus settings_shadowmaps',
-        *menu_step('accept'), 'openq4_retainedGui event apply', 'waitMsec 2500', 'r_useShadowMap',
+        'waitMsec 1500', 'openq4_retainedGui event tab_effects', 'waitMsec 500', 'openq4_retainedGui focus settings_shadows',
+        *menu_step('accept'), *menu_step('down'), *menu_step('accept'), 'openq4_retainedGui event apply', 'waitMsec 2500', 'r_useShadowMap',
         'screenshot "screenshots/tree-pause-effects.tga"', 'openq4_retainedGui event onBack', 'waitMsec 1500',
         'openq4_retainedGui event onBack', 'waitMsec 1500', 'openq4_retainedGui focus nav_resume', *menu_step('accept'),
         'waitMsec 1500', 'ui_retainedStatus', 'screenshot "screenshots/tree-pause-resumed.tga"',

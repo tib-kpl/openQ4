@@ -201,6 +201,8 @@ struct SystemHost final : Host {
     bool ReadCVar(const std::string& name,size_t type,StateValue& value) override{
         if(name=="sys_lang"&&type==2){value=std::string("english");return true;}
         if(name=="ui_retainedSoftFocus"&&type==1){value=false;return true;}
+        // Tooltips (ui_tooltips) stay off: this suite measures the lists.
+        if(name=="ui_tooltips"&&type==1){value=false;return true;}
         return false;
     }
     std::string Translate(const std::string& text) override{return text;}
@@ -239,7 +241,7 @@ static void SystemCandidate(const std::string& source) {
         auto* document=Rml::GetContext(0)->GetDocument(0);
         unsigned scrolled=0;
         for(const auto* id:{"settings_preset","settings_backend","settings_gpu","settings_renderer","settings_ui_scale","settings_text_scale",
-                            "settings_display_device","settings_multiscreen","settings_fullscreen_policy","settings_msaa","settings_vsync","settings_display_mode","settings_display_refresh",
+                            "settings_display_device","settings_multiscreen","settings_window_mode","settings_msaa","settings_vsync","settings_display_mode","settings_display_refresh",
                             "settings_postaa","settings_resolution_scale","settings_framecap","settings_anisotropy"}) {
             // A row acts only while its tab is current: run the tab_<id> event of the page holding it.
             std::string tab;for(auto* e=document->GetElementById(id);e;e=e->GetParentNode())if(e->GetId().starts_with("settings-page-")){tab=e->GetId().substr(14);break;}
@@ -265,7 +267,14 @@ static void SystemCandidate(const std::string& source) {
             w=widget(id);
             if(!(w.scroll&&w.scroll->available))std::fprintf(stderr,"%dx%d %s: End's reveal left the scroll unmeasured at %s\n",width,height,id,w.highlight.c_str());
             Check(w.scroll&&w.scroll->available,"End's reveal settles with measured scroll geometry");
-            if(w.scroll->geometry.usable)Check(Near(w.popupOffsetDp*w.scroll->dpRatio,w.scroll->geometry.range),"End's reveal scrolls the list to its last option");
+            // Performance Preset ends in Custom, which shows and cannot be chosen:
+            // End stops on the last preset, revealed whole, short of the list's end.
+            if(w.scroll->geometry.usable&&std::string(id)=="settings_preset") {
+                const auto reached=box(w.highlight),view=box(std::string(id)+"-viewport");
+                Check(w.highlight=="settings_preset-option-8"&&reached.y>=view.y-.5f&&reached.y+reached.height<=view.y+view.height+.5f,"End reveals the last preset whole");
+                Check(w.popupOffsetDp*w.scroll->dpRatio<w.scroll->geometry.range-.5,"End stops short of the entry that cannot be chosen");
+            }
+            else if(w.scroll->geometry.usable)Check(Near(w.popupOffsetDp*w.scroll->dpRatio,w.scroll->geometry.range),"End's reveal scrolls the list to its last option");
             key(MenuInput::Back);frame();Check(!widget(id).popupOpen,"SYSTEM popup closes with Back");
         }
         // Resolution Scale's nine steps outgrow the eight rows a list shows: it scrolls.

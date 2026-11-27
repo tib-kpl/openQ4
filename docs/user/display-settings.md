@@ -15,11 +15,13 @@ The Display page has four tabs (in 0.14.1, three: MSAA was on **Screen**, and th
 | Tab | What it holds |
 |---|---|
 | **Graphics** | Performance Preset, Auto-Detect, Rendering Backend, Rendering Device, Restart Renderer, UI Scale, Text Size, UI Aspect |
-| **Screen** | Display Device, Expand Across Displays, Fullscreen, Borderless Window, Fullscreen Policy, V-Sync, Frame Rate Cap, window size, Display Resolution, custom fullscreen size, Refresh Rate |
+| **Screen** | Display Device, Expand Across Displays, Window Mode, V-Sync, Frame Rate Cap, window size, Display Resolution, custom fullscreen size, Refresh Rate |
 | **Image Quality** | Brightness, Resolution Scale, MSAA, Post AA Mode, Anisotropic Filtering, specular, bump maps, detailed sky, ambient light |
-| **Effects** | Lighting: shadows, Shadow Maps, character self-shadows, Irradiance Volumes, Preload Light Grids. Post-processing: Bloom, Ambient Occlusion, HDR Tonemap, Motion Blur, Depth of Field, CRT Emulation |
+| **Effects** | Lighting: Shadows, character self-shadows, Irradiance Volumes, Preload Light Grids. Post-processing: Bloom, Ambient Occlusion, HDR Tonemap, Motion Blur, Depth of Field, CRT Emulation |
 
 **Frame Rate Cap**, **Anisotropic Filtering**, **Shadow Maps** and **Motion Blur** are not in 0.14.1, where only the presets and the console set them. Choosing a preset still sets all four; change one afterwards and the rest of the preset stays as it was.
+
+**After 0.15.0:** one **Shadows** list replaces the **Enable Shadows** and **Shadow Maps** switches, and a setting you change away from its preset is marked so you can put it back; see [Shadows](#shadows) and [Custom settings](#custom-settings). 0.15.0 and the classic menus keep the switches.
 
 ## Performance presets
 
@@ -51,6 +53,31 @@ What the effects are:
 
 Brightness, exposure, CRT emulation and the experimental rendering modes are separate controls that presets leave alone. Choosing a lower preset restores all of its values, including those for effects you have switched off.
 
+### Shadows
+
+**After 0.15.0.** **Settings → Display → Effects → Shadows** is one list with the same six levels the presets use, so you can pick a preset's shadows by hand without the console:
+
+| Shadows | What you get | Preset that uses it |
+|---|---|---|
+| **Off** | No shadows. The cheapest choice on weak graphics. | Minimum, Low Power, Low |
+| **Original** | Quake 4's own sharp-edged (stencil) shadows on every light. | Performance, Balanced |
+| **Soft (Low)** | Soft shadow maps for spotlights, your flashlight and sunlight. Point lights, which are most of Quake 4's lights, keep the original shadows. Costs about the same as Original. | Enhanced |
+| **Soft (Medium)** | Soft shadow maps on every light, crisp where an object meets the floor and softer further away, with sharp sunlight shadows around you outdoors. | Quality |
+| **Soft (High)** | As Medium, with sharper spotlight and sunlight shadows and smoother edges. | Ultra |
+| **Soft (Ultra)** | Every shadow setting at its highest, including sharper point-light shadows. The most expensive. | Maximum |
+
+The list reads **Custom** when your shadow settings match none of these, which only happens if you set the shadow console variables yourself. Choosing a level replaces them with that level's values. [Shadow mapping](shadow-mapping.md) explains each level's settings.
+
+### Custom settings
+
+**After 0.15.0.** A preset is only a starting point. Change any setting it fills (MSAA, Post AA Mode, Anisotropic Filtering, Shadows, the lighting and post-processing switches, specular, bump maps or the sky) and:
+
+- **Performance Preset** reads **Custom**. openQ4 still remembers the preset you chose.
+- Each setting you changed shows a small orange return arrow before its name. Click it, or move down onto it and press Accept, to put that one setting back to the preset's value.
+- The arrow beside **Performance Preset** puts every changed setting back at once. Choosing a preset from the list does the same and also restores its frame-rate cap.
+
+As with every change on this page, nothing takes effect until you press **Apply Changes**. **Frame Rate Cap** never counts as a change, because Auto-Detect sets it to your display's refresh rate.
+
 ### System check
 
 When an update changes the presets or how openQ4 picks one, the next start shows a **System Check** screen before the main menu. It lists the graphics card, memory, processor and display openQ4 found, and shows the recommended preset next to your current one. You have three choices:
@@ -81,7 +108,7 @@ Choose the preset on **Settings → Display → Graphics** and press **Apply Cha
 - A preset that changes MSAA asks you to keep or revert. When OpenGL draws MSAA into the window itself (the default on macOS, or with `r_glWindowMultisample 1`), an MSAA change restarts the renderer.
 - The sound device restarts when the speaker layout or reverb setting changes. The per-sound sample limit only changes fully when the game next starts; the page tells you when that applies.
 - Anisotropic filtering (which keeps textures sharp at an angle) and MSAA are capped at what your graphics card supports.
-- Presets turn bump maps, specular highlights and the detailed sky back on, clear any `image_picmip` reduction, and every preset from Performance up turns shadows back on. [Texture replacement packs](texture-replacements.md) work at every preset.
+- Presets turn bump maps, specular highlights and the detailed sky back on, clear any `image_picmip` reduction, and set the [Shadows](#shadows) level: every preset from Performance up turns shadows back on. [Texture replacement packs](texture-replacements.md) work at every preset.
 
 **Updating an older configuration.** Select the preset again to adopt its current values; setting `com_performancePreset` on its own does not reapply it. A configuration saved with the earlier everything-on Ultra keeps those settings until you choose again: pick **Maximum** for that look, or **Ultra** for the 75 FPS recipe.
 
@@ -122,10 +149,19 @@ The classic menus' four quality choices use the same recipes: Low is Low, Medium
 
 ## Fullscreen, windows and monitors
 
+**Window Mode** on the Screen tab picks how the game fills your display:
+
+- **Windowed**: a normal window, sized by **Window Width** and **Window Height**.
+- **Borderless**: a window without a frame that covers the whole display.
+- **Fullscreen**: fullscreen at your desktop resolution.
+- **Exclusive Fullscreen**: fullscreen in the display mode you choose.
+
+Only the size and resolution rows that apply to the chosen mode can be changed. The classic interface (**Stock UI**) still has separate **Fullscreen**, **Borderless Window** and **Fullscreen Policy** rows.
+
 ### Fullscreen
 
-- **Desktop fullscreen** (the default, **Fullscreen Policy: Desktop**) fills the screen at your desktop resolution without switching display modes. It is the recommended choice. To render the 3D scene below or above your screen's resolution, use [Resolution Scale](#resolution-scale) rather than changing the display mode.
-- **Exclusive fullscreen** (**Fullscreen Policy: Exclusive**) switches the display to the mode you choose:
+- **Fullscreen** (the default) fills the screen at your desktop resolution without switching display modes. It is the recommended choice. To render the 3D scene below or above your screen's resolution, use [Resolution Scale](#resolution-scale) rather than changing the display mode.
+- **Exclusive Fullscreen** switches the display to the mode you choose:
   - **Display Resolution** lists Desktop Native first, then the fullscreen modes your selected display reports (with aspect labels such as 16:9 or 21:9), then Custom.
   - **Custom FS Width** and **Custom FS Height** set a custom size; editing them selects Custom.
   - **Refresh Rate** offers Auto plus the rates your display reports for that resolution. Auto keeps your desktop's refresh rate, or the nearest rate that resolution offers, and openQ4 picks the same rate every time. Leave it on Auto unless you need a specific rate. On macOS, Auto uses the desktop rate rather than the display's highest; this has not yet been confirmed on a Mac.
@@ -134,8 +170,8 @@ The classic menus' four quality choices use the same recipes: Low is Low, Medium
 
 ### Windowed and borderless
 
-- Turn **Fullscreen** off to play in a window, and set its size with **Window Width** and **Window Height**.
-- **Borderless Window** is on by default on Windows, because bordered OpenGL windows can stutter there. Turn it off for a normal, resizable window. Resizing a bordered window updates its saved size; hold `Shift` while resizing to snap to common shapes such as 4:3, 16:9, 16:10 and 21:9.
+- Choose **Windowed** to play in a window, and set its size with **Window Width** and **Window Height**.
+- **Borderless** is the default window on Windows, because bordered OpenGL windows can stutter there. It always covers the whole display; choose **Windowed** for a normal, resizable window. Resizing a bordered window updates its saved size; hold `Shift` while resizing to snap to common shapes such as 4:3, 16:9, 16:10 and 21:9.
 - openQ4 remembers the window's position. Leaving fullscreen brings back your window size rather than a fullscreen-sized window, and a window you take out of fullscreen or borderless from the Display page is centred on its display.
 - If you unplug or rearrange monitors and the saved position ends up off-screen, openQ4 moves the whole window back onto a display.
 - On Linux desktops that use Wayland, the desktop decides where windows go, so openQ4 doesn't save a position there. Windowed and borderless play stay on the monitor the desktop chose; to move the game to another monitor there, use fullscreen.
@@ -143,7 +179,7 @@ The classic menus' four quality choices use the same recipes: Low is Low, Medium
 ### Multiple monitors
 
 - **Display Device** chooses the monitor. **Auto** uses the current display. Choosing a specific monitor keeps the whole window, title bar included, on that monitor, shrinking it if needed.
-- **Expand Across Displays** stretches the game across all your monitors. It needs a borderless window or desktop fullscreen, and the page tells you if your displays can't be spanned.
+- **Expand Across Displays** stretches the game across all your monitors. It needs the **Borderless** or **Fullscreen** Window Mode, and the page tells you if your displays can't be spanned. **Exclusive Fullscreen** changes one display's mode and can't span, so it is greyed out in Window Mode while Expand Across Displays is on.
 - When the game spans several monitors, the HUD, menus, console and loading screens stay on one display (the one you chose, or the primary display on Auto), and the mouse follows them. The 3D world still spans every monitor.
 - In the console, `listDisplays` lists monitor numbers for `r_screen`, and `listDisplayModes [display]` lists the exclusive fullscreen modes a monitor supports.
 
@@ -552,6 +588,8 @@ Settings ("console variables") can be typed in the console or added to your conf
 | `r_vkPresentationRecoveries` | `3` | How many times a session Vulkan restarts itself after a driver reset. |
 | `r_vkTextureMemoryLimit` | `0` | MiB of video memory Vulkan fills before it loads textures at a lower resolution. `0` uses 90% of the driver's budget. See [when textures don't fit](#when-textures-dont-fit-in-video-memory). |
 | `r_vkRenderThread` | `0` | Experimental Vulkan render thread mode (`0` to `2`). |
+| `r_vkStaticGeometry` | `1` | Vulkan keeps level geometry on the graphics card instead of copying it every frame. `0` copies every frame, as before; the picture is the same either way. |
+| `r_vkStaticGeometryMegs` | `96` | MiB set aside for that geometry (8 to 512). Applies after **Restart Renderer** or `vid_restart`. |
 | `rendererDevices` | | Lists graphics cards and their IDs. |
 | `gfxInfo` | | Prints the renderer, graphics card, anti-aliasing state and any fallback reason. |
 | `rendererMotionBlurStatus` | | Prints what motion blur did and why any views were skipped; `reset` clears the counts. |

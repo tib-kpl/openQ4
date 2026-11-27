@@ -903,6 +903,21 @@ void idRenderWorldLocal::FreeLightDef( qhandle_t lightHandle ) {
 	}
 
 	if ( light->referencedFrameNum == tr.frameCount || R_RenderThread_InFlight() ) {
+		// The frame still draws this light, so its interactions live until the
+		// frame ends. Take them out of the interaction table now: the handle can
+		// be reused this frame, and a table built before the frame ends (the
+		// first game frame's GenerateAllInteractions, after a load) walks
+		// lightDefs and would never see them. Either way their table slots would
+		// not be theirs when FreeDeferredLightDefs unlinks them.
+		if ( interactionTable ) {
+			for ( idInteraction *inter = light->firstInteraction; inter != NULL; inter = inter->lightNext ) {
+				const int index = light->index * interactionTableWidth + inter->entityDef->index;
+				if ( interactionTable[index] == inter ) {
+					interactionTable[index] = NULL;
+				}
+			}
+		}
+		light->interactionTableDetached = true;
 		deferredFreeLightDefs.Append( light );
 		lightDefs[lightHandle] = NULL;
 		return;
@@ -2297,7 +2312,7 @@ void idRenderWorldLocal::PushPolytopeIntoTree_r( idRenderEntityLocal *def, idRen
 
 		if ( r_useNodeCommonChildren.GetBool() &&
 			node->commonChildrenArea != CHILDREN_HAVE_MULTIPLE_AREAS &&
-			portalAreas[ node->commonChildrenArea ].viewCount == tr.viewCount ) {
+			portalAreas[ node->commonChildrenArea ].refCount == tr.areaRefCount ) {
 			return;
 		}
 
@@ -2374,10 +2389,10 @@ void idRenderWorldLocal::PushPolytopeIntoTree_r( idRenderEntityLocal *def, idRen
 	}
 
 	portalArea_t *area = &portalAreas[ -1 - nodeNum ];
-	if ( area->viewCount == tr.viewCount ) {
+	if ( area->refCount == tr.areaRefCount ) {
 		return;
 	}
-	area->viewCount = tr.viewCount;
+	area->refCount = tr.areaRefCount;
 
 	if ( def ) {
 		AddEntityRefToArea( def, area );
@@ -2404,7 +2419,7 @@ Used for both light volumes and model volumes.
 This does not clip the points by the planes, so some slop
 occurs.
 
-tr.viewCount should be bumped before calling, allowing it
+tr.areaRefCount should be bumped before calling, allowing it
 to prevent double checking areas.
 
 We might alternatively choose to do this with an area flow.
@@ -2421,10 +2436,10 @@ void idRenderWorldLocal::PushVolumeIntoTree_r( idRenderEntityLocal *def, idRende
 		int		areaNum = -1 - nodeNum;
 
 		area = &portalAreas[ areaNum ];
-		if ( area->viewCount == tr.viewCount ) {
+		if ( area->refCount == tr.areaRefCount ) {
 			return;	// already added a reference here
 		}
-		area->viewCount = tr.viewCount;
+		area->refCount = tr.areaRefCount;
 
 		if ( def ) {
 			AddEntityRefToArea( def, area );
@@ -2446,7 +2461,7 @@ void idRenderWorldLocal::PushVolumeIntoTree_r( idRenderEntityLocal *def, idRende
 		// yet, because the test volume may yet wind up being in the
 		// solid part, which would cause bounds slightly poked into
 		// a wall to show up in the next room
-		if ( portalAreas[ node->commonChildrenArea ].viewCount == tr.viewCount ) {
+		if ( portalAreas[ node->commonChildrenArea ].refCount == tr.areaRefCount ) {
 			return;
 		}
 	}

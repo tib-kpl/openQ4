@@ -25,8 +25,8 @@ UI toolkit/editor/corpus remain major completion gates.
 
 | Progress measure, 15 November 2026 | Current result | Meaning |
 | --- | --- | --- |
-| Formally closed roadmap tasks | **46 / 167 (27.5%)** | **121 remain open**. Counts all stable top-level task checkboxes, including Q4-01 through Q4-09, FPS-01 through FPS-10 and PAD-01 through PAD-10, not partial substeps. |
-| Estimated category progress | **21 categories: 3 at 100%, 16 partial, 2 at 0%** | Governance (GOV), engine loading (CORE) and developer map tools (TOOL) are complete; the detailed estimates follow. |
+| Formally closed roadmap tasks | **46 / 170 (27.1%)** | **124 remain open**. Counts all stable top-level task checkboxes, including Q4-01 through Q4-09, FPS-01 through FPS-10 and PAD-01 through PAD-10, not partial substeps. |
+| Estimated category progress | **21 categories: 2 at 100%, 17 partial, 2 at 0%** | Governance (GOV) and developer map tools (TOOL) are complete; engine loading (CORE) reopened on 24 November 2026 for the unified game module (CORE-07); the detailed estimates follow. |
 | UI active requirements | **0 / 312 verified; 117 partial, 195 pending** | Excludes 40 superseded rows from the 352-row register. |
 | UI corpus and final gates | **0 / 358 migration variants accepted; 0 / 7 final gates accepted** | Working screens and passing checkpoint validators do not grant product acceptance. |
 | Quality frame-time reference | **Gate still failing** | Recorded Vulkan reference: 8.76 ms mean, 13.80 ms p99, 24.08 ms maximum against **every frame <=6.67 ms**. Later prototype runs do not close it. |
@@ -53,12 +53,12 @@ exact; the estimate column is deliberately approximate.
 | Category / task family | Estimated completion | Tasks closed | Principal remaining work |
 | --- | ---: | ---: | --- |
 | [Governance and baseline evidence](#governance-and-baseline-evidence) — GOV | **100%** | 3 / 3 | Maintain evidence/default alignment as later changes land. |
-| [High refresh presentation and input](#high-refresh-presentation-and-input) — HF | **80%** | 6 / 8 | Reference pacing, physical latency and visual motion review. |
+| [High refresh presentation and input](#high-refresh-presentation-and-input) — HF | **80%** | 6 / 9 | Reference pacing, physical latency, visual motion review and a physical high-polling-rate input check. |
 | [Vulkan rendering](#vulkan-rendering) — VK | **60%** | 1 / 8 | Driver breadth, visible pacing, material/HDR/capture combinations and resource soaks; HDR display output (VK-08, not started). |
 | [Vulkan ray tracing](#vulkan-ray-tracing) — RT | **0%** | 0 / 7 | Scope, budget and licence decisions, acceleration structures, hybrid effects, path tracing, denoising and qualification. |
 | [Modern rendering engine](#modern-rendering-engine) — REN | **65%** | 5 / 13 | Aggregate lighting ownership, combined-effect/performance qualification and platform breadth; shadowed volumetrics (REN-09, partial). GTAO (REN-10) and parallax occlusion mapping (REN-11) closed 21 November 2026; temporal AA and dynamic resolution (REN-04) closed 23 November 2026; depth of field (REN-12, partial) 23 November, with scripted cinematic focus to follow (REN-13). |
 | [Frame-rate recovery and performance budgets](#frame-rate-recovery-and-performance-budgets) — FPS | **40%** | 4 / 9 | Shadow-map cost, equal-settings regressions (the retained HUD's composition and most of the Vulkan depth capture removed 22 November, unmeasured in fullscreen), hitches, front-end cost and the release gate. |
-| [Virtual reality](#virtual-reality) — VR | **75%** | 4 / 7 | Real-headset gameplay, comfort and frame budgets; standalone Quest needs a headset (AND-05); desktop stereoscopic 3D on physical stereo displays (VR-07). |
+| [Virtual reality](#virtual-reality) — VR | **74%** | 4 / 9 | Real-headset gameplay, comfort and frame budgets; standalone Quest needs a headset (AND-05); desktop stereoscopic 3D on physical stereo displays (VR-07); headset detection on real runtimes (VR-08) and the VR menus read in a headset (VR-09). |
 | [Android and mobile rendering](#android-and-mobile-rendering) — AND | **70%** | 1 / 5 | Device/lifecycle breadth, setup upgrades, mobile UI qualification and Quest on a headset. |
 | [iOS, iPadOS and visionOS](#ios-ipados-and-visionos) — IOS | **5%** | 0 / 6 | Adoption decisions, patch integration, platform builds and hardware acceptance. |
 | [New user interface](#new-user-interface) — UI | **30%** | 1 / 11 | Production toolkit/editor, full source-bound migration, input/accessibility and seven gates. |
@@ -70,7 +70,7 @@ exact; the estimate column is deliberately approximate.
 | [Desktop platforms](#desktop-platforms-and-packaging) — PLAT | **55%** | 0 / 5 | Deck/ARM64/macOS physical signoff and package/device lifecycle breadth. |
 | [Packaging improvements](#pkg-completion-checkpoints) — PKG | **10%** | 0 / 6 | Update archives, pack split/trim, overlays and delta delivery. |
 | [Steam integration](#steam-integration) — STEAM | **0%** | 0 / 6 | Identity/licence/distribution decisions before implementation. |
-| [Engine loading, safety and compilers](#engine-loading-safety-and-developer-tools) — CORE | **100%** | 6 / 6 | None; macOS evidence stays with the platform gate. |
+| [Engine loading, safety and compilers](#engine-loading-safety-and-developer-tools) — CORE | **95%** | 6 / 7 | CORE-07: the unified game module on macOS, an Android emulator or device run, and a human session across both modes. |
 | [Developer map tools](#tool-completion-checkpoints) — TOOL | **100%** | 4 / 4 | None; macOS evidence stays with the platform gate. |
 | [Release qualification](#release-qualification-and-completion-rules) — REL | **55%** | 0 / 4 | Packages and runs for the platforms other than Windows x64, human/device reviews, hardware lifecycle cases, signing and the promotion decision. |
 | [Deferred design decisions](#deferred-design-decisions) — OPT | **Not scored** | 9 decisions | Select scope and prerequisites before creating an implementation denominator. |
@@ -326,7 +326,7 @@ Sources: [historical high-refresh scope](archive/2026-10-18/high-framerate-rende
 
 ### HF completion checkpoints
 
-**Estimate: 80%; 6/8 tasks closed.** Presentation implementation is mature within
+**Estimate: 80%; 6/9 tasks closed.** Presentation implementation is mature within
 its declared exclusions. The remaining work includes a failing performance target,
 not merely paperwork or a final screenshot.
 
@@ -340,6 +340,7 @@ not merely paperwork or a final screenshot.
 | HF-06 — Closed | Cross-system probes cover exactly-once gameplay, TAA, shadows, save/load, restart, demos, AVI and simulated stereo. | Physical motion/headset review remains HF-08/VR-02. |
 | HF-07 — Partial | Cap/policy matrix, precise wait, pacing histograms, present timing, reference runner and CPU attribution exist. | Meet the Quality every-frame floor and declared 240 Hz budgets; run foreground reference, VSync/VRR and physical display checks. 360 Hz remains experimental. |
 | HF-08 — Partial | Loopback host/client, zoom, lift, loss/jitter, rapid-turn and cockpit probes pass; sensor/review tooling exists. | Measure click-to-photon latency; review cuts, weapons/TAA, debris and ragdolls in motion; retain vehicle late-look exclusion. |
+| HF-09 — Partial | Runs of mouse reports join into one event below the per-event clamp; the active controller's axes are read once per SDL poll cycle; IME area and radial-stick writes happen only on change; queue overflow reports once per burst. Production code is compiled against a model SDL queue with mutants; a live client with a virtual pad read 12 axis events of one cycle once, and the controller runtime scenarios pass. | A physical 1–8 kHz mouse and a fast-reporting controller in play (`inputStats`). |
 
 ### HF task evidence and acceptance
 
@@ -627,6 +628,36 @@ not merely paperwork or a final screenshot.
   do not count as latency samples; resetting statistics excludes older frames
   that retire later. This corrects the engine-side instrument, not the still
   pending click-to-photon measurement or by-eye review.
+- [ ] **HF-09 — P1, implementation: high-rate input devices cost per frame, not
+  per report.** SDL 3.4 queues one motion event per mouse report (its Windows
+  raw input thread at the full polling rate, up to 8000 a second) and one event
+  per changed controller axis. The SDL3 platform layer turned each motion
+  report into an SE_MOUSE event and two mouse-poll entries, so an 8 kHz mouse
+  overflowed the 256-entry event queue in any frame over 32 ms and the
+  512-entry mouse ring over 64 ms, evicting key events and motion and printing
+  a line per dropped event; and each axis event re-read the whole controller
+  and rewrote `ui_radialStickX/Y`, though SDL pumps devices once per poll cycle
+  and every event of the cycle reads the same state. Acceptance: runs of
+  motion reports join (same window and mouse, finite, each axis within 16384
+  counts and 4096 reports) with equal totals and unchanged order relative to
+  every other event; one controller axis sample per cycle with use still
+  judged per event; no IME area or radial cvar write without a change;
+  overflow reported once per burst with the dropped count. Progress, 25
+  November: implemented (`src/sys/MouseMotionRun.h`, `sdl3_backend.cpp`,
+  `win_main.cpp`, `posix_main.cpp`) with the `inputStats` command;
+  `sdl3_input_coalescing.py` compiles the production functions against a
+  model SDL 3.4 queue (peek skips the poll sentinel) and matches every flood
+  to the report-by-report path, rejecting nine mutants of the join rule and
+  the cycle guard; `sys_event_queue_ownership.py` pins the overflow report on
+  both queues. Live client, `airdefense1`, SDL virtual Xbox pad: six axes in
+  one frame gave 12 axis events in one cycle and one sample, with the final
+  sticks, triggers and radial cvars exact and all released together; the
+  `controller_runtime.py` handover, twins, turn-rate, layout, assist, feedback
+  and gyro scenarios pass (turn rate and gyro also miss under a fully loaded
+  machine, equally on the previous build in interleaved A/B runs). Remaining: a
+  physical 1–8 kHz mouse and a fast-reporting controller in a live session,
+  read through `inputStats`; a hidden harness window has no captured mouse, so
+  the live mouse path is covered only by the compiled harness.
 
 ## Vulkan rendering
 
@@ -648,8 +679,8 @@ and untested drivers remain open, with no tolerance or support-tier change.
 | VK-03 — Closed | Complete driver inventories, bounded automatic adapter retry, explicit-device preservation and failure/restart controls pass. | Preserve cleanup invariants; broader physical adapters remain VK-01. |
 | VK-04 — Partial | Authored GLSL/ARB, reload repair, source eviction and native resource limits pass; real uniform, pipeline and driver descriptor-refusal pressure recover on NVIDIA/Intel; OpenGL clip-space depth through `VK_EXT_depth_clip_control` removes the three stencil pixels. | The strict lighting image gate (one point-map and one projected-map shadow-filter pixel on NVIDIA, more on Intel) and broader authored-lighting/mod content. |
 | VK-05 — Partial | Exposure-domain changes, late-failure cleanup and in-frame HDR cubemap fixes pass scoped GPU controls; classic stock stages stay display-referred by decision, with a byte-identical, qualified fallback. | Tiled/out-of-frame captures and authored-post combinations of admitted (PBR) views. |
-| VK-06 — Partial | Resource counters and measured deferral decisions exist; image reload residency is fixed; five-cycle NVIDIA/Intel/GL soaks pass, with residual image growth attributed to bounded front-end pools. | Improved frame-time tails from a promoted optimization on a declared workload; preserve ordering and restart lifetimes before promotion. |
-| VK-07 — Partial | Failed-write handling, MSAA resize/restart/cubemap comparisons, 50–200% depth/intensity views, nested/legacy-cropped remote views, cropped `envshot` faces and multisampled window views (GUI `renderDef`, remote captures), stencil shadow/light-count views and prints, and the weapon depth hack pass on NVIDIA. Tiled (larger-than-window) captures, direct and through the game-owned post target, pass on OpenGL and on Vulkan with NVIDIA and Intel. | Multisampled lit-geometry edges (4x) and Intel/other-vendor MSAA edge parity, other clipping combinations and bounded deferred resources across the broader matrix. |
+| VK-06 — Partial | Resource counters and measured deferral decisions exist; image reload residency is fixed; five-cycle NVIDIA/Intel/GL soaks pass, with residual image growth attributed to bounded front-end pools. Resident static geometry is promoted: about half the per-frame geometry upload time and ring traffic on Air Defense 1, with bit-identical output. Point shadow cubes are drawn as one layered target; the whole-light cascade cache OpenGL has was measured and left out. | Presented frame-time tails for the promoted optimizations on a quiet machine; static index streams; the cost of depth tile copies in the shadow cache phase. |
+| VK-07 — Partial | Failed-write handling, MSAA resize/restart/cubemap comparisons, 50–200% depth/intensity views, nested/legacy-cropped remote views, cropped `envshot` faces and multisampled window views (GUI `renderDef`, remote captures), stencil shadow/light-count views and prints, and the weapon depth hack pass on NVIDIA. Tiled (larger-than-window) captures, direct and through the game-owned post target, pass on OpenGL and on Vulkan with NVIDIA and Intel. The Ambient Light and Weapon FOV settings, `r_skipRender`, `r_singleTriangle`, the debug clear colours and the back-end counters now behave as on OpenGL. | Multisampled lit-geometry edges (4x) and Intel/other-vendor MSAA edge parity, other clipping combinations and bounded deferred resources across the broader matrix; portal fade quads, `levelshotProbe` depth, Gaussian sample-array parameters and debug object labels. |
 | VK-08 — Not started | Only an 8-bit sRGB swapchain; the RGBA16F scene, stock and PBR tone curves and automatic exposure exist (VK-05). | HDR10/scRGB swapchain and metadata, SDL3 display state with live switching, a peak-targeted output transform, paper-white interface composition, settings and calibration, SDR captures, and review on a physical HDR display. |
 
 ### VK task evidence and acceptance
@@ -861,6 +892,47 @@ and untested drivers remain open, with no tolerance or support-tier change.
   defects. This closes the long-session plateau evidence. What remains is
   promoting an optimization with improved frame-time tails, which the
   measured deferral decisions above do not yet justify.
+  Progress, 24 November: [resident static geometry](vulkan-resource-profiling.md#resident-static-geometry-24-november-2026)
+  is the first promoted optimization. A CPU profile of the Air Defense 1
+  sweep put 23.5% of the back end in copying geometry into the frame rings
+  every frame. Vertex streams that outlive their frame are now copied once
+  into a persistent buffer (`r_vkStaticGeometry`, default 1), keyed on the
+  vertex cache header and a new per-allocation serial so a recycled header
+  can never alias. In one launch with interleaved windows the upload time
+  fell from 439 to 238 microseconds a frame at a still view and from 527 to
+  262 in a sweep, and ring traffic about halved. Frozen captures are
+  bit-identical off, on and after a restart; the comparing mode
+  (`r_vkStaticGeometry 2`) found nothing in about 60,000 draws; a native
+  harness covers the lifetime rules. Shadow maps on devices without packed
+  24-bit depth (AMD, Apple) take plain 32-bit float depth instead of the
+  stencil-carrying form nothing read, half the memory, bit-identical here
+  through the `r_vkShadowDepthFormatTest` drill. Still open: the presented
+  frame-time tails this task asks for (no quiet machine or sampling profiler
+  after the change) and index streams.
+  Progress, 24 November, later: the two OpenGL shadow-map savings Vulkan
+  lacked were [measured](vulkan-resource-profiling.md#shadow-map-savings-from-opengl-24-november-2026),
+  each before it was kept, and one landed. Point shadow cubes are drawn as
+  one six-layer target, the caster vertex shader naming each face
+  (`r_shadowMapPointLayered`, through `VK_EXT_shader_viewport_index_layer`; a
+  device without it keeps one rendering scope a face). On Hub 2 with ten
+  cubes redrawn a view the shadow pass's recording time fell from 0.74 to
+  0.60 ms in six pairs of six, and with three cubes composing in a frozen Air
+  Defense 1 battle its floor fell by 0.02 ms and the point pass's GPU time by
+  0.01 ms in eight pairs of eight. Frozen captures are bit-identical layered
+  and face by face, and the validation layer reports nothing, on the RTX 4060
+  and on the Intel Iris Xe. The whole-light
+  cascade's cached still scenery (`r_shadowMapCascadeFarCache`) was
+  prototyped through the cache phase and the compose scope, found
+  bit-identical, and left out: it removes 20 to 176 caster draws a view (0.01
+  to 0.04 ms of recording), but copying the tile back costs as much GPU time
+  as the drawing it replaces at Quality and more at Ultra. The shadow pass's
+  GPU time rose by 0.03 ms on Air Defense 1 and by 0.12 ms at Ultra, and did
+  not move on Convoy 1. The Vulkan shadow report gained the pass's caster
+  draws and indexes, its cube rendering scopes and its CPU time. Two costs
+  the measurements exposed stay open: a depth tile copy takes about 0.05 ms
+  on this GPU, which makes the cache phase the largest part of Hub 2's shadow
+  pass, and a light with any cutout caster draws both ownership maps in full
+  (566 caster draws a view on Convoy 1).
 - [ ] **VK-07 — P2, qualification: capture and developer diagnostics.** Compare
   Vulkan debug views and engine captures with their GL contracts for color/depth/
   stencil interpretation, cubemap faces, nested targets, clipping/depth hacks,
@@ -930,6 +1002,23 @@ and untested drivers remain open, with no tolerance or support-tier change.
   light-count images and their printed overdraw then match exactly at 0x and
   4x, and the weapon depth hack's depth view is within one level. At 4x, lit
   geometry edges still differ in up to 20 pixels, by up to 8 levels.
+  Progress, 24 November (OpenGL parity audit): a walk of the OpenGL back end
+  against Vulkan's, pass by pass and cvar by cvar, found settings and
+  diagnostics Vulkan ignored. Fixed, each compared with OpenGL in frozen
+  captures: the Ambient Light setting (`r_forceAmbient`: the lift is +66.8
+  display levels on OpenGL and +66.9 on Vulkan at the same view, where
+  Vulkan drew none); the Weapon FOV setting (`cl_gunfov`, with its temporal
+  motion vectors); `r_skipRender`; `r_singleTriangle`, which the `benchmark`
+  command's "single tri" row depends on; the frame clear colours the debug
+  tools pick (`r_clear` forms, `r_showOverDraw`, `r_lockSurfaces`,
+  `r_singleArea`); and the back end's command counts in the renderer metrics
+  and `r_debugRenderToTexture`. `com_speeds` reported a back-end time of zero
+  on both renderers, because the counters were cleared before they were read;
+  it now reports the frame's. Every render command OpenGL executes has a
+  Vulkan case. Recorded and still open: the fade quads of the opt-in
+  `r_portalsDistanceCull`, `levelshotProbe`'s depth capture, the Gaussian
+  sample-array parameters of authored GLSL blur programs, and debug object
+  labels for capture tools.
 - [ ] **VK-08 — P2, implementation: HDR display output.** Present on HDR10 and
   scRGB displays. Today the swapchain is always 8-bit sRGB
   (`VK_COLOR_SPACE_SRGB_NONLINEAR_KHR`) and both tone curves end at SDR white,
@@ -1194,8 +1283,8 @@ diagnostics establish whole-frame ownership or production performance.
 | Task / state | Completed points and evidence | Remaining completion subpoints |
 | --- | --- | --- |
 | REN-01 — Closed | All nine shared classic domains own stock (and, for subview forms stock content never authors, validation-room) views on a fresh GL/Vulkan package under the default preset, with 4x MSAA and with the post chain off: byte-identical to classic, visible content controls, named zero-commit rollback. They now draw into the scene target the classic walker uses. Defaults stay off. | Human appearance review of the retained captures and physical Linux/macOS/Android runs belong to platform qualification; default promotion is a separate owner decision. |
-| REN-02 — Partial | In the laboratory the classic-lighting corridor owns classic stage shapes, cutouts, baked light and stencil-shadowed lights, each matched against native ARB2, and the aggregate executor composes with the shared domains behind `r_rendererOwnershipCompose`. No stock view is owned yet; the remaining decline reasons are inventoried. | Take the stock shapes the census names (skinned receivers, lit surfaces without a forward command, stage colour), shadow-mapped lights and the point-cube pool; move the corridor onto the sealed interaction stream; then measure benefit on owned stock views before parity promotion. |
-| REN-03 — Partial | Point/projected/CSM and hybrid shadow paths, caches and Vulkan translucent moments exist. A continuous-motion stock tour passes at default, cascaded and constrained budgets on GL/Vulkan with bounded slots and retained light; receivers after motion match a fresh render, as do moving doors, cutout and translucent casters under camera motion; static/live composition and cutout-alpha audits done (GL now falls back to stencil like Vulkan). The opt-in modern OpenGL receivers filter projected shadows with the classic kernel and PCSS-lite blocker search since 17 November; a widened PCSS radius now softens the same pixels as the classic receivers (84% overlap), where before it changed none. The 9 November [stencil-parity audit](shadowmapping-audit-2026-11-09.md) fixed prelight-only (`noDynamicShadows`) lights losing their shadows, `noSelfShadow` world geometry no longer shadowing `noSelfShadow` receivers under prelit lights, the one-sided five-tap kernel and the packed-depth wrap at the far envelope. Since 23 November a light whose source lies outside its own box (an off-centre point light, a parallel sun) casts the static world into its map from the front caps of its dmap prelight volume, the triangles its stencil shadow is built from (`r_shadowMapPrelightCasters`): against stencil, mcc_landing's `light_9083` goes from 48.9% of a view wrongly shadowed to 0.01%, `light_9081` from 10.4% wrongly lit to 0.22%, and q4cmp13's suns from 30.9% wrongly lit to 0.7%, on both backends, with the existing motion, mover and caster-cycle gates passing; the `noSelfShadow` world-geometry rule has its image on both backends. | Physical platforms; the quiet-machine FPS-02/FPS-03 budgets; what the audit leaves open for lights whose source lies outside their box: the 78 stock lights whose prelight volume folds its caps away keep uncut per-surface casters, the casters other than the static world under distant and parallel lights store the faces turned towards the light, and the far-shell caster lets light through to a receiver closer behind it than the map's bias, tens of units under a coarse distant map (1.0% of one view of `light_9083`, 1.9% of one of Air Defense 1's `light_7910_cursed`, up from 0.15%); and mcc_landing's `outdoor_Main`, a cube light 280 units outside its box, differs from stencil more with the caster than without (9.6% map-only and 9.9% stencil-only of its worst view on OpenGL, 8.8% and 8.9% on Vulkan, against 0.6% and 1.0% with `r_shadowMapPrelightCasters 0`; cause not established, caster kept on by default). The cascade range end is closed (19 November, whole-light last cascade). |
+| REN-02 — Partial | In the laboratory the classic-lighting corridor owns classic stage shapes, cutouts, baked light and stencil-shadowed lights, each matched against native ARB2, and the aggregate executor composes with the shared domains behind `r_rendererOwnershipCompose`. Since 24 November it also owns the lit stock shapes the census named: glow and mask-weighted reflection overlays (drawn by ARB2 over the composed frame, byte-identical in display frames), CPU-skinned receivers and the conditioned corpse-burn stages; on `game/airdefense1` the corridor is ready on two of eight poses. No stock frame is owned yet; every refusal is named. | Unlit ambient surfaces in the corridor's view (decals, glass, effects) and lit translucent receivers, which the second census names; shadow-mapped lights and the point-cube pool; the corridor on the sealed interaction stream; then measured benefit on owned stock views before parity promotion. |
+| REN-03 — Partial | Point/projected/CSM and hybrid shadow paths, caches and Vulkan translucent moments exist. A continuous-motion stock tour passes at default, cascaded and constrained budgets on GL/Vulkan with bounded slots and retained light; receivers after motion match a fresh render, as do moving doors, cutout and translucent casters under camera motion; static/live composition and cutout-alpha audits done (GL now falls back to stencil like Vulkan). The opt-in modern OpenGL receivers filter projected shadows with the classic kernel and PCSS-lite blocker search since 17 November; a widened PCSS radius now softens the same pixels as the classic receivers (84% overlap), where before it changed none. The 9 November [stencil-parity audit](shadowmapping-audit-2026-11-09.md) fixed prelight-only (`noDynamicShadows`) lights losing their shadows, `noSelfShadow` world geometry no longer shadowing `noSelfShadow` receivers under prelit lights, the one-sided five-tap kernel and the packed-depth wrap at the far envelope. Since 23 November a light whose source lies outside its own box (an off-centre point light, a parallel sun) casts the static world into its map from the front caps of its dmap prelight volume, the triangles its stencil shadow is built from (`r_shadowMapPrelightCasters`): against stencil, mcc_landing's `light_9083` goes from 48.9% of a view wrongly shadowed to 0.01%, `light_9081` from 10.4% wrongly lit to 0.22%, and q4cmp13's suns from 30.9% wrongly lit to 0.7%, on both backends, with the existing motion, mover and caster-cycle gates passing; the `noSelfShadow` world-geometry rule has its image on both backends. Since 24 November the 78 stock volumes whose caps dmap folded away give their caps too (a grate inside the light's box keeps its holes, `r_shadowMapPrelightCutouts`), and distant and parallel lights store every caster by the stencil rule, with the face verdict measured right for their projections and almost none of the receiver bias that let light through behind a far-shell caster (`r_shadowMapDistantFarShell`, `r_shadowMapDistantFarShellBias`): over twelve off-centre lights the summed worst-view share that stencil shadows and the map lights falls from 29.0 to 5.4 points on both backends (hub2's `light_6456` 13.1% to 0.4%, Air Defense 1's `light_7910_cursed` 1.9% to 0.03%, `light_9083` 1.0% to 0.2%) while the share the map alone shadows rises from 9.4 to 10.1, every light's two shares together falling; the motion, mover, caster-cycle and sunlight gates pass on both. mcc_landing's `outdoor_Main` has no prelight volume, so the caster never reached it; the 23 November reading did not repeat. | Physical platforms; the quiet-machine FPS-02/FPS-03 budgets; for lights whose source lies outside their box: network1's tube lights, where a grate's own prelight caps darken 7.8% of a view that stencil leaves lit (6.8% before the round; cause not established), why the synthesized projections raster unmirrored against their determinant, and the 31 lights with no prelight volume, which keep their surface casters. The cascade range end is closed (19 November, whole-light last cascade). |
 | REN-04 — Closed | Exact vectors, TAAU and dynamic resolution; cumulative resolve counters and a GL/Vulkan runtime gate (cuts, capture, pause, restart, failed presents, mirrors, stale timing, scale recovery, SMAA rollback). Mirror/remote-view, withheld-present and capture-depth gaps fixed; the picture is still at rest (#216). A temporally upscaled scene samples sharper texture mips (16-18% more detail at 50% scale, stability unchanged), and Vulkan corrects the NVIDIA driver's softer anisotropic filter, so its frames hold OpenGL's detail. | Human review of ghosting and disocclusion on the reference display and physical Linux/macOS/Android belong to platform qualification. |
 | REN-05 — Partial | Authored PBR, animated/MD5R models, box probes and indirect-only SSAO have scoped evidence. SSAO parity controls repaired after half-resolution SSAO, with a matched half-resolution control; the Intel residual is reproduced and explicitly bounded; skin substitutions and a mixed PBR/classic model on packed MD5R match CPU skinning. lavapipe's one-byte difference is traced to its texel decode and bounded to lavapipe. The showcase map qualifies skins, a mixed PBR/classic model, cutout coverage and shadows on both renderers (67/67 each, procedural stand-ins). | The Mesa SSAO controls that fail since 21 November (not investigated); real textures.com materials (the owner's downloads); physical Linux/Apple fallback (PLAT). |
 | REN-06 — Partial | Probe admission decided (RGBA8/sRGB/generated RGBA16F; compressed, oversized and authored HDR excluded); cold misses filter on a background job and publish within the 4 ms budget on both backends; SSR and SSGI pass individually and together with byte-exact master-off rollback on GL/Vulkan in seven stock scenes; a map's own baked probe, a probe captured in a stock scene and authored decals pass on both renderers; a scratch re-bake of one bundled grid is measured. | Re-bake of the cropped bundled grids (owner decision, evidence recorded); quiet-machine cost of the leaves beyond the first scene; other GPUs/platforms and appearance review (PLAT). |
@@ -1204,7 +1293,7 @@ diagnostics establish whole-frame ownership or production performance.
 | REN-09 — Partial | Per-light shadowed scattering replaces the REN-06 leaf on GL and Vulkan: falloff/projection images, point, projected and cascaded-sun maps, stencil-light policy (none by default), composite before fog and translucents, status reporting, exact rollback; frozen outdoor/indoor captures pass under TAA and 4x MSAA. 23 November 2026: moving casters and a moving flashlight, temporal history, resolution scale and dynamic resolution, mirrors and remote cameras, a backend decline and VR stereo pass on GL and Vulkan; scratch targets are pooled by view size. Evidence: [volumetric lighting](volumetric-lighting.md). | Per-tier cost against FPS-01 on a quiet reference machine (a shared-machine ladder is recorded), the owner's visual review of the defaults (contact sheets captured, no default changed; 12 whites out the Tram 1 opening), and physical Linux/macOS/Android runs with the Apple GL 2.1 and GLES declines (PLAT). |
 | REN-10 — Closed | HBAO (`r_ssaoMethod 1`), GTAO (`2`) and a brute-force reference (`3`) beside SSAO on GL and Vulkan, sharing SSAO's occlusion target, separable filter, resolve and indirect-only PBR field; native PBR's multi-bounce and specular occlusion; classic multi-bounce; temporal pattern turn under TAA. GTAO closer to the reference than SSAO with fewer halos, HBAO as close as SSAO; backend parity, exact rollback, cost at or near SSAO ([evidence](presentation-owners.md#ground-truth-ambient-occlusion-ren-10-21-november-2026)). | VR headset and GLES/mobile hardware runs; a preset decision. |
 | REN-11 — Closed | Ray-marched parallax occlusion for the PBR `heightMap` keyword on GL and Vulkan: one shared kernel, refinement, distance fade, gradient-correct sampling, optional self-shadow; every lighting pass traces the same ray (per-light, shadow-mapped, ambient, environment, probes, grids, diagnostics). The retail `Parallaxbump` stage upgrades on Vulkan. Default off with byte-identical rollback; backend parity within the flat-surface noise; cost priced at 2560x1440 ([evidence](parallax-occlusion.md#qualification-21-november-2026)). Stock content has no parallax surface. | Linux (Mesa GL and Vulkan) and the Android emulator (GLES declines cleanly) pass. VR headset confirmation and physical Linux GPUs, macOS and Android devices belong to platform qualification; a preset decision waits for authored content. |
-| REN-12 — Partial | Depth of field on GL and Vulkan from one lens model (`DepthOfFieldCore.h`): thin-lens CoC from the view's field of view on a 36 mm sensor, autofocus with an eased pull, tile-dilated scatter-as-gather bokeh (round or bladed, highlight weighting) at half or full resolution, before motion blur and bloom. The `r_dof*` promotional camera is cheat-only with no menu entry. The game asks through `SetViewDepthOfField` (render API 38, a `renderViewDepthOfField_t`): the weapon wheel's view-weapon focus, a focused in-world GUI (a thin lens on the cursor's point, view weapon kept sharp by `VIEW_DOF_SHARP_VIEW_WEAPON`), and map scripts (`sys.setDepthOfField`, `setDepthOfFieldFocus`, `setDepthOfFieldLens`, `clearDepthOfField`, declared by the compiler on first use, state saved in the worldspawn's spawn args). The player's **Depth of Field** setting (`r_depthOfField`, SYSTEM catalog V8) gates both and is on from Enhanced up. Windows captures on both backends; `DepthOfFieldCore` native test. | Cost not priced against FPS-01; Linux, macOS and Android (GLES declines) not run; capture-tool review of the bokeh on authored character shots; the campaign's cinematics (REN-13). |
+| REN-12 — Partial | Depth of field on GL and Vulkan from one lens model (`DepthOfFieldCore.h`): thin-lens CoC from the view's field of view on a 36 mm sensor, autofocus with an eased pull, tile-dilated scatter-as-gather bokeh (round or bladed, highlight weighting) at half or full resolution, before motion blur and bloom. The `r_dof*` promotional camera is cheat-only with no menu entry. The game asks through `SetViewDepthOfField` (render API 38, a `renderViewDepthOfField_t`): the weapon wheel's view-weapon focus, a focused in-world GUI (a thin lens on the cursor's point, view weapon kept sharp by `VIEW_DOF_SHARP_VIEW_WEAPON`), and map scripts (`sys.setDepthOfField`, `setDepthOfFieldFocus`, `setDepthOfFieldLens`, `clearDepthOfField`, declared by the compiler on first use, state saved in the worldspawn's spawn args). The player's **Depth of Field** setting (`r_depthOfField`, SYSTEM catalog V8) gates both and is on from Enhanced up. Windows captures on both backends; `DepthOfFieldCore` native test. Priced and trimmed 25 November (performance report section 21): the game's focus spaces its gather samples, about a third off its Vulkan cost. | No declared FPS budget for this situational pass; the OpenGL saving unmeasured (no GL timer query around the pass, whole-frame time too noisy); Linux, macOS and Android (GLES declines) not run; capture-tool review of the bokeh on authored character shots; the campaign's cinematics (REN-13). |
 | REN-13 — Not started | REN-12's scripted lens is in place for cinematics to use. | Dynamic depth of field across the campaign's cinematics: engine-driven focus for cinematic cameras on stock assets first, then per-scene direction where it needs it; see the task below. |
 
 ### REN task evidence and acceptance
@@ -1320,7 +1409,7 @@ diagnostics establish whole-frame ownership or production performance.
   The corridor still derives its own interactions; moving it onto the sealed
   stream remains.
   Named rollbacks: `r_rendererModernClassicShapes` (bit 1 stage state, bit 2
-  stencil lights) and `r_rendererOwnershipCompose 0`. No parity mask,
+  stencil lights; bits 4 and 8 since 24 November) and `r_rendererOwnershipCompose 0`. No parity mask,
   promotion token or default changed.
   Step 6 is not reached: no stock view is owned. Of eight
   `game/airdefense1` poses with the modern path requested and shadows off,
@@ -1335,6 +1424,36 @@ diagnostics establish whole-frame ownership or production performance.
   lights and the point-cube pool, the corridor on the sealed interaction
   stream, then measured CPU/GPU benefit on owned stock views before any
   promotion.
+  Progress, 24 November: the lit shapes that census named are owned.
+  - **Overlay stages** (`r_rendererModernClassicShapes` bit 4). A lit
+    material's ambient stages are drawn by ARB2 over the composed frame in
+    sort order when their colour does not depend on the lit colour beneath:
+    additive glows (`generic_glow_mi` and its kin), `maskcolor` alpha writers
+    with the `GL_DST_ALPHA, GL_ONE` reflections they weight (the marine
+    helmet), and stages a stage expression keeps off. A material perforated
+    only by such stages (the corpse-burn guide) draws opaque in a frame where
+    none is active, as ARB2's depth fill does.
+  - **Front-end geometry** (bit 8): CPU-skinned and other front-end-deformed
+    receivers.
+  - Laboratory, display frames against native ARB2: a glow, a conditioned
+    and parm-coloured glow, and the mask-weighted shape are byte-identical
+    on the specimen; a glow over baked light matches as its flat baseline
+    does (mean 0.02, max 1). The linear scene and a fog or blend light
+    decline overlays by name; clearing bit 4 hands the frame to ARB2.
+    Every earlier control passes again.
+  - A second census names every refusal (`gfxInfo` prints the material
+    reason and a `Modern material proof:` line). On `game/airdefense1` the
+    corridor is ready on two of eight poses, where the frame stops at an
+    unlit decal; the other six stop at a lit translucent decal. A lookup by
+    vertex cache replaced a per-surface scan of the submit plan, which had
+    cost the newly ready poses 96 and 37 ms a frame; requesting the path now
+    costs a declined frame 8.0 ms against ARB2's 4.1 (shared machine)
+    ([census](modern-lit-frame-inventory.md#stock-views-step-6)).
+
+  Next, in order: unlit ambient surfaces in the corridor's view, handed to
+  the classic walker as the overlays are; lit translucent receivers;
+  shadow-mapped lights and the point-cube pool; the corridor on the sealed
+  interaction stream; then measured benefit before any promotion.
 - [ ] **REN-03 — P1, qualification and implementation: shadow production scope.**
   Qualify point/projected/CSM, stencil/map hybrids, moments, movers, near emitters,
   dynamic/cutout/custom receivers and constrained budgets through full scenes and
@@ -1386,6 +1505,9 @@ diagnostics establish whole-frame ownership or production performance.
   (off by default) lets skinned models ignore noSelfShadow ownership under
   shadow-mapped lights; verified on both backends, stencil unchanged. See
   [character self-shadows](release-completion.md#characters-can-shadow-themselves-238-17-november-2026).
+  25 November (#237): the player's world gun now keeps the entity-level rule
+  with the body, so the option no longer casts a lone gun shadow on props. See
+  [gun shadow](release-completion.md#your-guns-shadow-follows-your-bodys-25-november-2026).
   Remaining: physical-platform breadth; combat-crowd cost of weapon-light
   shadows on Quality (FPS-03). The DISPLAY page's IMAGE QUALITY tab has a
   Character Self-Shadows row (17 November).
@@ -1443,12 +1565,34 @@ diagnostics establish whole-frame ownership or production performance.
   rebuilds interactions for each picture and takes projectors, parallel and
   distant lights, exact views and spawned stock entities. See
   [what the stock volumes hold](shadowmapping-audit-2026-11-09.md#what-the-stock-volumes-hold).
-  Remaining from the audit: the 78 lights whose volume folds its caps (the
-  caps are recoverable; cutouts would cast solid), the other casters of
-  distant and parallel lights on the reversed faces, and the far shell's
-  leak under a coarse map: a receiver closer behind a cap than the map's
-  bias is lit (Air Defense 1's `light_7910_cursed` 0.15% to 1.9% of one
-  view, the one light measured that is worse for the change).
+  The rest of the off-centre lights, 24 November: in the order of what they
+  moved. The far shell's leak was the receiver bias: a map of faces turned
+  away from the light holds no receiver that faces it, so the bias only lights
+  receivers close behind a caster. Distant and parallel lights now keep
+  `r_shadowMapDistantFarShellBias` (default 0) of it, applied once in the
+  shared projected state. The 78 folded volumes give their caps (a triangle
+  on three even vertexes); a perforated surface inside the light's box keeps
+  its own caster and its holes, one reaching outside casts solid as stencil
+  does. The synthesized projections' face verdict was wrong as measured
+  (`light_9083` from whole surfaces: 48.9% to 0.01% when turned), and sealed
+  hulls under those lights take the far shell too
+  (`r_shadowMapDistantFarShell`, 0 as before). Worst views summed over twelve
+  lights, map only / stencil only: OpenGL 9.4 / 29.0 to 10.1 / 5.4, Vulkan 9.3
+  / 29.1 to 10.5 / 5.4; hub2's `light_6456` 0.7% / 13.1% to 0.1% / 0.4%, Air
+  Defense 1's `light_170` 2.2% to 1.0% stencil only, convoy1's `light_7744`
+  4.3% to 1.4%, q4cmp13's suns 0.7-0.8% to 0.1-0.2%. `outdoor_Main` has no
+  prelight volume in the retail `.proc`, so the caster could not reach it: its
+  worst view is the same with the setting at 0 and 1, and three repeats give
+  0.61% / 1.00% as a cube; with the far shell, as a wide source, 0.15% / 2.0%
+  to 0.4% / 0.9%. Gates on the final build: the five door and six caster-cycle
+  scenarios, Air Defense 1's outdoor and the cascade-motion scenarios and the
+  continuous-motion receiver case on both backends, storage2's projectors
+  unchanged, the in-engine self-tests on both. See
+  [the rest of the off-centre lights](shadowmapping-audit-2026-11-09.md#the-rest-of-the-off-centre-lights).
+  Remaining: network1's tube lights (a grate's own caps darken 7.8% of a view
+  that stencil leaves lit, 6.8% before the round; cause not established), why
+  the synthesized projections raster unmirrored against their determinant,
+  and the 31 lights with no prelight volume.
 - [x] **REN-04 — P1, qualification: temporal AA and dynamic resolution.** Exercise
   existing rigid/skinned/weapon exact vectors and reactive surfaces through
   interpolation, disocclusion, pause, cuts, failed presents, capture, multiple
@@ -2257,8 +2401,7 @@ diagnostics establish whole-frame ownership or production performance.
   OpenGL and Vulkan at 2560x1440 on airdefense2 (autofocus, telephoto with
   six blades, the CoC debug view, the open wheel), the
   `openq4-depth-of-field-core` native test, `retained_view_effects.py` and the
-  retained-screens wheel checks. Remaining: price the cost against FPS-01's
-  budgets, run Linux, macOS and the Android emulator (GLES declines by
+  retained-screens wheel checks. Remaining: run Linux, macOS and the Android emulator (GLES declines by
   design), and review the bokeh on authored character shots.
   Progress, 23 November (second round): map scripts drive the same lens
   (`src/game/gamesys/ScriptedDepthOfField.h`): `sys.setDepthOfField( focus,
@@ -2281,7 +2424,19 @@ diagnostics establish whole-frame ownership or production performance.
   interactive in-world GUI the player view focuses a 50 mm f/2 lens on the
   cursor's point (eased in and out, the view weapon kept sharp), gated by
   the same setting, in both game modules; airdefense1 captures on Vulkan
-  and OpenGL.
+  and OpenGL. Fourth round (25 November): priced and made cheaper
+  ([performance report section 21](performance-report.md#21-depth-of-field-ren-12-25-november-2026)).
+  The game's focus (wheel, screen, script) now takes the samples its blur
+  needs. They sit 1.5 gather texels apart (`DOF_GATHER_SPACING`), or wider
+  where the quality's count is sparser, and a smaller disc takes
+  proportionally fewer, down to 16. The `r_dof` camera keeps its full count, as does
+  the game's focus under `r_dofFixedSamples 1`. Exact changes alongside:
+  the 3x3 tent as four bilinear taps, the composite discarding in-focus
+  pixels, a lighter gather loop. Vulkan gains a `dof` GPU phase. At
+  2538x1312 on the reference laptop the Vulkan phase went from 1.93 to
+  1.34 ms for the screen-focus lens, from 1.85 to 1.18 ms for a cinematic
+  85 mm lens and from 0.89 to 0.67 ms for the camera. Same-launch pictures differ by at
+  most 6-8 levels at the 99.9th percentile (PSNR 44 dB).
 - [ ] **REN-13 — P2, implementation: dynamic depth of field in the
   campaign's cinematics.** Not started; the user's direction (23 November
   2026) once REN-12's scripted lens exists. Stock assets stay the baseline:
@@ -2344,7 +2499,7 @@ are not yet measured.
 | FPS-05 — Closed | Sample counts 0/2/4/8/16, the LDR target and SMAA/TAA alternatives priced at Ultra on both backends in five scenes (hidden-window GPU ladders): 16x on OpenGL costs 6.0-10.9 ms over 4x and Vulkan never draws more than 8, 8x costs 0.75-2.5 ms over 4x, 4x + SMAA is within -0.7..+0.3 ms of SMAA alone on OpenGL and 0.6-1.6 ms on Vulkan. Policy: Ultra 4x + SMAA ultra (confirmed), Quality 2x, Enhanced none, Maximum 8x instead of a 16x request, so every preset draws one image on both renderers; no preset asks for more than 8 (self-test); the count does not change with resolution. `gfxInfo` names the Vulkan clamp and the resolves per frame, `r_multiSamplesEffective` holds the drawn count, and the settings menu's MSAA row names the trade-off and the clamp in twelve languages. [Report section 13](performance-report.md#13-msaa-and-the-hdr-scene-target-fps-05). | Closed. |
 | FPS-06 — Partial | Equal-settings deltas attributed: in storage2 the retained HUD's layer composition (17 two-dimensional views and 34 render-target commands per frame against the classic HUD's 7 and 17; about 0.4 ms of main-thread time); on Vulkan the soft-particle depth capture (1.3 ms in airdefense1). The 2 October build equals 0.13.2 and the 15 October build carries the storage2 step, bracketing the 8 October retained-HUD commit (bisection); interpolation, light grid, reverb, portal cull and the five new Vulkan backend features cost nothing measurable. 22 November: the composition is gone. It was the Strogg gauges' static grain, a sheet of ten translated tiles under each fill mask, which took six offscreen targets a frame and kept the Strogg HUD from replaying; it is now one stationary quad with scrolling texture coordinates, as the EKG is. Storage2 carries 7 two-dimensional views and 18 render-target commands with the retained HUD (17 and 34 before; the classic HUD 7 and 17), every suite scene reads the same, and the HUD's own main-thread time fell from 0.4-0.9 to 0.2-0.3 ms a frame in a hidden-window profile; pictures within seven levels of 255, identical on OpenGL and Vulkan ([report section 18](performance-report.md#18-the-retained-huds-composition-fps-06-22-november-2026)). The Vulkan depth capture cost 0.64 ms each, two a frame outdoors (portal sky and main view), because the multisampled depth target was moved to the sampled layout and back around every capture; it now stays an attachment, and the resolve is 0.12 ms instead of 0.60 at 8 samples and 0.08 instead of 0.31 at 4, about 1 ms of GPU time a frame outdoors and 0.5 ms indoors at the 0.13.2 settings, with identical pictures and a clean validation layer ([report section 19](performance-report.md#19-the-vulkan-depth-capture-fps-06-22-november-2026)). 23 November, in the HUD documents alone: the static optic art of the air-defence cannon and the three zoom scopes is a cached layer, 218k vertices a frame to 20k for the cannon at 720p and 166-264k to 25-47k for the moving scopes at 1080p (railgun 4.1 to 0.7 ms), and the weapon wheels, quick chat and HUD artwork catalog are compact JSON, about a quarter of their size ([report section 20](performance-report.md#20-static-optic-art-and-hud-document-size-fps-06-23-november-2026)). | Fullscreen frame times of both changes against 0.13.2 (not measured: the machine was shared); the rest of the Vulkan difference (more draws in the airdefense1 scenes, the storage2 share); bisection pass 2 for the remainder; closure within 3% average and 10% p99 of 0.13.2 on every suite scene on both backends. |
 | FPS-07 — Partial | Hitch classes recorded: 2-3 s cold draw stalls at Ultra, periodic 100 ms hub2 frames, a 393 ms storage2 frame, first-use events. Level loads and startup: one display-rate pacer, checkpoints in every long stretch and the stall sampler behind `com_loadingFrameTrace 2`; Air Defense 1 now loads at a 16.7 ms median, worst 54-60 ms against 1.6-2.3 s ([loading presentation](loading-presentation.md)). | Attribution per class, fixes or declared budgets, clean first-use catalog on both backends; for loads, retained document builds and the hand-off into the level (start-of-level autosave flush, first-frame program loads). |
-| FPS-08 — Not started | The Awakening's outdoor battle ([report section 14](performance-report.md#14-the-awakenings-outdoor-battle-fps-08-evidence-17-november-2026)): game 22% and drawing 33% of the process; two exact clip-world fixes (contents gathered by mask, sector contents refreshed lazily) cut about 10% of game time, and one-pass light-interaction cull bits (bit-identical, natively tested) cut that renderer work by about 30%. HF-07 attribution: the Quality frame is CPU-bound on one thread; Vulkan render-thread stage 1 landed and gains nothing at the GPU-bound Ultra (within 0.4 ms, longer tails). Constant material registers restored on both renderers (they were never marked constant, so every surface evaluated its registers every view): 69-87% of register set-ups now take the parse-time block, saving 5-22 µs per frame in hub2, convoy2 and the airdefense1 arena, which whole-frame timings cannot resolve; see [Constant material registers](material-constant-registers.md). | Front-end and submission cost, stage 2 overlap, game-tic cost; shared with HF-07 and REN-07. |
+| FPS-08 — Not started | The Awakening's outdoor battle ([report section 14](performance-report.md#14-the-awakenings-outdoor-battle-fps-08-evidence-17-november-2026)): game 22% and drawing 33% of the process; two exact clip-world fixes (contents gathered by mask, sector contents refreshed lazily) cut about 10% of game time, and one-pass light-interaction cull bits (bit-identical, natively tested) cut that renderer work by about 30%. HF-07 attribution: the Quality frame is CPU-bound on one thread; Vulkan render-thread stage 1 landed and gains nothing at the GPU-bound Ultra (within 0.4 ms, longer tails). Constant material registers restored on both renderers (they were never marked constant, so every surface evaluated its registers every view): 69-87% of register set-ups now take the parse-time block, saving 5-22 µs per frame in hub2, convoy2 and the airdefense1 arena, which whole-frame timings cannot resolve; see [Constant material registers](material-constant-registers.md). 25 November ([report section 22](performance-report.md#22-a-renderer-round-copies-layouts-and-posed-bounds-fps-08-25-november-2026)): poses drawn between tics take their bounds from the tic's exact bounds instead of skinning the mesh again, OpenGL copies the view and the depth buffer only for a reader (a light grid map's frame makes 3 depth copies where it made 10), and Vulkan keeps multisampled depth an attachment across the target unbind and the depth resolve. Continued the same day ([report section 23](performance-report.md#23-the-renderer-round-continued-state-queries-and-the-receiver-scan-fps-08-25-november-2026)): OpenGL answers the state queries it used to ask the driver (49 a frame at Quality, now between one and two), and Vulkan corrects a light's receiver verdict from the interaction that changed (4,948 interactions tested a frame in the combat wave, now 651). 26 November ([report section 24](performance-report.md#24-resident-stencil-shadow-volumes-on-vulkan-fps-08-26-november-2026)): Vulkan keeps static stencil shadow volumes resident instead of copying them into the frame rings every frame (965 kB of volumes a frame in the hub2 sweep become 275, and the main thread spends 0.3 to 0.7 ms less a frame at Balanced and Performance). The index list a resident surface draws itself with is resident too ([report section 25](performance-report.md#25-a-surfaces-own-index-list-on-vulkan-fps-08-26-november-2026)): 789 kB a frame into the rings become 671 at Balanced, 810 become 691 at Quality. The vertex streams Quality still copies are skinned meshes that shadow maps draw as casters ([report section 26](performance-report.md#26-the-vertex-streams-quality-copies-every-frame-fps-08-26-november-2026)): 401 of 427 kB a frame, each copied once, left as they are. The index lists that belong to a lasting light interaction are resident too ([report section 27](performance-report.md#27-an-interactions-index-lists-on-vulkan-fps-08-26-november-2026)): 687 kB a frame into the rings become 589 at Quality, 656 become 535 at Balanced. | Front-end and submission cost, stage 2 overlap, game-tic cost; shared with HF-07 and REN-07. |
 | FPS-09 — Not started | Prevention plan written (report section 9). | Suite in the release checklist, budgets as gates, cvar-default diff and attribution checks in CI. |
 | FPS-10 — Partial | Low drops stencil shadows and the light grid and holds 60 fps in six timed scenes on an Intel Iris Xe at 1080p (was 44-55 in combat and outdoors); Minimum and Low Power hold 30 ([performance presets](ui/performance-presets.md#low-end-measurements-24-november-2026)). | Auto-Detect's integrated-GPU tier (Balanced at 8 GB and up); Vulkan depth-capture blit and portal-sky cost on low-end GPUs; a decade-old CPU and an older iGPU (UHD 620 class) measured; OpenGL on the iGPU. |
 
@@ -2510,6 +2665,47 @@ are not yet measured.
   CPU, the premium over stencil point shadows down from 5.7/4.1 ms to 1.1/0.8 ms;
   on Vulkan the mapped frame is within 0.1 ms of GPU of the stencil one in hub2 and
   storage2. These are hidden-window probe figures, not fullscreen budgets.
+  Audit round (27 November 2026). A [second audit](shadowmapping-audit-2026-11-27.md)
+  of planning, map rendering and receivers on both backends fixed fourteen items.
+  The cascade guard is sized in the cascade's own texels (Air Defense 1's nearest
+  cascade 0.91 to 0.58 units a texel at Quality; 98.8% to 99.1% of stencil's shadow
+  kept on both backends), eye depth is interpolated unclamped so pixels at the
+  player's feet keep their cascade, atlas room freed by a halving is handed back,
+  resident maps expire by time and not by frames drawn, OpenGL releases cubes past
+  a lowered slot limit, honours the stencil supplement of a hybrid light and
+  remembers a failed program load, and the static-caster signature carries
+  ownership. A follow-up the same day ended the single-map collapse when a view
+  slice reaches behind a cascaded light's source plane: the slice is cut where the
+  light begins, and on mcc_landing, looking up under `outdoor_Main`, 68% to 87% of
+  stencil's shadow is kept on both backends. Five more leads followed: an animating
+  caster whose shadow cannot reach the view is left out of the map (Hub 2 on Vulkan
+  with eight marines behind the camera: 49 caster draws a view to 5.5, CPU frame 3.5
+  to 3.0 ms), Vulkan releases shadow memory unused for half a minute, caster passes
+  keep one front face on both backends, OpenGL's moment passes prove their
+  framebuffer, and Vulkan's shadow timing spans are read only after their frame slot
+  retires. Vulkan then filters each PCSS-lite tap bilinearly (`r_vkShadowBilinearPCSS`,
+  default 1): penumbra grain at Air Defense 1 falls from 0.048 to 0.022 with coverage
+  unchanged, and soft projected shadows no longer match OpenGL pixel for pixel; `0`
+  restores the match. A point light that found Vulkan's memory-bounded cube pool empty
+  was drawn for a frame with no shadow, because its stencil volumes had been elided:
+  the back end now reports the pool's pressure and the front end keeps point lights'
+  volumes while it lasts (Hub 2 at Maximum: the "required shadow resource
+  unavailable" warning in every run before, in none after). The pool ran out because
+  the 512 MiB point cache was sized for 512 cubes: cubes above 512, which only the top
+  shadow level draws, now get three times `r_shadowMapPointCacheMegs`, and that hall
+  goes from 21 cache slots and five cubes rendered a view to 64 slots and 0.2, with
+  no overflow. Cascades can now be sized by their slice's bounding sphere so that
+  turning the view does not change their scale (`r_shadowMapCascadeStableExtent`, the
+  number of nearest cascades; the owner chose 2 as the default): at Air Defense 1 a
+  full turn resamples each cascade 8 times with the tight box and never with the
+  sphere, for texels at the tight fit's worst direction on the near two; the far one,
+  which would be about a third coarser, keeps the tight box. The OpenGL fix for
+  lights that need a map and stencil together was then checked on screen with a
+  forced case (3.25% of the view wrong before, 0.05% after; no stock view takes the
+  path, and the shadow report now prints `hybrid=` to show when one does), and PBR
+  receivers on both renderers skip the shadow filter where the light does not reach
+  (pictures identical; the showcase overview 6.6 ms against 6.7 to 7.6 on OpenGL).
+  One open lead is listed there: PCSS-lite on parallel lights.
   Stencil front-end work (10 November 2026). A mapped light no longer builds or
   submits the volumes it does not draw: prelit lights shed them like any other, an
   animated model gets none (the old test asked the instantiated snapshot, always
@@ -2849,6 +3045,117 @@ are not yet measured.
   A/B on both renderers). GPU evaluation would remove only the CPU particle
   geometry, 46% of that or about 1-1.3 ms; the soft-particle draws and depth
   copy stay. Physics particles must stay on the CPU for stock behavior.
+  Renderer round, 25 November ([report section 22](performance-report.md#22-a-renderer-round-copies-layouts-and-posed-bounds-fps-08-25-november-2026)):
+  a stack-sampler profile of the combat wave on both backends and a read of the
+  frame paths. A pose drawn between tics takes its bounds from the tic's exact
+  bounds, widened by the distance the joints travelled, where it used to skin
+  the whole mesh for them on every rendered frame (`r_posedBoundsFromReference`;
+  never outside in 20,000 poses, about a unit wider; bounds skinning from 0.99
+  to 0.62 of the draw skinning at one rendered frame a tic). OpenGL copies the
+  view for a post-process pass only when a material samples it, and the depth
+  buffer for the light grid only where that pass draws: a Quality frame on a
+  light grid map makes 3 depth and 2 colour copies where it made 10 and 3,
+  pictures identical (`r_postProcessCaptureOnDemand`,
+  `r_lightGridDepthOnDemand`). Vulkan no longer moves multisampled depth to the
+  sampled layout when its target is unbound or its depth is resolved
+  (`r_vkDepthTargetLayoutReference`; two fewer barriers a frame, about 0.1 ms
+  of GPU time at 2x and 0.3 ms at 8x at 2560x1440). Fixed with them: area
+  references sharing the view's visibility stamp, a freed frame-temp overflow
+  block that a touch revived for good, the underwater view's frame-counted
+  clock, and a Vulkan pipeline set that stayed full. The section ranks what was
+  read and left: shadow volume vertices copied into Vulkan's frame ring (1 MB
+  a frame in hub2 at Balanced), the receiver scan for shadow-map admission,
+  a static block a frame for every skinned surface, OpenGL's light grid and
+  soft-particle state, and the post chain's plain copies.
+  Renderer round continued, 25 November ([report section 23](performance-report.md#23-the-renderer-round-continued-state-queries-and-the-receiver-scan-fps-08-25-november-2026)):
+  each lead of section 22 measured before it was touched. OpenGL asked the
+  driver 49 state queries a frame at Quality, about 70 in the combat wave, for
+  values the renderer had set itself (the scissor test around clears and
+  copies, framebuffer bindings around copies, the viewport after SSAO), and a
+  query makes a driver with a worker thread finish everything queued first:
+  21% and 33% of the main thread's running samples in the two profiles that
+  caught the driver using its thread. The OpenGL module now records what its
+  setters set and answers the queries itself (`GLQueryShadow.h`,
+  `r_glStateQueries`), and a copy takes the state it restores from the bound
+  target (`r_glCopyTargetState`): between one and two queries a frame reach
+  the driver, pictures identical, no difference in the check modes in any
+  preset. Not measured: frame time with the driver's thread in use, which the
+  application cannot switch on. Vulkan's receiver scan for shadow-map
+  admission is corrected from the interaction that changed instead of
+  rescanned (`r_shadowMapReceiverScanIncremental`): 4,948 interactions tested
+  a frame in the combat wave become 651, verdicts identical. Set aside on
+  measurement: the light grid state (0.02 ms a frame), back-side tangents
+  (0.03%), the deformation record clear (every memset together 0.27%). Left:
+  stencil shadow volumes in Vulkan's frame ring (0.8 to 0.9 MB of 1.2 MB a
+  frame at Performance and Balanced in hub2, vertices and indexes about
+  evenly; needs resident copies with a key that outlives the frame), every
+  index list copied each frame, a static block a frame for skinned surfaces,
+  the post chain's copies, the legacy HUD's state, and the unverified subview
+  crop under Resolution Scale.
+  Resident shadow volumes, 26 November ([report section 24](performance-report.md#24-resident-stencil-shadow-volumes-on-vulkan-fps-08-26-november-2026)):
+  the largest lead section 23 left. At Performance and Balanced Vulkan copied
+  both streams of every stencil volume into the frame rings each frame, 965 kB of
+  the 1,465 kB a frame the rings took over a revolution of the hub2 sweep, and
+  half to three quarters of those bytes belong to prelight volumes that never
+  change.
+  A volume's vertex stream is now resident like a surface's
+  (`r_vkStaticGeometry`, keyed on the vertex cache block and its serial), and
+  the index list of a volume that owns its block rides on that block's
+  identity, since the surface allocates and frees the two together
+  (`r_vkStaticShadowVolumes`). The rings take 781 kB a frame, 275 kB of it
+  volumes; the main thread spends 0.3 to 0.7 ms less a frame at a static hub2
+  view (three launches, phases alternating inside each, every pair lower),
+  which prices a megabyte copied into the rings at 0.4 to 0.9 ms rather than
+  the 0.14 ms assumed before. Pictures identical; 212,939 draws of resident
+  streams compared with their sources in six maps, none different. Left: the
+  index lists of static volumes cast from entity surfaces (they need an
+  identity of their own), a surface's own index list, which could ride on its
+  vertex block the same way (122 kB a frame at every preset), and 0.4 MB a
+  frame of vertex streams that are not resident at Quality.
+  A surface's own index list, 26 November ([report section 25](performance-report.md#25-a-surfaces-own-index-list-on-vulkan-fps-08-26-november-2026)):
+  section 24's first lead. Vulkan copied every index list into the frame ring
+  each frame, 122 kB a frame of them (hub2 sweep, every preset) the list a
+  surface whose vertices are already resident draws itself with. That list
+  now rides on the surface's vertex block as a prelight volume's does: the
+  surface owns block and list alike, and what rebuilds a kept surface in
+  place frees its vertex caches first (`r_vkStaticSurfaceIndexes`; asked for
+  only beside a resident vertex stream, after the per-frame memo). The rings
+  take 671 kB a frame at Balanced and 691 at Quality where they took 789 and
+  810. The time was not resolved from the machine's noise (two undisturbed
+  pairs 0.035 ms a frame lower; section 24's price gives 0.05 to 0.11 ms).
+  Pictures identical; 329,735 draws of resident streams compared with their
+  sources in six maps and across a map change, none different. Left: the
+  index lists that belong to an interaction (a light's subset over a resident
+  surface, 105 kB a frame, and a static volume cast from an entity's
+  surface), which need an index cache block of their own, and the vertex
+  streams that are not resident at Quality.
+  The vertex streams Quality copies, 26 November ([report section 26](performance-report.md#26-the-vertex-streams-quality-copies-every-frame-fps-08-26-november-2026)):
+  looked into, and left as they are. 401 of the 427 kB a frame (hub2 sweep)
+  are skinned meshes, posed anew each frame, each copied once; 83% of the
+  bytes differ from the frame before. Quality has more of them than Balanced
+  (156 kB) because a shadow map draws the caster mesh itself where a stencil
+  shadow draws a volume built from it, and because
+  `r_shadowMapConservativeCasters` submits casters whose own interaction is
+  not visible (109 kB). The whole row costs 0.16 to 0.36 ms a frame by
+  section 24's price. Weighed and not taken: position-only streams for
+  meshes only shadow maps draw (bound about 200 kB a frame; a second caster
+  vertex layout), the conservative caster rule itself, and meshes posed into
+  the pose they had (70 kB). `rendererVulkanMemoryInfo` now prints
+  `deformedVertexBytes`, the share of generated models in what the ring
+  takes. Left: the index lists that belong to an interaction, as above.
+  An interaction's index lists, 26 November ([report section 27](performance-report.md#27-an-interactions-index-lists-on-vulkan-fps-08-26-november-2026)):
+  the lead above. A light's index subset over a surface and a stencil volume
+  cast from an entity's surface live on the heap with no identity the
+  executor can trust. In the Vulkan module a surface interaction that has
+  been linked for 150 ms is given index cache blocks for those lists
+  (`R_InteractionIndexBlockDue`; never one rebuilt every tic, nor under the
+  render thread), and the executor keeps a resident copy under the block's
+  serial (`r_vkStaticInteractionIndexes`). The rings take 589 kB a frame at
+  Quality where they took 687, and 535 at Balanced where they took 656 (hub2
+  sweep). Time not measured on the loaded machine (0.04 to 0.11 ms by section
+  24's price). Pictures identical; 285,610 draws compared with their sources
+  in six maps and across a map change, none different. What the rings still
+  take in that view is geometry built anew every frame or tic.
 - [ ] **FPS-09 — P1, qualification: regression gate.** Put the suite in the release
   checklist (`docs/dev/release-completion.md`, the manual release workflow): the core
   scenarios on the reference machine before every release and on every renderer,
@@ -2881,7 +3188,7 @@ Sources: [OpenXR implementation history](archive/2026-10-18/plans/2026-10-02-ope
 
 ### VR completion checkpoints
 
-**Estimate: 75%; 4/7 tasks closed.** Credit the OpenGL and Vulkan PC paths,
+**Estimate: 74%; 4/9 tasks closed.** Credit the OpenGL and Vulkan PC paths,
 their fault handling, play spaces and per-eye TAA on the simulated runtime.
 Synthetic stereo results do not qualify a headset, its comfort, its frame
 budget or standalone Quest; those are the [headset checklist](vr-headset-qualification.md)
@@ -2890,11 +3197,13 @@ and AND-05.
 | Task / state | Completed points and evidence | Remaining completion subpoints |
 | --- | --- | --- |
 | VR-01 — Closed (PC scope) | Vulkan (runtime-created device), desktop-independent submission, Wayland EGL and SP world-GUI pointing integrated at render API 32 with VR-06's guarantees; GL/Vulkan SP/MP/menu smokes, the Vulkan fault matrix and Linux Wayland/X11 bindings pass on the simulated runtime. | Quest standalone moved to AND-05 by decision; physical headsets are VR-02. |
-| VR-02 — Partial | GL and Vulkan stereo, tracking/input, room scale, play spaces, aiming, haptics, world GUIs, per-eye TAA, comfort controls and (17 November) the player's own body with arms that reach the hands (`vr_body`) provide the testable implementation; the [headset checklist](vr-headset-qualification.md) is ready to run. | Run the checklist on each available PC runtime/headset: combat, refresh/latency, controls, collision, vehicles, HUD/world-GUI readability and recovery. |
+| VR-02 — Partial | GL and Vulkan stereo, tracking/input, room scale, play spaces, aiming, haptics, world GUIs, per-eye TAA, comfort controls and (17 November) the player's own body with arms that reach the hands (`vr_body`) provide the testable implementation; the [headset checklist](vr-headset-qualification.md) is ready to run. 26 November: the first player report from a real headset (Steam Frame, SteamVR, 0.15.0) found play working end to end; its five issues were fixed or answered the same day (adult-sized hands and guns `vr_weaponScale`, HUD below the line of sight, the wheel picked with the weapon-hand stick, controller prompts and a round menu pointer; see release-completion). | Run the checklist on each available PC runtime/headset: combat, refresh/latency, controls, collision, vehicles, HUD/world-GUI readability and recovery; confirm the 26 November fixes and aim accuracy on a headset, and world terminals (untested in that report). |
 | VR-03 — Closed | STAGE/LOCAL_FLOOR/LOCAL selection with warned fallback, floor-referenced standing height, recentering, calibration and live seated/standing changes pass natively and on the simulated runtime (GL/Vulkan). | Physical body alignment is checklist section 4 (VR-02). |
 | VR-04 — Partial | `openxr_vr_stereo_cost.py` records flat/stereo/warm-stereo CPU, build, submit and GPU tails, now at a chosen preset (`--preset quality`); the simulated baselines on this GPU are recorded below. Uploads, dynamic geometry, remote cameras, cached static shadow maps and (8 November) world-GUI quads are shared between the eyes; culling, lights, draws, mirror/reflection/refraction/x-ray maps and dynamic shadow composition stay per eye. `openxr_vr_stereo_share_smoke.py` proves both by work count on OpenGL and Vulkan. | Headset tails against the refresh budgets (checklist 2.2), and sharing work where those tails show a view-independent cost. |
 | VR-05 — Closed (approved scope) | Decision: per-eye TAA only. Each eye has its own view identity, history images, motion vectors and resets in the SP game chain and both backends' own temporal scenes; dynamic resolution stays off in VR. SP/MP GL/Vulkan pass the simulated-runtime smoke. | Headset comfort is checklist section 7. Hand presence arrived with the body (VR-02, 17 November); physical-object interaction needs its own design. |
 | VR-06 — Closed | Active GL teardown/ownership repair passes native failure cases and simulated-runtime SP/MP gameplay. | Carry guarantees into VR-01 backends; physical controller/headset validation remains VR-02. |
+| VR-08 — Partial | 27 November 2026: VR Mode Off/On/Automatic (`vr_enable` 0/1/2; archived 0 and 1 keep their meaning), a side-effect-free stage-one runtime probe (`XR_RUNTIME_JSON`, the Windows registry, the XDG files, the Quest flavor), Automatic's launch-time headset question before the renderer is chosen (OpenGL under `r_renderApi best`), its 20 s settle window, a menu notice for a headset found later (Play in VR, `vr_start`), the title's one-time question when a runtime is installed (`vr_offerAnswered`), `vr_detect` and the `VR_RUNTIME`/`VR_MODE`/`VR_OFFER`/`VR_DETECT` log lines; `openxr_vr_detection_smoke.py` covers no runtime, a runtime without a headset, a headset at launch, one connected later and the once-only question. | Real runtimes (SteamVR, Meta Link, WMR, Monado, Virtual Desktop): their registration read correctly, how each answers `xrGetSystem` with the headset off, asleep or unplugged, and whether Automatic starting SteamVR at launch is acceptable; checklist section 8. |
+| VR-09 — Partial | 27 November 2026: the retained interface in VR (`tools/ui/retained_vr.py`, keyed on the shared interface variant `vr`, AND-04.1): VR SETUP (play space, height, recentre, turning, weapon hand, comfort vignette) opened over the title or pause at the first VR entry and from the pause's VR SETUP link and the Virtual Reality tab's Comfort Setup; Game Options opens on Virtual Reality in VR; the desktop-only rows (the flat gun's place and field of view, stereoscopic 3D) leave the page in VR; the Marine, Strogg and Awakening pauses and the Awakening settings pages carry it; menu text at least 1.25x in VR (`ui_retainedVRTextScale`); the game's on-screen keyboard instead of the desktop's whenever VR has the controllers; the desktop mirror shows the menu screen while a menu is up; all 12 languages; `openxr_vr_menu_smoke.py` sets VR SETUP's Turning by pointer before its Laser Sight round. | Readability, laser-pointer hit sizes and the desktop mirror judged in a headset; the on-screen keyboard reached by the pointer on a headset; checklist section 8. |
 | VR-07 — Partial | 24 November 2026: desktop stereoscopic 3D (`r_stereo3D`) on OpenGL and Vulkan: side by side (half and full width), top and bottom, red/cyan anaglyph (Dubois) and row interlaced, with depth, convergence and eye swap; SP, MP, menus, the paused menu's backdrop and window-sized screenshots captured in every layout; Settings rows on both interfaces in all 12 languages. | Physical stereo displays (a 3D TV or monitor, side-by-side glasses, a passive interlaced panel, anaglyph glasses); the zero-parallax crosshair; Apple GL and GLES, which decline it. |
 
 ### VR task evidence and acceptance
@@ -3127,6 +3436,50 @@ and AND-05.
   crosshair at the target's depth, and the Apple GL 2.1 and GLES renderers,
   which keep a flat frame and say why.
 
+- [ ] **VR-08 — P2, implementation and qualification: headset detection and
+  automatic VR.** Find a headset without surprising a desktop player, and let
+  VR start by itself or be offered when one is present. Stage one reads which
+  OpenXR runtime the loader would load (`XR_RUNTIME_JSON`; Windows
+  `HKLM\SOFTWARE\Khronos\OpenXR\1\ActiveRuntime` and `AvailableRuntimes`;
+  Linux `active_runtime[.<arch>].json` under `$XDG_CONFIG_HOME`,
+  `$XDG_CONFIG_DIRS` and `/etc`; the Quest flavor is always a headset) and never
+  creates an instance, since `xrCreateInstance` can start SteamVR. Stage two
+  asks that runtime for a headset only when the player allowed it: VR Mode On
+  or Automatic, or `vr_detect`. Acceptance: VR Mode is Off / On / Automatic with
+  archived values and `+set vr_enable 1` unchanged; Automatic decides before
+  the renderer is chosen, so the automatic choice keeps VR on OpenGL, and a
+  headset taken later on Vulkan restarts the renderer once; a headset that
+  appears mid-session is offered without taking over play; the title asks
+  once, and remembers the answer, when a runtime is installed and VR Mode was
+  never chosen; every outcome is logged for support; and the test runtime
+  proves no runtime, a runtime with no headset, a headset at launch, one
+  connected later and the once-only question
+  (`openxr_vr_detection_smoke.py`), stage one loading no runtime at all.
+  Implemented 27 November 2026 (`src/sys/openxr/OpenXRRuntimeProbe.cpp`,
+  `idVRSystemOpenXR::BootDecide`/`StartIfRequested`, `src/framework/Session_vr.cpp`;
+  [player guide](../user/vr.md#vr-mode-and-headset-detection)). Open: every
+  real runtime's registration and its answers with the headset off, asleep or
+  unplugged, on a PC with that runtime installed (checklist section 8).
+- [ ] **VR-09 — P2, implementation and qualification: the VR interface.** A
+  retained-interface variant for play in a headset that keeps every function
+  players expect. Acceptance: menus readable at headset distance with large
+  laser-pointer targets and nothing that needs hover; the Virtual Reality
+  settings first, with comfort and handedness a step away; desktop-only rows
+  hidden or explained; recentre and seated/standing from the pause menu; text
+  entry through the PAD-05 on-screen keyboard by pointer; a short comfort
+  setup at the first VR entry that players can reopen; controller prompts
+  throughout; the desktop mirror considered; The Awakening's (`q4xbase`)
+  screens and weapons covered. Implemented 27 November 2026 on the shared interface
+  variant (`view.variant` is `vr`; [contract](ui/interface-variants.md)): VR
+  SETUP, Virtual Reality first, desktop-only rows hidden, the pause's VR SETUP
+  link on the Marine, Strogg and Awakening pauses, menu text at least 1.25x
+  (`ui_retainedVRTextScale`), the game's on-screen keyboard whenever VR has the
+  controllers (the desktop's own would open where no one looks), and a desktop
+  mirror that shows the menu screen while a menu is up. The pointer counts as
+  a controller for prompts (26 November), and the shared variant's touch reach
+  (a press beside a small control reaches it) applies to it once merged. Open: judging text
+  size, hit sizes, the mirror and the keyboard in a headset (checklist
+  section 8).
 
 ## Android and mobile rendering
 
@@ -3146,7 +3499,7 @@ The Quest flavor is integrated, with emulator and test-runtime evidence only.
 | AND-01 — Closed | Phone/emulator scope, startup ownership, UI-thread binding, background handling, Back/cutouts and touch controls repaired; S25 save/touch/audio checks exist; host-owned orientation and the portrait thumb deck pass a mid-match emulator rotation; the per-orientation layout editor, suspension save, multiplayer resume/reconnect and Quest flavor package checks pass native/JVM and emulator probes. | None; S25 hardware checks pass (layout, portrait, suspension save, background kill/restore, multiplayer reconnect, editor by hand). Residuals moved to AND-02/AND-04. |
 | AND-02 — Partial | The device harness and S25 (Adreno 830, API 36) campaign pass cold and warm: real level transitions, save/load, audio residency, storage, thermal and per-model budgets. | S25 sustain and multiplayer phases; audible and gamepad/mouse/keyboard checks; Mali and API-floor devices. |
 | AND-03 — Partial | Verified package repair/import, localized setup, settings return, control/interface setup and save/log export implemented; scoped device round trips pass. | Release-signing continuity; cloud/removable providers; interrupted-process recovery; physical setup/accessibility and upgrade matrix. |
-| AND-04 — Partial | Touch presets, UI/text sizing, an opt-in portrait orientation, retained safe areas, HUD safe-area and thumb-deck positioning and the per-orientation layout editor exist. | Device-based presets and GLES limits; keyboard/touch targets, human-finger portrait play, the weapon control over the portrait readouts, stock GUIs in portrait, cutouts/gesture bars/folds/multi-window qualification. |
+| AND-04 — Partial | Touch presets, UI/text sizing, an opt-in portrait orientation, retained safe areas, HUD safe-area and thumb-deck positioning and the per-orientation layout editor exist. 27 November: the interface-variant selector (desktop/touch/vr, device class, live switching; AND-04.1) and 48 dp touch reach in the retained menus (AND-04.2). | AND-04.3-AND-04.6 (touch-sized settings rows, device-fitting rows, device-class defaults, device qualification); device-based presets and GLES limits; human-finger portrait play, the weapon control over the portrait readouts, stock GUIs in portrait, cutouts/gesture bars/folds/multi-window qualification. |
 | AND-05 — Partial | The archived Quest change (`65aa9bd88`) is integrated with refresh-rate, performance-level, thermal and frame-thread services; the `-Popenq4Quest` release APK with its generated headset manifest passes `verify_android_apk.py --variant quest`, and the emulator plays Air Defense 1 in stereo on the test runtime (12 November). | On a headset: installation/assets, stereo gameplay, controller/UI interaction, comfort, session recovery and sustained thermal/refresh budgets; distribution decision. |
 
 ### AND task evidence and acceptance
@@ -3361,6 +3714,36 @@ The Quest flavor is integrated, with emulator and test-runtime evidence only.
   Low Power, and a detected cap stays at the preset's 60 on a 120 Hz panel.
   This is policy from one device: a Mali phone, a mid-range phone and a fresh
   first launch on the S25 still have to confirm it.
+  **Mobile interface variant (plan, 27 November).** The retained interface
+  gains a touch variant for phones, tablets and handhelds that keeps every
+  function players expect; the VR variant and headset detection belong to the
+  VR track. Work items, each with its acceptance gate:
+  - **AND-04.1 Interface-variant selector (shared with the VR variant).** One runtime
+    variant (`desktop`, `touch`, `vr`) and device class from SDL3 signals, the
+    VR session and `ui_interfaceVariant`, switching live; view sources and an
+    engine query. Gate: native resolver/latch/source tests and a headless
+    client resolving each forced and automatic case.
+    [Contract](ui/interface-variants.md).
+  - **AND-04.2 Touch fundamentals across the retained menus.** 48 dp hit
+    regions by reach (INP-007) for a finger and in the touch/VR variants, on
+    top of the existing release activation, 8 dp cancel, 500 ms long-press,
+    drag lists and tab swipes. Gate: native reach tests at two densities;
+    device finger checks remain physical.
+  - **AND-04.3 Touch-sized settings rows.** GAME OPTIONS, CONTROLS and AUDIO
+    stand in one column with rows grown toward the 48 dp target in the touch
+    variant. Gate: generator checks, the native settings-page suites and
+    headless captures at phone and tablet sizes in both orientations.
+  - **AND-04.4 Device-fitting rows.** Touch rows (touch controls, control
+    size, look sensitivity, layout editor) come forward where the built-in
+    controls exist; mouse rows step aside without a mouse. Gate: the retained
+    gate's setting contracts and captures with and without a mouse.
+  - **AND-04.5 Device-class defaults.** Text size starts from the device class
+    (phone, tablet, handheld) once, never over a saved choice. Gate: a fresh
+    and a saved profile on each class.
+  - **AND-04.6 Device qualification.** Human-finger use, IME/on-screen keyboard
+    entry, Bluetooth keyboard/mouse switching, cutouts, folds and multi-window
+    on phones and tablets; the in-engine first-run interface prompt for touch
+    devices without Android's setup. Physical devices only.
 - [ ] **AND-05 — P2, integration and qualification: standalone Quest.** After
   VR-01/AND-01, qualify real installation, assets, stereo gameplay, controller/UI
   interaction, comfort, session recovery and sustained refresh/thermal budgets.
@@ -3410,7 +3793,7 @@ Its structure determines the work:
   the signed app, so the renderer and both game modules link statically.
 
 Every item follows the project rules: Meson stays the primary build, SDL3 stays
-the platform layer, game-library changes land in `src/game` and `src/mpgame`,
+the platform layer, game-library changes land in `src/game`,
 displayed text goes through the language tables, and the port's author is
 credited in `AGENTS.md`, `README.md` and the release notes when code lands.
 
@@ -3536,7 +3919,7 @@ seven final gates remain pending.
 | Task / state | Completed points and evidence | Remaining completion subpoints |
 | --- | --- | --- |
 | UI-01 — Partial | Settings hub, GAME/CONTROLS/AUDIO, Load Defaults, DISPLAY (with presets applied there) and Player Setup exist; current scaling/tall layouts and effect/readback increments recorded. Settings tree audit (20 November 2026): tabs and sections grouped by what each row changes, GAME OPTIONS' VIEW WEAPON and ACCESSIBILITY tabs, DISPLAY's EFFECTS tab, and Frame Rate Cap, Anisotropic Filtering, Shadow Maps and Motion Blur rows ([retained screens](ui/retained-screens.md#the-settings-tree-audit-20-november-2026)). Dependent rows (23 November 2026): a row another setting turns off is dimmed and skipped on every retained settings page, each dependency checked against the code ([settings structure](settings-menu-structure.md#dependent-rows)). | Complete settings transactions/failure/restart/capability matrix; real-font/state coverage; production SYSTEM editor round trip and device/platform acceptance. |
-| UI-02 — Partial | Binding capture, contextual prompts, controller navigation, touch scrolling and right-stick detail/preview handling exist. | Production native IME wiring, shaping/fallback/graphemes, accessibility exposure; physical controller families, composition/focus/hotplug and locale/layout matrix. |
+| UI-02 — Partial | Binding capture, contextual prompts, controller navigation, touch scrolling and right-stick detail/preview handling exist; 27 November: the interface-variant selector and 48 dp touch reach (AND-04.1/AND-04.2, [contract](ui/interface-variants.md)). | Production native IME wiring, shaping/fallback/graphemes, accessibility exposure; physical controller families, composition/focus/hotplug and locale/layout matrix. |
 | UI-03 — Partial | Roster scrolling/identity guards, save-browser/details, Strogg confirmations, server focus/empty states and objective markers have scoped evidence. | Tourney/watch and Match Control flows, catalogs beyond 128, remaining target-identity/role operations, handoffs and actual task/failure completion. |
 | UI-04 — Partial | Retained menus/HUDs and specific implant/vehicle/cinematic surfaces have implementation or captures. | Accept every required source/include variant's behavior and artwork; world terminals, script/timeline provenance, per-instance state and exactly-once commands. |
 | UI-05 — Partial | Awakening scope clauses reconciled; fresh-profile hit-feedback defaults repaired without overwriting opt-ins. | Remaining artwork/default-policy exceptions, vector fidelity, motion and visual review; approve exceptions explicitly. |
@@ -4158,7 +4541,7 @@ historical saves and recovering safely from damage.
 | Q4-04 — Partial | Thirteen-map integration; targeted freeze, speeder, boss, corpse-pin, isolation and occupied turret/walker save checks; bounded M01/M02 repairs recorded. | All thirteen ordered playthroughs; complete boss kills, walker repair/unlock/demolition, squad/extraction routes, sustained turret effects and actual Awakening-to-Arena switch. |
 | Q4-05 — Partial | Recovery UI and object/handle/reference/animation/AF/event cleanup hardened; corruption/reload and historical-save regressions pass scoped tests. | Broader owning graphs and interruption boundaries across target platforms; maintain valid saves and explicit refusal without inventing header-only recovery. |
 | Q4-06 — Partial; optional P3 | Raw inventory and field codecs restored; v5 portable stamp/encoding implemented; Windows/Linux bidirectional stock/Awakening cross-loads pass. | Confirm outstanding CI/Apple codec runs; macOS and another ARM64 runtime cross-load/resave directions; publish player migration guidance with accepted scope. |
-| Q4-07 — Partial | Original-writer Windows corpus substantially qualified; v2 stamp reporting repaired; exact HiDef fixture investigated. | Resolve #123 against the reporter's actual GUI/content; other ABIs; recover/reproduce absent stage-two artifacts before claiming independently reviewable acceptance. |
+| Q4-07 — Partial | Original-writer Windows corpus substantially qualified; v2 stamp reporting repaired; exact HiDef fixture investigated; every campaign map's 0.15.0 saves load (26 November). | Resolve #123 against the reporter's actual GUI/content; other ABIs; recover/reproduce absent stage-two artifacts before claiming independently reviewable acceptance. |
 | Q4-08 — Partial | Durable commit/recovery implemented; 56 process-interruption points, locked-file failure and NTFS/ext4/WSL 9p checks recorded. | APFS result, removable/network filesystems and actual power-cut behavior; retain measured CRC/sync costs and last-valid-save preservation. |
 | Q4-09 — Partial | Render demo v11: one recording spans levels, save loads, death reloads and restarts as self-contained segments; gameplay-only frames; level loads, continuous timeline and level markers in playback; campaign-aware library and gate; whole retained HUD and in-world screens recorded. Render demo v12 predicts animated-entity joints exactly, a quarter smaller. Render demo v13 records every frame at the played frame rate instead of 30 Hz. Render demo v14 carries the stream in checked, packed blocks with keyframes: 40% of v13's size, files past 2 GiB, seeks in about a second, and playback of what is intact of a cut or damaged file. Windows checks pass with stock and Awakening content: GL recording, GL and Vulkan playback. | Vulkan recording, Linux and macOS, a session that is really hours long, a multiplayer recording in the block container, a listening pass, a smaller exact joint coding (joints are now most of a recording), the masked retained HUD groups that replay unmasked, and local sounds already playing at a segment start. |
 
@@ -4798,6 +5181,19 @@ Completion substeps must keep three forms of evidence distinct:
   which has no wire-ABI string. It had reported object-table bytes as an ABI.
   Bounded v2–v5 parser fixtures now run with its existing CI self-test; this is a
   reporting correction, not a change to historical save admission.
+  Progress, 26 November: the official 0.15.0 package's own saves of every
+  campaign map, 300 and 3,000 tics in, [restore, resave and replay](savegame-reliability.md#original-release-writer-0150-26-november-2026)
+  in the current build with identical object tables (84 of 84). Five had failed
+  since 23 November: the hover tank's retained gun sight had been edited, and a
+  retained GUI saved from an earlier revision of its document refused the load.
+  Such a GUI is now rebuilt from its saved state.
+  Later on 26 November: saves of The Awakening's first level made by any build
+  since 0.15.0 restored and then closed the game as play resumed. A light
+  switched off in that first frame left stale entries for the renderer's
+  interaction table, a fatal error since 4 November; it now leaves the table
+  when it goes out. Every campaign level's save from the current build
+  [resumes in it](savegame-reliability.md#resuming-at-a-lights-switch-off-26-november-2026)
+  (42 of 42).
 - [ ] **Q4-08 — P2, investigation and qualification: save cost and durability.**
   Measure large-save CRC/sync time and fault behavior across target filesystems.
   Directory synchronization is implemented as recorded below; actual power-cut
@@ -4898,7 +5294,7 @@ Completion substeps must keep three forms of evidence distinct:
 
 ## Rigid-body and ragdoll physics
 
-Sources: `src/game/physics/` and `src/mpgame/physics/` (`Physics_RigidBody`,
+Sources: `src/game/physics/` (`Physics_RigidBody`,
 `Physics_AF`, `Clip`), `src/game/AF.cpp`, `src/game/AFEntity.cpp`, the `af_*` and
 `rb_*` CVars in `gamesys/SysCvar.cpp`.
 
@@ -5106,7 +5502,7 @@ prediction/rewind defaults.
 | MP-19 — Partial | Browser with favourites, filters, find player and tiles; LAN scan. 23 November: an openQ4 master program (`tools/master/openq4_master.py`: challenge-verified heartbeats, the legacy and the extended list, a JSON list for HTTPS) and the browser's HTTPS fallback (`net_serverListUrl`, merged with the master's list); the user chose to keep id's master as the default and the list address empty until the project's hosts are chosen. | A discovery service the project controls with a list fallback, recent servers, region sorting; a fresh install on each platform finds a server. |
 | MP-20 — Not started | Stock Quake 4 physics; Classic double jump and hook; `pm_jumpheight`, `pm_slidevelocity` and `pm_powerslide` synced. | Retail 1.4.2 movement parity evidence on the stock maps at 30, 60 and 90 tics; an optional ProMode-style movement ruleset the bots use. |
 | MP-21 — Partial | Render v14 block container with keyframes, 64-bit files and `compressDemo`; MVD 1.3 records with CRCs and readers for 1.0 to 1.2; the update policy. | One container for every stream, `demoConvert`, the format registry, per-version golden fixtures, byte-identical cross-platform reads in CI. |
-| MP-22 — Partial | Server MVDs with markers, keyframes and auto-tracking; render demos record the local view; a deck with pause, speed, step, seek and follow. 23 November: a player records their own view on any server (`record`, `stopRecord`) as a client-view MVD and plays it back as that player; `demoExport` writes PNG pictures and a WAV sound track; retail Quake 4 render `.demo` files and Quake 4 1.4.2 `.ndmo85` network demos play. | Client-side recording on any server, autoaction, named list, reverse scrub, `timeDemo` for MVD, video and image export, thumbnails and metadata; the retail-demo decision. |
+| MP-22 — Partial | Server MVDs with markers, keyframes and auto-tracking; render demos record the local view; a deck with pause, speed, step, seek and follow. 23 November: a player records their own view on any server (`record`, `stopRecord`) as a client-view MVD and plays it back as that player; `demoExport` writes PNG pictures and a WAV sound track; `recordVideo`, `aviGame` and `aviDemo` record MP4/MKV/WebM/MOV/AVI/GIF video with sound; retail Quake 4 render `.demo` files and Quake 4 1.4.2 `.ndmo85` network demos play. | Client-side recording on any server, autoaction, named list, reverse scrub, `timeDemo` for MVD, video and image export, thumbnails and metadata; the retail-demo decision. |
 | MP-23 — Partial | The render container packs its stream 4.78:1; joints are predicted (v12). | MVD compression and field encodings, 2D/sound/effect encodings, `demoStats`, budgets and targets met byte-exact. |
 | MP-24 — Partial | Native codec flips, truncations and hostile payloads; MVD cut points and recovery; damaged render files play on. | One fuzz corpus for every reader; MVD worker-thread, 64-bit and hours-long recordings; cheats-off, under-load, Vulkan/Linux/macOS/ARM64 recording and playback; cross-platform determinism; a listening check. |
 | MP-25 — Not started; staged plan 21 November | Survey: the server already runs networkless local clients (bots through `InitLocalClient`), and `Draw( clientNum )` and `renderView_t`'s viewport rectangle exist. One human local client, one command generator, one open gamepad, one listener and one active GUI; `src/mpgame/` asks who is local on about 730 lines; whole-target post passes; temporal history slotted only for VR eyes. | Decisions D1-D6 (remote transport, seat identity, stock-interface policy, listener model, keyboard seat, automated seats); then the stages: seats and input, listen-server seats, split views, HUD and menus, audio, remote servers, spectating and demos, cost and qualification. |
@@ -5672,7 +6068,7 @@ Completion substeps:
   and swimming as a remote client: the harness cannot place one at a pool without
   input, so client prediction while swimming is unexercised.
 - [ ] **MP-07 — P1, implementation and qualification: coupled prediction and
-  rewind.** In `src/mpgame/gamesys/SysCvar.cpp` both enhanced prediction and lag
+  rewind.** In `src/game/gamesys/SysCvar.cpp` both enhanced prediction and lag
   compensation default off. Preserve the coupled displayed-pose-age and rewind
   contract implemented below with HF-01/HF-05; bound untrusted client claims
   and prevent double correction.
@@ -6762,10 +7158,32 @@ Completion substeps:
   opens again at the end ([sound in exports](multiview-demos.md#client-view-recordings-mp-22-23-november-2026)).
   `SoundCaptureTest` covers the arithmetic and the WAV header;
   `mp_client_demo_smoke.py` checks the file's format, length and level and
-  the device's return. The unfinished render-demo `aviDemo` path writes no
-  pictures, so it gets no track. No optional pipe to an external encoder: the
+  the device's return. No optional pipe to an external encoder: the
   [demos guide](../user/multiview-demos.md#export-a-demo-as-pictures) gives
   the `ffmpeg` line instead.
+  Progress, 23 November (fifth round): video capture
+  ([guide](../user/video-capture.md)). `recordVideo`/`stopVideo`/`toggleVideo`
+  record the presented frame (HUD, menus, console) with the game's sound, and
+  `aviGame`/`aviDemo` now produce video instead of the commented-out TGA
+  path. The renderer reads every presented frame back through a four-buffer
+  asynchronous ring beside the save preview (render API 37: GL pixel-pack
+  buffers, Vulkan host buffers retired with their frame slot), so no frame
+  waits for its read. Sound comes from the same loopback mixer the export
+  uses, rendered from the main thread each frame and also played to the
+  speakers through SDL3. Offline recordings run whole tics per video frame
+  (the game slows instead of the video stuttering, and `com_videoFixedStep`
+  pins the presentation fraction to the tic's pose); online they follow the
+  clock and repeat late frames. Encoders: Media Foundation H.264/HEVC + AAC MP4
+  on Windows (loaded at run time for N editions), FFmpeg through SDL3's process
+  API for MKV/WebM/MOV/GIF and other codecs, with GPU encoders used only after
+  a test encode passes, and a built-in OpenDML Motion JPEG AVI writer that
+  needs nothing. Windows checks, decoded with FFmpeg 7.1: MF MP4 on OpenGL and
+  Vulkan (stock `airdefense1` cinematic, `storage1` gameplay), FFmpeg MKV with
+  NVENC in real time (300 of 301 frames distinct), libvpx WebM + Opus, GIF,
+  built-in AVI (300 distinct frames, PCM, no decode errors) and `aviGame`
+  (30 fps, 200 distinct frames), each with audible sound. Open: a multiplayer recording, `aviDemo` of a render demo,
+  Linux and macOS (FFmpeg or AVI there), long recordings past the AVI segment
+  limit, a settings-menu page, and `demoExport` straight to video.
   Progress, 23 November (retail render demos): retail Quake 4 1.4.2 render
   `.demo` files play from the library (listed as **Retail Quake 4 render
   demo** with their level) and with `playDemo` and `timeDemo`, with pause,
@@ -6866,7 +7284,8 @@ Completion substeps:
     it needs no protocol change.
   - **Game module:** `idGame::Draw( clientNum )` and
     `idMultiplayerGame::Draw( clientNum )` already draw for a named client,
-    but `src/mpgame/` asks who is local on nearly 580 lines through
+    but the multiplayer code (then `src/mpgame/`, merged into `src/game/` on
+    24 November) asks who is local on nearly 580 lines through
     `GetLocalPlayer()` and on 156 through `localClientNum` (62 in
     `MultiplayerGame.cpp`, 28 in `Player.cpp`). Those lines cover HUD
     updates, private sounds, the view weapon, hit feedback, item timers, team
@@ -6929,7 +7348,7 @@ Completion substeps:
      pads in PAD-01's harness bound to two seats.
   2. **Listen-server seats.** Extra seats join as local clients through the
      bot path, and `LocalClientInput` fills each seat's command. Classify
-     every `GetLocalPlayer()` and `localClientNum` use in `src/mpgame/` as
+     every `GetLocalPlayer()` and `localClientNum` use in the multiplayer code as
      per seat (view, HUD, private sounds, view weapon, hit feedback), any
      local seat, or host only. Route the per-seat uses through a current-seat
      context that `Draw` and the HUD set. Scoreboards, votes, chat and team
@@ -6987,8 +7406,8 @@ Completion substeps:
   (MMREX, `DarkMatter-Productions/MuffMode`: `mm_horde*`, the
   configuration reference's Horde sections, the level design guide's spawn
   anchors and `horde-nav-format-design.md`), adapted to Quake 4 rather than
-  copied. Today the multiplayer module compiles Quake 4's AI, AAS and monster
-  classes (`src/mpgame/ai/`, registered in `Class.cpp`), but `idAI` and
+  copied. Today the game module's multiplayer mode has Quake 4's AI, AAS and
+  monster classes (`src/game/ai/`, registered in `Class.cpp`), but `idAI` and
   `idActor` write no snapshot state, so a client never sees a monster, and no
   multiplayer mode spawns one. Deliver Horde as a new multiplayer mode in
   `game_mp`, not a single-player co-op path:
@@ -7603,6 +8022,12 @@ session can give, and PAD-10 is a decision.
   loss of the inactive and the active pad, reconnect keeping the choice); an SP
   gameplay harness pausing on loss; an MP HUD notice capture; a battery notice
   from the virtual device's power state; physical runs under PAD-09.
+  24 November 2026: use moves charge only from a controller that has been put
+  down (holding nothing, unused for a second), and a device that moves with
+  the one that just took charge is marked its twin, so a remapper's virtual
+  pad beside the physical one no longer hands charge over on every stick
+  event; gate: the `twins` runtime scenario (79 handovers and a 30% slower
+  turn before, none and the single-pad rate after).
 - [ ] **PAD-02 — P1, implementation: stick aim that reaches full speed and
   turns quickly.** Today both sticks share one radial inner dead zone (`0.18`)
   with no outer dead zone, so a worn stick that never reports full deflection
@@ -8037,9 +8462,12 @@ fixes and the UI visual editor have their own items.
 
 ### CORE completion checkpoints
 
-**Estimate: 100%; 6/6 tasks closed.** CORE-01, CORE-02 (not promoted), CORE-03,
-CORE-04, CORE-05 and CORE-06 are closed. macOS, a preview platform, is qualified
-through its own evidence gate rather than CORE-01.
+**Estimate: 95%; 6/7 tasks closed.** CORE-01, CORE-02 (not promoted), CORE-03,
+CORE-04, CORE-05 and CORE-06 are closed. CORE-07, one game module for
+single-player and multiplayer, is implemented and qualified on Windows x64 and
+Linux x64, and builds and packages for Linux ARM64 and Android.
+macOS, a preview platform, is qualified through its own evidence gate rather
+than CORE-01.
 
 | Task / state | Completed points and evidence | Remaining completion subpoints |
 | --- | --- | --- |
@@ -8049,6 +8477,7 @@ through its own evidence gate rather than CORE-01.
 | CORE-04 — Closed | Strict strings; configure warnings fixed (RmlUi's not reproduced); diagnostics reviewed; collision contents decoding fixed; MSVC ASan gameplay (dedicated tour, SP combat, compilers, malformed and fuzzed AAS data) with no report; T-junction ASan/UBSan fixture. | — |
 | CORE-05 — Closed | `hub2` sliver and silhouette repairs; #209's maps profiled and compiling in minutes with byte-identical output; collision contents decoded as retail; rebuilt maps load, render and navigate (AI take cover) in SP with compile memory recorded. | — |
 | CORE-06 — Closed | Tactical features generated as Quake 4 does (98.8% of 7,422 retail features reproduced exactly); `runAASTactical`; rebuilt `airdefense1` AI takes cover as on retail data; malformed data dropped or rejected, fuzzed. | — |
+| CORE-07 — Open | One game tree and one library (`game_<arch>`) serve the campaign and network play, game API 64 (65 since 25 November); campaign saves, the network protocol, network demos and MVDs unchanged and cross-loaded with the pre-merge build; mode switches in one process; Windows x64 tests and smokes. Linux x64: dedicated, client-demo, save and mode-switch smokes, saves cross-loading with Windows, the module really unloaded at each mode change. Linux ARM64 cross build validated and packaged; Android build and verified APK. Every official map A/B against the pre-merge build; eleven cross-mode leaks gated. Third review (25 November): cvars, commands and every merged hunk against both old trees; seven minor leaks gated, five masked regression tests repaired, mode cvars safe in a kept image, retired modules retired by the updater. | macOS build and smoke; an Android emulator or device run; a human session across both modes; then the follow-ups below. |
 
 ### CORE task evidence and acceptance
 
@@ -8203,6 +8632,63 @@ through its own evidence gate rather than CORE-01.
   on retail data. The loader rejects truncated or negative sections and drops
   inconsistent spans or indexes with a warning; 30 seeded mutations all load
   safely. Pinch and vantage come only from `info_tactical_feature`, as in Quake 4.
+- [ ] **CORE-07 — P1, implementation and qualification: one game module.**
+  Merge the single-player (`src/game/`) and multiplayer (`src/mpgame/`) game
+  trees into one tree and one library that the engine loads for either mode,
+  without changing either mode's behaviour, campaign saves, the network
+  protocol or any demo format. Contract and evidence:
+  [unified game module](unified-game-module.md).
+  Progress, 24 November: implemented. `src/game/` is the only game tree and
+  builds `game_<arch>`; the engine passes the mode in `gameImport_t` (API 64)
+  and still reloads the library when the next session needs the other mode.
+  Real differences are runtime gates (`gameLocal.isMultiplayer`,
+  `gameLocal.IsMultiplayerMode()`, `idModeCVar`). Every save and message
+  serializer matches its original tree; two merged constants that would have
+  changed campaign saves are guarded. On Windows x64: base and Awakening saves
+  cross-load with the pre-merge build, older saves behave as before, both
+  builds join each other in network play, retail 1.4.2 network demos and
+  cross-build MVDs play, and one process switches campaign, network play and
+  campaign again. Packaging, staging, CI and the test suite expect the single
+  module; staging and the Windows installer remove the retired
+  `game-sp`/`game-mp` files.
+  Progress, 25 November: Linux x64 builds `game_x64.so`, which exports only
+  its entry points. The dedicated smoke and all 22 client-demo checks pass.
+  Linux and Windows restore each other's campaign saves with identical object
+  tables. One process switches campaign, network play and campaign again, and
+  the dynamic loader shows the module finalised and loaded fresh at each
+  change. The Linux ARM64 cross build passes the workflow's ELF and export
+  checks, the stage validator and packaging, and its dedicated smoke passes
+  under qemu. The Android build produces `libgame_arm64.so`, and its release
+  APK passes `verify_android_apk.py`. To link, the APK needed a scratch fix for
+  a GLES renderer link break on main that is not part of this item. macOS was
+  not run: no Apple hardware here, and the hosted lanes need a push.
+  Also 25 November: every official map against the pre-merge build: 42
+  campaign maps, and 49 multiplayer maps in each listed game type, on servers
+  and listen clients. The A/B found eleven places where merged text had
+  reached the other mode. They are now gated and pinned by
+  `unified_game_mode_parity_contract.py`. Since then, campaign saves match the
+  old build byte for byte apart from the documented server-info keys and
+  fields neither build initialises. Every map logs the old build's warnings
+  exactly, and server and client entity lists match on every multiplayer case.
+  Third review, 25 November: every cvar and console command compared with both
+  old trees, and five hunk-by-hunk reviews of the merge (three for the
+  campaign, two for network play, including its menus with no map loaded and
+  the single-player-only sources now compiled into it). No difference in
+  gameplay, saves, the wire format or anything visible; seven minor ones
+  (debug prints, a cheat's vehicle branch, load-time work) are now gated to the
+  mode whose library had them. Five recovered game regressions had failed since
+  the merge, hidden because their suite already failed before it; they pass
+  again. The mode cvars now follow the mode even where a platform keeps the
+  module's image loaded across a mode change (macOS keeps any image with
+  thread-local variables). The in-game updater retires the old split modules,
+  and a mod that still ships only those gets a console warning. A mode change
+  no longer reports the mode cvars as declared twice. Rechecked against the
+  pre-merge build: six campaign maps, eight server cases and a listen server
+  log the same warnings and hold the same entities and saved object tables.
+  Remaining: the macOS build and smoke; an Android emulator or device run; a
+  human session across both modes. Follow-ups once closed: keep one
+  loaded library across a mode change, and remove the engine's workarounds for
+  the split (the multiplayer menu cvars it declares for the campaign module).
 
 ### TOOL completion checkpoints
 

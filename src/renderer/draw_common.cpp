@@ -63,8 +63,10 @@ static bool RB_ImageIsCurrentRender( const idImage *image ) {
 		return true;
 	}
 
+	// asked for every image of every stage drawn: every name it can match
+	// starts with the underscore of an engine-made image
 	const char *name = image->GetName();
-	if ( name == NULL ) {
+	if ( name == NULL || name[0] != '_' ) {
 		return false;
 	}
 
@@ -81,7 +83,7 @@ static bool RB_ImageIsCurrentDepth( const idImage *image ) {
 	}
 
 	const char *name = image->GetName();
-	if ( name == NULL ) {
+	if ( name == NULL || name[0] != '_' ) {
 		return false;
 	}
 
@@ -161,6 +163,29 @@ static bool RB_MaterialUsesCurrentDepth( const idMaterial *material ) {
 	return false;
 }
 
+static bool RB_MaterialUsesCurrentRender( const idMaterial *material ) {
+	if ( material == NULL ) {
+		return false;
+	}
+	if ( material->TestMaterialFlag( MF_NEED_CURRENT_RENDER ) ) {
+		return true;
+	}
+
+	const int stageCount = material->GetNumStages();
+	for ( int i = 0; i < stageCount; i++ ) {
+		if ( RB_StageUsesCurrentRender( material->GetStage( i ) ) ) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static idCVar r_postProcessCaptureOnDemand( "r_postProcessCaptureOnDemand", "1", CVAR_RENDERER | CVAR_BOOL,
+	"copy the view into _currentRender for a post-process pass only when a material in the pass samples it; 0 = copy it for every post-process pass" );
+static idCVar r_lightGridDepthOnDemand( "r_lightGridDepthOnDemand", "1", CVAR_RENDERER | CVAR_BOOL,
+	"copy the depth buffer for the light grid pass only in a 3D view of a world with a light grid, and keep that copy across the fog pass; 0 = copy it in every view and again after fog" );
+
 typedef bool ( *rbShaderPassSurfFilter_t )( const drawSurf_t *surf );
 
 static bool RB_DrawSurfNeedsLegacyFeedback( const drawSurf_t *surf ) {
@@ -218,6 +243,18 @@ static bool RB_DrawSurfNeedsPreFogLegacyFeedback( const drawSurf_t *surf ) {
 
 static bool RB_DrawSurfNeedsPostFogLegacyFeedback( const drawSurf_t *surf ) {
 	return RB_DrawSurfNeedsLegacyFeedback( surf ) && RB_DrawSurfIsPostFogMaterialPass( surf );
+}
+
+// REN-02: a corridor-owned classic surface's additive overlay stages (glows),
+// which the modern forward pass leaves for this walk over the composed frame.
+static bool RB_DrawSurfIsModernClassicOverlay( const drawSurf_t *surf ) {
+	return RB_DrawSurfIsPreFogMaterialPass( surf ) && R_ModernGLExecutor_ClassicOverlaySurface( surf );
+}
+
+// One walk in sort order for everything the classic walker still draws inside
+// a modern-owned pre-fog ambient pass.
+static bool RB_DrawSurfNeedsPreFogLegacyDraw( const drawSurf_t *surf ) {
+	return RB_DrawSurfNeedsPreFogLegacyFeedback( surf ) || RB_DrawSurfIsModernClassicOverlay( surf );
 }
 
 static bool RB_HasLegacyFeedbackDrawSurfs( drawSurf_t **drawSurfs, int numDrawSurfs, rbShaderPassSurfFilter_t filter = NULL ) {
@@ -2311,10 +2348,16 @@ static bool RB_EnsureSceneRenderTexture( const viewDef_t *sceneTargetView ) {
 	// Any non-native scene target already requires a resolve. Keep it
 	// single-sample instead of stacking an MSAA FP16 FBO on top of the scale
 	// transition; temporal AA owns antialiasing when enabled.
+	// A context without multisample textures (macOS's OpenGL 2.1 legacy
+	// context, whose window still carries MSAA) cannot multisample the target.
+	// idImage::AllocImage would drop the samples itself, but the image then
+	// never equals the request, so ScratchImage reallocated both images and
+	// warned twice on every frame (#257).
 	const int sceneSamples = ( !scaledScene && requestedSamples > 1
 		&& !R_TemporalPresentation_TemporalAARequested()
 		&& !R_TemporalPresentation_ScreenSpaceEffectsRequested()
-		&& !R_ModernGLExecutor_ModernVisibleRequestedForPost() ) ? requestedSamples : 0;
+		&& !R_ModernGLExecutor_ModernVisibleRequestedForPost()
+		&& R_GLMultisampleTexturesAvailable() ) ? requestedSamples : 0;
 
 	if ( targetWidth <= 0 || targetHeight <= 0 ) {
 		return false;
@@ -7824,7 +7867,10 @@ static void RB_STD_Underwater( void ) {
 		idMath::ClampFloat( 0.0f, 2.0f, r_underwaterParticles.GetFloat() ),
 		0.0f
 	};
-	const GLfloat timeSeconds = static_cast<GLfloat>( backEnd.frameCount ) * ( 1.0f / 60.0f );
+	// The view's own clock, as its materials use: the warp, caustics and drift
+	// were counted in rendered frames, so they ran four times as fast at 240
+	// frames a second as at 60 and kept moving while the game was paused.
+	const GLfloat timeSeconds = backEnd.viewDef->floatTime;
 
 	if ( rbUnderwaterStage.shaderParmLocations[RB_UNDERWATER_UNIFORM_INV_TEX_SIZE] >= 0 ) {
 		glUniform2fvARB( rbUnderwaterStage.shaderParmLocations[RB_UNDERWATER_UNIFORM_INV_TEX_SIZE], 1, invTexSize );
@@ -10599,11 +10645,16 @@ static void RB_ResolveSSAOWorldDepth( void ) {
 			|| rbSSAOWorldDepthPendingView != backEnd.viewDef || rbSSAOWorldDepthPendingFrame != backEnd.frameCount ) {
 		return;
 	}
-	// CopyDepthbuffer resolves from backEnd.renderTexture.
+	// CopyDepthbuffer resolves from backEnd.renderTexture; the scene target
+	// stays bound, and is what the copy has to leave bound.
 	idRenderTexture *sceneTarget = backEnd.renderTexture;
 	backEnd.renderTexture = rbSSAOWorldDepthRenderTexture;
+	backEnd.copyBoundTarget = sceneTarget;
+	backEnd.copyKeepsBoundTarget = true;
 	target->CopyDepthbuffer( rbSSAOWorldDepthPendingRect[0], rbSSAOWorldDepthPendingRect[1],
 		rbSSAOWorldDepthPendingRect[2], rbSSAOWorldDepthPendingRect[3] );
+	backEnd.copyKeepsBoundTarget = false;
+	backEnd.copyBoundTarget = NULL;
 	backEnd.renderTexture = sceneTarget;
 }
 
@@ -13226,11 +13277,19 @@ int RB_STD_DrawShaderPasses( drawSurf_t **drawSurfs, int numDrawSurfs, rbShaderP
 			return 0;
 		}
 
+		// Sorting as post-process does not mean sampling the view: the game's
+		// own resolve, anti-aliasing and composite passes sort there and read
+		// only the targets they were given. The copy is a full view, and into
+		// a float image at that, so it is made for the materials that read it.
 		bool needsCurrentDepth = false;
-		for ( int surfIndex = 0; surfIndex < numDrawSurfs; surfIndex++ ) {
-			if ( RB_MaterialUsesCurrentDepth( drawSurfs[surfIndex]->material ) ) {
+		bool needsCurrentRender = !r_postProcessCaptureOnDemand.GetBool();
+		for ( int surfIndex = 0; surfIndex < numDrawSurfs && !( needsCurrentDepth && needsCurrentRender ); surfIndex++ ) {
+			const idMaterial *material = drawSurfs[surfIndex]->material;
+			if ( !needsCurrentDepth && RB_MaterialUsesCurrentDepth( material ) ) {
 				needsCurrentDepth = true;
-				break;
+			}
+			if ( !needsCurrentRender && RB_MaterialUsesCurrentRender( material ) ) {
+				needsCurrentRender = true;
 			}
 		}
 
@@ -13238,9 +13297,14 @@ int RB_STD_DrawShaderPasses( drawSurf_t **drawSurfs, int numDrawSurfs, rbShaderP
 		// Do not gate this on viewEntitys: world-only views may still contain post-process surfaces.
 		// Offscreen render-texture passes capture _currentRender explicitly and must keep that copy.
 		if ( RB_AutomaticCurrentRenderCaptureAllowed() ) {
-			RB_CaptureCurrentRenderImage(
-				backEnd.viewDef->viewport.x2 - backEnd.viewDef->viewport.x1 + 1,
-				backEnd.viewDef->viewport.y2 - backEnd.viewDef->viewport.y1 + 1 );
+			if ( needsCurrentRender ) {
+				RB_CaptureCurrentRenderImage(
+					backEnd.viewDef->viewport.x2 - backEnd.viewDef->viewport.x1 + 1,
+					backEnd.viewDef->viewport.y2 - backEnd.viewDef->viewport.y1 + 1 );
+			} else {
+				// nothing in the pass reads the copy; let its surfaces draw
+				backEnd.currentRenderCopied = true;
+			}
 			if ( needsCurrentDepth ) {
 				RB_CaptureCurrentDepthImage(
 					backEnd.viewDef->viewport.x2 - backEnd.viewDef->viewport.x1 + 1,
@@ -16431,6 +16495,19 @@ static void RB_PrepareLightGridDepthTexture( void ) {
 		return;
 	}
 
+	// The copy is the light grid pass's depth test, and that pass draws only a
+	// 3D view of a world with a grid (RB_STD_LightGridIndirect). Once a map
+	// with a grid had created the program below, every other view paid for a
+	// copy of the whole depth buffer as well: the HUD, each of the game's
+	// fullscreen passes, and every view of a later map without a grid.
+	// Whatever samples depth later in such a view copies it when it draws.
+	if ( r_lightGridDepthOnDemand.GetBool() ) {
+		idRenderWorldLocal *gridWorld = backEnd.viewDef->renderWorld;
+		if ( backEnd.viewDef->viewEntitys == NULL || gridWorld == NULL || !gridWorld->AnyLightGridAvailable() ) {
+			return;
+		}
+	}
+
 	RB_InitLightGridIndirectStage();
 	if ( rbLightGridIndirectStage.glslProgramObject == 0 ) {
 		return;
@@ -18268,16 +18345,18 @@ void	RB_STD_DrawView( void ) {
 			RENDER_PASS_AMBIENT, backEnd.viewDef );
 	const bool preFogFeedback = ambientLegacySkipped && RB_HasLegacyFeedbackDrawSurfs( drawSurfs, processed, RB_DrawSurfIsPreFogMaterialPass );
 	const bool postFogFeedback = ambientLegacySkipped && RB_HasLegacyFeedbackDrawSurfs( drawSurfs, processed, RB_DrawSurfIsPostFogMaterialPass );
+	const bool classicOverlays = ambientLegacySkipped && R_ModernGLExecutor_ClassicOverlaysPending( backEnd.viewDef );
 	if ( sharedWorldAmbientOwned ) {
 		RB_DrawSharedWorldAmbientPhase(
 			CLASSIC_WORLD_AMBIENT_PHASE_PRE_FOG );
 	} else if ( ambientLegacySkipped ) {
-		if ( preFogFeedback || postFogFeedback ) {
+		if ( preFogFeedback || postFogFeedback || classicOverlays ) {
 			R_ModernGLExecutor_ComposeVisibleSceneForPost();
 			backEnd.currentRenderCopied = false;
 			backEnd.currentDepthCopied = false;
-			if ( preFogFeedback ) {
-				RB_STD_DrawShaderPasses( drawSurfs, processed, RB_DrawSurfNeedsPreFogLegacyFeedback );
+			if ( preFogFeedback || classicOverlays ) {
+				RB_STD_DrawShaderPasses( drawSurfs, processed,
+					classicOverlays ? RB_DrawSurfNeedsPreFogLegacyDraw : RB_DrawSurfNeedsPreFogLegacyFeedback );
 			}
 		}
 		R_ModernGLExecutor_RecordLegacyPassSkipped( RENDER_PASS_AMBIENT );
@@ -18337,7 +18416,11 @@ void	RB_STD_DrawView( void ) {
 	} else {
 		RB_STD_FogAllLights();
 		backEnd.currentRenderCopied = false;
-		backEnd.currentDepthCopied = false;
+		// Fog and blend lights write no depth, so a depth copy made before
+		// them (the light grid's) still serves the surfaces drawn after.
+		if ( !r_lightGridDepthOnDemand.GetBool() ) {
+			backEnd.currentDepthCopied = false;
+		}
 	}
 
 	if ( sharedWorldAmbientOwned ) {

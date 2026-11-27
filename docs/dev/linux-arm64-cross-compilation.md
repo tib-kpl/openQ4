@@ -1,6 +1,6 @@
 # Linux ARM64 cross-compilation
 
-openQ4 has a canonical supplementary cross-build from an Ubuntu 24.04 x64 build machine to a GNU/Linux ARM64 target. It compiles the client, dedicated server, and both in-tree game modules with the SDL3 native-Wayland path. Native ARM64 CI remains authoritative for build/package evidence and assetless Weston/Xvfb window, compositor, and input-startup behavior. The current hosted runs do not prove audio or real SP/MP gameplay, so Linux ARM64 release packages remain preview. First-class release signoff requires the physical-machine tests and review recorded in [the Linux ARM64 evidence record](linux-arm64-signoff-evidence.md).
+openQ4 has a canonical supplementary cross-build from an Ubuntu 24.04 x64 build machine to a GNU/Linux ARM64 target. It compiles the client, dedicated server, and the in-tree game module with the SDL3 native-Wayland path. Native ARM64 CI remains authoritative for build/package evidence and assetless Weston/Xvfb window, compositor, and input-startup behavior. The current hosted runs do not prove audio or real SP/MP gameplay, so Linux ARM64 release packages remain preview. First-class release signoff requires the physical-machine tests and review recorded in [the Linux ARM64 evidence record](linux-arm64-signoff-evidence.md).
 
 The checked-in Meson machine file is `tools/cross/linux-arm64.ini`. It is intentionally specific to Debian/Ubuntu multiarch directory conventions so that an x64 package can never satisfy an ARM64 target dependency by accident. The corresponding package set is `tools/cross/ubuntu-linux-arm64-packages.txt`, and `.github/workflows/linux-arm64-cross.yml` is the executable reference setup.
 
@@ -14,7 +14,7 @@ sudo apt-get install -y --no-install-recommends "${packages[@]}"
 python3 -m pip install meson ninja
 ```
 
-The engine checkout contains the canonical SP/MP sources in `src/game/` and `src/mpgame/`. Meson compiles them directly and writes their source inventory to the build directory. No companion checkout or source staging is required; `-Dbuild_engine=false` supports a standalone game-module build using the same sources and headers.
+The engine checkout contains the canonical game sources in `src/game/`, which build the one game module for single-player and multiplayer. Meson compiles them directly and writes their source inventory to the build directory. No companion checkout or source staging is required; `-Dbuild_engine=false` supports a standalone game-module build using the same sources and headers.
 
 ## Configure and compile
 
@@ -41,10 +41,9 @@ Expected outputs are:
 
 - `builddir-arm64-cross/openQ4-client_arm64`
 - `builddir-arm64-cross/openQ4-ded_arm64`
-- `builddir-arm64-cross/baseoq4/game-sp_arm64.so`
-- `builddir-arm64-cross/baseoq4/game-mp_arm64.so`
+- `builddir-arm64-cross/baseoq4/game_arm64.so`
 
-The reference workflow performs a real build of all four outputs rather than a configure-only check. It requires AArch64 ELF64 identity for every artifact, PIE for the client and dedicated server, RELRO plus BIND_NOW and a non-executable stack for all four, no X11 dependency in the Wayland-only client, and no direct OpenAL, OpenGL/GLX, SDL, PipeWire, Wayland, or X11/Xext dependency in the dedicated server. It also requires different SP/MP module bytes and exactly one defined `GLOBAL`/`DEFAULT` `GetGameAPI` export from each module. Use `readelf -h`, `readelf -lW`, `readelf -dW`, and `readelf --wide --dyn-syms` for the same local checks.
+The reference workflow performs a real build of all three outputs rather than a configure-only check. It requires AArch64 ELF64 identity for every artifact, PIE for the client and dedicated server, RELRO plus BIND_NOW and a non-executable stack for all three, no X11 dependency in the Wayland-only client, and no direct OpenAL, OpenGL/GLX, SDL, PipeWire, Wayland, or X11/Xext dependency in the dedicated server. It also requires exactly one defined `GLOBAL`/`DEFAULT` `GetGameAPI` export from the game module, which serves single-player and multiplayer. Use `readelf -h`, `readelf -lW`, `readelf -dW`, and `readelf --wide --dyn-syms` for the same local checks.
 
 Native ARM64 jobs in Push Verification and Commit Validation build every change. The cross build adds only the x64-hosted toolchain path, which depends on the build description far more than on the sources, so it runs when a `meson.build`, `meson_options.txt`, a subproject, `tools/cross/`, the Meson wrapper, the validator or the workflow itself changes, every Monday, and on manual dispatch.
 

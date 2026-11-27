@@ -38,6 +38,7 @@ along with Doom 3 Source Code.  If not, see <http://www.gnu.org/licenses/>.
 #include "../DisplayModeRule.h"
 #include "../ControllerRoster.h"
 #include "../KeyEventMetadata.h"
+#include "../MouseMotionRun.h"
 #include "../EventQueueContinuity.h"
 #include "InputDisposition.h"
 #include <limits>
@@ -187,6 +188,18 @@ static SDL_AtomicInt s_sdlLifecyclePending = { 0 };
 static float s_sdlMouseWheelRemainderY = 0.0f;
 static float s_sdlRelativeMouseRemainderX = 0.0f;
 static float s_sdlRelativeMouseRemainderY = 0.0f;
+// openQ4 (HF-09): SDL_PollEvent pumps the devices once per poll cycle, so
+// every controller event of one cycle reads the same state from
+// SDL_GetGamepadAxis. The pump counts its cycles; the active controller's
+// axes are sampled once in each (SDL3_ControllerAxesCurrent).
+static unsigned s_sdlPollCycle = 0;
+static unsigned s_controllerAxesCycle = 0;
+static SDL_JoystickID s_controllerAxesDevice = 0;
+// Reports SDL3_JoinMouseMotionRun has folded into the one before (inputStats).
+static std::uint64_t s_mouseMotionReports = 0;
+static std::uint64_t s_mouseMotionReportsJoined = 0;
+static std::uint64_t s_controllerAxisEvents = 0;
+static std::uint64_t s_controllerAxisSamples = 0;
 
 static idCVar in_joystick("in_joystick", "1", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_BOOL, "enable joystick/gamepad input");
 // The active controller's face layout (section 13.5), from the label SDL
@@ -278,6 +291,15 @@ static idCVar in_gyroCalibrationState("in_gyroCalibrationState", "0", CVAR_SYSTE
 static idCVar in_touchpadMode("in_touchpadMode", "0", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_INTEGER, "SDL gamepad touchpad mode: 0=off, 1=menu cursor, 2=mouse-look, 3=button-only", 0, 3);
 static idCVar in_touchpadSensitivity("in_touchpadSensitivity", "1.0", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_FLOAT, "SDL gamepad touchpad motion sensitivity", 0.0f, 8.0f);
 static idCVar in_touchscreen("in_touchscreen", "1", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_BOOL, "route SDL touchscreen events to menu and loading UI mouse input");
+#if !defined(__ANDROID__) || defined(OPENQ4_SIGMATOUCH)
+// The built-in touch controls' settings (src/sys/android/android_touch_controls.cpp)
+// exist everywhere, so the retained CONTROLS page can read them; only Android's
+// built-in controls act on them, and elsewhere the page hides their rows.
+static idCVar in_touchControls("in_touchControls", "1", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_BOOL, "show the built-in touch gameplay controls (Android only)");
+static idCVar in_touchControlsScale("in_touchControlsScale", "1", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_FLOAT, "size of the touch gameplay controls (Android only)", 0.75f, 1.5f);
+static idCVar in_touchLayoutPreset("in_touchLayoutPreset", "0", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_INTEGER, "touch layout: 0 default, 1 compact, 2 left-handed (Android only)", 0, 2);
+static idCVar in_touchLookSensitivity("in_touchLookSensitivity", "1", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_FLOAT, "touch drag-to-look speed (Android only)", 0.1f, 4.0f);
+#endif
 static idCVar com_steamDeckAutoFrameCap("com_steamDeckAutoFrameCap", "1", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_BOOL, "apply a Steam Deck frame cap when com_maxfps is still at the global default");
 static idCVar com_steamDeckFrameCap("com_steamDeckFrameCap", "0", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_INTEGER, "Steam Deck frame cap override (0 = detected display refresh, clamped for Deck)", 0, 1000);
 static idCVar r_screen("r_screen", "-1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "SDL3 display index to target (-1 = auto/current display)");
@@ -1328,6 +1350,59 @@ static int SDL3_ConsumeMouseDelta(float delta, float &remainder) {
 	return whole;
 }
 
+static openq4::MouseMotionReport SDL3_MouseMotionReport(const SDL_MouseMotionEvent &motion) {
+	openq4::MouseMotionReport report;
+	report.window = static_cast<std::uint32_t>(motion.windowID);
+	report.device = static_cast<std::uint32_t>(motion.which);
+	report.timestamp = motion.timestamp;
+	report.buttons = static_cast<std::uint32_t>(motion.state);
+	report.x = motion.x;
+	report.y = motion.y;
+	report.xrel = motion.xrel;
+	report.yrel = motion.yrel;
+	return report;
+}
+
+/*
+===============
+SDL3_JoinMouseMotionRun
+
+openQ4 (HF-09): folds the motion reports queued straight behind `motion` into
+it, under the rule in MouseMotionRun.h, and returns how many reports it now
+holds. A high-rate mouse queues one report per poll, up to 8000 a second;
+joined, each run costs one SE_MOUSE event and one poll entry per axis however
+many reports it held. Only this thread takes events from SDL's queue, so the
+report seen at its head is the one the take below removes; the peek also
+skips SDL's poll sentinel, so a report the raw input thread queued since this
+cycle's pump can join and is handled a frame sooner.
+===============
+*/
+static int SDL3_JoinMouseMotionRun(SDL_MouseMotionEvent &motion) {
+	openq4::MouseMotionReport run = SDL3_MouseMotionReport(motion);
+	int reports = 1;
+	SDL_Event next;
+	while (SDL_PeepEvents(&next, 1, SDL_PEEKEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST) == 1 &&
+			next.type == SDL_EVENT_MOUSE_MOTION &&
+			openq4::MouseMotionRunAccepts(run, reports, SDL3_MouseMotionReport(next.motion))) {
+		if (SDL_PeepEvents(&next, 1, SDL_GETEVENT, SDL_EVENT_MOUSE_MOTION, SDL_EVENT_MOUSE_MOTION) != 1) {
+			break;
+		}
+		openq4::MouseMotionRunJoin(run, SDL3_MouseMotionReport(next.motion));
+		++reports;
+	}
+	if (reports > 1) {
+		motion.timestamp = run.timestamp;
+		motion.state = static_cast<SDL_MouseButtonFlags>(run.buttons);
+		motion.x = run.x;
+		motion.y = run.y;
+		motion.xrel = run.xrel;
+		motion.yrel = run.yrel;
+	}
+	s_mouseMotionReports += static_cast<std::uint64_t>(reports);
+	s_mouseMotionReportsJoined += static_cast<std::uint64_t>(reports - 1);
+	return reports;
+}
+
 typedef struct {
 	float guiWidth;
 	float guiHeight;
@@ -1435,8 +1510,14 @@ static bool SDL3_GetActiveGuiTextInputState(idRectangle &area, float &cursorOffs
 	return activeGui != NULL && activeGui->GetTextInputState(area, cursorOffset);
 }
 
+// The text input area SDL was last given, for SDL3_UpdateTextInputArea.
+static SDL_Window *s_textInputAreaWindow = NULL;
+static SDL_Rect s_textInputArea = { 0, 0, 0, 0 };
+static int s_textInputAreaCursor = 0;
+
 static void SDL3_UpdateTextInputArea(void) {
 	if (!s_sdlWindow || !s_sdlTextInputActive) {
+		s_textInputAreaWindow = NULL;
 		return;
 	}
 
@@ -1490,9 +1571,20 @@ static void SDL3_UpdateTextInputArea(void) {
 			static_cast<int>(guiCursorOffset * guiToPixelX * transform.pixelToWindowX));
 	}
 
+	// openQ4 (HF-09): this runs twice a frame while text input is on; on
+	// Windows each update is three IME calls, so pass on only a change.
+	if (s_textInputAreaWindow == s_sdlWindow && s_textInputAreaCursor == cursorOffset &&
+			SDL_memcmp(&s_textInputArea, &textArea, sizeof(textArea)) == 0) {
+		return;
+	}
 	if (!SDL_SetTextInputArea(s_sdlWindow, &textArea, cursorOffset)) {
 		common->DPrintf("SDL3: text input candidate area could not be updated: %s\n", SDL_GetError());
+		s_textInputAreaWindow = NULL;
+		return;
 	}
+	s_textInputAreaWindow = s_sdlWindow;
+	s_textInputArea = textArea;
+	s_textInputAreaCursor = cursorOffset;
 }
 
 #if defined(__ANDROID__)
@@ -1527,6 +1619,8 @@ static void SDL3_UpdateTextInputState(void) {
 #if defined(__ANDROID__)
 			SDL3_ReleaseControllerInputForSoftKeyboard(Sys_Milliseconds());
 #endif
+			// a new session (perhaps of a new window) is always given its area
+			s_textInputAreaWindow = NULL;
 		} else if (!s_sdlTextInputFailureLogged) {
 			common->Printf("SDL3: text input could not be enabled: %s\n", SDL_GetError());
 			s_sdlTextInputFailureLogged = true;
@@ -1891,8 +1985,23 @@ static float SDL3_NormalizeSignedAxisFloat(Sint16 value) {
 // this sample before the configurable aiming dead zone, response curve and
 // inversion; applying those first would move the wheel's threshold.
 static void SDL3_PublishRadialStick(Sint16 rawX, Sint16 rawY) {
-	cvarSystem->SetCVarFloat("ui_radialStickX", SDL3_NormalizeSignedAxisFloat(rawX));
-	cvarSystem->SetCVarFloat("ui_radialStickY", SDL3_NormalizeSignedAxisFloat(rawY));
+	// openQ4 (HF-09): an axis is written only when its sample changed, or when
+	// something else rewrote the cvar since; formatting the float for the cvar
+	// cost more than the rest of the axis update.
+	static const char *const names[2] = { "ui_radialStickX", "ui_radialStickY" };
+	static bool written[2] = { false, false };
+	static Sint16 writtenRaw[2] = { 0, 0 };
+	static float writtenValue[2] = { 0.0f, 0.0f };	// what the cvar read back as
+	const Sint16 raw[2] = { rawX, rawY };
+	for (int axis = 0; axis < 2; ++axis) {
+		if (written[axis] && raw[axis] == writtenRaw[axis] && cvarSystem->GetCVarFloat(names[axis]) == writtenValue[axis]) {
+			continue;
+		}
+		cvarSystem->SetCVarFloat(names[axis], SDL3_NormalizeSignedAxisFloat(raw[axis]));
+		written[axis] = true;
+		writtenRaw[axis] = raw[axis];
+		writtenValue[axis] = cvarSystem->GetCVarFloat(names[axis]);
+	}
 }
 
 static int SDL3_AxisFloatToJoystickValue(float value) {
@@ -2272,9 +2381,23 @@ static bool SDL3_ShouldSkipRumbleUpdate(Uint16 low, Uint16 high, int now, int un
 		untilTime <= s_joystickRumbleUntilTime + SDL3_RUMBLE_DEBOUNCE_MSEC;
 }
 
+// openQ4 (HF-09): whether the active controller's axes already show this poll
+// cycle's state, so a later axis event of the same cycle has nothing to add.
+static bool SDL3_ControllerAxesCurrent(SDL_JoystickID device) {
+	return device != 0 && s_controllerAxesDevice == device && s_controllerAxesCycle == s_sdlPollCycle;
+}
+
+static void SDL3_NoteControllerAxesSampled(SDL_JoystickID device) {
+	s_controllerAxesDevice = device;
+	s_controllerAxesCycle = s_sdlPollCycle;
+	++s_controllerAxisSamples;
+}
+
 static void SDL3_ClearJoystickAxisStateUnlocked(void) {
 	memset(s_joystickAxisState, 0, sizeof(s_joystickAxisState));
 	SDL3_PublishRadialStick(0, 0);
+	// cleared axes are no longer the device's: the next axis event samples it again
+	s_controllerAxesDevice = 0;
 }
 
 static void SDL3_ClearJoystickState(void) {
@@ -2387,6 +2510,7 @@ static void SDL3_UpdateGamepadAxes(int eventTime) {
 	SDL3_UpdateTriggerButtons(leftTrigger, rightTrigger, eventTime);
 	const int activity = Max(Max(idMath::Abs(moveX), idMath::Abs(moveY)), Max(idMath::Abs(lookX), idMath::Abs(lookY)));
 	SDL3_QueueControllerActivity(eventTime, activity);
+	SDL3_NoteControllerAxesSampled(s_sdlGamepadId);
 }
 
 static void SDL3_UpdateJoystickAxes(void) {
@@ -2465,6 +2589,7 @@ static void SDL3_UpdateJoystickAxes(void) {
 	const int activity = Max(Max(idMath::Abs(moveX), idMath::Abs(moveY)),
 		Max(Max(idMath::Abs(lookX), idMath::Abs(lookY)), idMath::Abs(up)));
 	SDL3_QueueControllerActivity(Sys_Milliseconds(), activity);
+	SDL3_NoteControllerAxesSampled(s_sdlJoystickId);
 }
 
 /*
@@ -3212,9 +3337,102 @@ static bool SDL3_IsNonTouchPlayEvent(const SDL_Event &event) {
 }
 #endif
 
+// The interface variant's signals (docs/dev/ui/interface-variants.md): the
+// devices SDL reports, and what the player last used. Android reports no
+// keyboards or mice to SDL, so there a keyboard counts once a key outside the
+// system's own (Back, volume, media) arrives while no text field takes the
+// on-screen keyboard, and a mouse once it moves.
+static struct {
+	bool devicesCurrent = false, keyboardAttached = false, mouseAttached = false, touchscreen = false;
+	bool keyboardUsed = false, mouseUsed = false;
+	openq4::ui::InterfacePointer pointer = openq4::ui::InterfacePointer::None;
+	float mouseTravel = 0; // pixels the mouse moved since a finger last led
+} s_interface;
+
+static void SDL3_RefreshInterfaceDevices(void) {
+	s_interface.devicesCurrent = true;
+	s_interface.keyboardAttached = SDL_HasKeyboard();
+	s_interface.mouseAttached = SDL_HasMouse();
+	s_interface.touchscreen = false;
+	int count = 0;
+	if (SDL_TouchID *devices = SDL_GetTouchDevices(&count)) {
+		for (int i = 0; i < count; ++i) {
+			if (SDL_GetTouchDeviceType(devices[i]) == SDL_TOUCH_DEVICE_DIRECT) s_interface.touchscreen = true;
+		}
+		SDL_free(devices);
+	}
+}
+
+static void SDL3_NoteInterfaceTouch(void) {
+	s_interface.pointer = openq4::ui::InterfacePointer::Touch;
+	s_interface.touchscreen = true;
+	s_interface.mouseTravel = 0;
+}
+
+// A mouse leads once it has moved a few pixels past a finger's lead, or at
+// a press: a warped cursor or a bumped desk does not take the touch layout
+// away. Touch and pen emulation never count.
+static void SDL3_NoteInterfaceMouse(SDL_MouseID which, float travel) {
+	if (which == SDL_TOUCH_MOUSEID || which == SDL_PEN_MOUSEID || !std::isfinite(travel) || travel <= 0.0f) return;
+	s_interface.mouseUsed = true;
+	if (s_interface.pointer == openq4::ui::InterfacePointer::Mouse) return;
+	s_interface.mouseTravel += travel;
+	if (s_interface.mouseTravel >= 6.0f) s_interface.pointer = openq4::ui::InterfacePointer::Mouse;
+}
+
+static void SDL3_NoteInterfaceKey(SDL_Keycode key) {
+	switch (key) {
+		case SDLK_UNKNOWN: case SDLK_AC_BACK: case SDLK_AC_HOME: case SDLK_AC_SEARCH: case SDLK_AC_FORWARD:
+		case SDLK_VOLUMEUP: case SDLK_VOLUMEDOWN: case SDLK_MUTE: case SDLK_POWER: case SDLK_SLEEP: case SDLK_MENU:
+		case SDLK_MEDIA_PLAY: case SDLK_MEDIA_PAUSE: case SDLK_MEDIA_PLAY_PAUSE: case SDLK_MEDIA_STOP:
+		case SDLK_MEDIA_NEXT_TRACK: case SDLK_MEDIA_PREVIOUS_TRACK: case SDLK_MEDIA_FAST_FORWARD: case SDLK_MEDIA_REWIND:
+			return;
+		default:
+			break;
+	}
+	if (s_sdlWindow != NULL && SDL_TextInputActive(s_sdlWindow)) return;
+	s_interface.keyboardUsed = true;
+}
+
+void Sys_SDL_InterfaceSignals(openq4::ui::InterfaceSignals &signals) {
+	if (!s_interface.devicesCurrent && SDL_WasInit(SDL_INIT_VIDEO)) SDL3_RefreshInterfaceDevices();
+#if defined(SDL_PLATFORM_ANDROID) || defined(SDL_PLATFORM_IOS)
+	signals.mobileBuild = true;
+#endif
+	signals.sdlTablet = SDL_IsTablet();
+	signals.sdlTV = SDL_IsTV();
+	signals.touchscreen = s_interface.touchscreen || signals.mobileBuild;
+	signals.keyboard = s_interface.keyboardAttached || s_interface.keyboardUsed;
+	signals.mouse = s_interface.mouseAttached || s_interface.mouseUsed;
+	signals.pointer = s_interface.pointer;
+	signals.pointerHeld = s_touchscreenFingerActive || SDL_GetMouseState(NULL, NULL) != 0;
+	const float scale = engineWindowState.displayScale > 0.0f ? engineWindowState.displayScale : 1.0f;
+	const int shorter = (std::min)(engineWindowState.vidWidth, engineWindowState.vidHeight);
+	signals.smallestWidthDp = shorter > 0 ? static_cast<float>(shorter) / scale : 0.0f;
+}
+
+// A device arriving or leaving: an added mouse takes the desktop
+// presentation at once (a player connects one to use it), and the last
+// mouse leaving gives the presentation back to the device.
+static void SDL3_HandleInterfaceDeviceEvent(const SDL_Event &event) {
+	SDL3_RefreshInterfaceDevices();
+	if (event.type == SDL_EVENT_MOUSE_ADDED && event.mdevice.which != SDL_TOUCH_MOUSEID && event.mdevice.which != SDL_PEN_MOUSEID) {
+		s_interface.pointer = openq4::ui::InterfacePointer::Mouse;
+	} else if (event.type == SDL_EVENT_MOUSE_REMOVED && !s_interface.mouseAttached &&
+			s_interface.pointer == openq4::ui::InterfacePointer::Mouse) {
+		s_interface.pointer = openq4::ui::InterfacePointer::None;
+		s_interface.mouseUsed = false;
+	} else if (event.type == SDL_EVENT_KEYBOARD_REMOVED && !s_interface.keyboardAttached) {
+		s_interface.keyboardUsed = false;
+	}
+}
+
 static void SDL3_HandleFingerEvent(const SDL_TouchFingerEvent &event, int eventTime) {
 	if (!in_touchscreen.GetBool() || !s_sdlWindow) {
 		return;
+	}
+	if (event.type == SDL_EVENT_FINGER_DOWN) {
+		SDL3_NoteInterfaceTouch();
 	}
 
 	const SDL_WindowID windowId = SDL_GetWindowID(s_sdlWindow);
@@ -3817,10 +4035,43 @@ static void SDL3_OpenAllControllers(void) {
 	}
 }
 
-// Use is a button press, or a stick or trigger moved past its dead zone:
-// what hands charge to a connected controller that is not the active one.
+// Whether the active controller holds anything now: a button, a trigger past
+// Trigger Press, a hat off centre, or a stick past its dead zone. Charge never
+// moves away from a controller that is being held.
+static bool SDL3_ActiveControllerHolding(void) {
+	if (s_sdlGamepad) {
+		for (int i = 0; i < SDL_GAMEPAD_BUTTON_COUNT; ++i) {
+			if (s_gamepadButtonsDown[i]) {
+				return true;
+			}
+		}
+		if (s_gamepadLeftTriggerDown || s_gamepadRightTriggerDown) {
+			return true;
+		}
+	} else if (s_sdlJoystick) {
+		for (int i = 0; i < SDL3_MAX_JOYSTICK_BUTTONS; ++i) {
+			if (s_joystickButtonsDown[i]) {
+				return true;
+			}
+		}
+		if (s_joystickHatState != SDL_HAT_CENTERED) {
+			return true;
+		}
+	} else {
+		return false;
+	}
+	// The event thread is the only writer of the axis state. A throttle
+	// (AXIS_UP) resting off centre is not holding, as it is not use.
+	return s_joystickAxisState[AXIS_SIDE] != 0 || s_joystickAxisState[AXIS_FORWARD] != 0 ||
+		s_joystickAxisState[AXIS_YAW] != 0 || s_joystickAxisState[AXIS_PITCH] != 0;
+}
+
+// Use is a button press, or a stick or trigger moved past its dead zone. Use
+// of a waiting controller can hand charge to it (ControllerRoster says when);
+// use of the active one is reported too, so the roster knows how long it has
+// rested.
 static void SDL3_NoteControllerUse(SDL_JoystickID id, int eventTime) {
-	if (id == 0 || id == s_sdlGamepadId || id == s_sdlJoystickId) {
+	if (id == 0) {
 		return;
 	}
 	// SDL re-centres a device's axes as it disconnects; those last events are
@@ -3829,7 +4080,16 @@ static void SDL3_NoteControllerUse(SDL_JoystickID id, int eventTime) {
 	if (controller == NULL || !(controller->pad ? SDL_GamepadConnected(controller->pad) : SDL_JoystickConnected(controller->joystick))) {
 		return;
 	}
-	SDL3_ApplyControllerChange(s_controllerRoster.NoteUse(static_cast<std::uint32_t>(id)), eventTime);
+	const std::uint32_t twinBefore = s_controllerRoster.ActiveTwin();
+	const openq4::ControllerChange change = s_controllerRoster.NoteUse(static_cast<std::uint32_t>(id), eventTime, SDL3_ActiveControllerHolding());
+	const std::uint32_t twin = s_controllerRoster.ActiveTwin();
+	if (change == openq4::ControllerChange::None && twin != 0 && twin != twinBefore) {
+		const sdlController_t *active = SDL3_FindController(static_cast<SDL_JoystickID>(s_controllerRoster.Active()));
+		common->Printf("controller: '%s' moves with '%s': one controller seen as two devices (a remapper or Steam Input); '%s' keeps charge\n",
+			SDL3_ControllerName(*controller), active != NULL ? SDL3_ControllerName(*active) : "?",
+			active != NULL ? SDL3_ControllerName(*active) : "?");
+	}
+	SDL3_ApplyControllerChange(change, eventTime);
 }
 
 static bool SDL3_GamepadAxisIsUse(SDL_Gamepad *pad, Uint8 axis) {
@@ -4037,6 +4297,34 @@ static void SDL3_PrintActiveJoystickDetails(void) {
 	int powerPercent = -1;
 	const SDL_PowerState powerState = SDL_GetJoystickPowerInfo(s_sdlJoystick, &powerPercent);
 	SDL3_PrintControllerPowerLine("    power: ", powerState, powerPercent);
+}
+
+/*
+===============
+SDL3_InputStats_f
+
+inputStats [reset] (HF-09): the reports the input layer received since the
+last reset against the work it did for them. A mouse's reports fold into
+runs, one SE_MOUSE event each; the active controller's axes are sampled at
+most once per poll cycle, however many axis events the cycle held.
+===============
+*/
+static void SDL3_InputStats_f(const idCmdArgs &args) {
+	if (args.Argc() > 1 && idStr::Icmp(args.Argv(1), "reset") == 0) {
+		s_mouseMotionReports = 0;
+		s_mouseMotionReportsJoined = 0;
+		s_controllerAxisEvents = 0;
+		s_controllerAxisSamples = 0;
+		common->Printf("inputStats: counts reset\n");
+		return;
+	}
+	const std::uint64_t runs = s_mouseMotionReports - s_mouseMotionReportsJoined;
+	common->Printf("inputStats: mouse reports=%llu runs=%llu (%.2f reports per run)\n",
+		static_cast<unsigned long long>(s_mouseMotionReports), static_cast<unsigned long long>(runs),
+		runs > 0 ? static_cast<double>(s_mouseMotionReports) / static_cast<double>(runs) : 0.0);
+	common->Printf("inputStats: controller axis events=%llu axis samples=%llu poll cycles=%u\n",
+		static_cast<unsigned long long>(s_controllerAxisEvents), static_cast<unsigned long long>(s_controllerAxisSamples),
+		s_sdlPollCycle);
 }
 
 static void SDL3_ListControllers_f(const idCmdArgs &args) {
@@ -6473,6 +6761,8 @@ bool Sys_SDL_PumpEvents(void) {
 	}
 
 	bool sawResizeEvent = false;
+	// The first SDL_PollEvent below pumps the devices for this cycle (HF-09).
+	++s_sdlPollCycle;
 	SDL_Event event;
 	while (SDL_PollEvent(&event)) {
 		const int eventTime = SDL3_EventMilliseconds(event.common.timestamp);
@@ -6511,6 +6801,13 @@ bool Sys_SDL_PumpEvents(void) {
 #endif
 
 		switch (event.type) {
+			case SDL_EVENT_KEYBOARD_ADDED:
+			case SDL_EVENT_KEYBOARD_REMOVED:
+			case SDL_EVENT_MOUSE_ADDED:
+			case SDL_EVENT_MOUSE_REMOVED:
+				SDL3_HandleInterfaceDeviceEvent(event);
+				break;
+
 			case SDL_EVENT_QUIT:
 				common->Printf("SDL3: SDL_EVENT_QUIT received\n");
 				cmdSystem->BufferCommandText(CMD_EXEC_APPEND, "quit\n");
@@ -6555,6 +6852,7 @@ bool Sys_SDL_PumpEvents(void) {
 			case SDL_EVENT_KEY_UP: {
 				const bool down = (event.type == SDL_EVENT_KEY_DOWN) && event.key.down;
 				const int key = SDL3_MapScancode(event.key.scancode);
+				if (down && !event.key.repeat) SDL3_NoteInterfaceKey(event.key.key);
 
 				if (down && !event.key.repeat && key == K_ENTER && (event.key.mod & SDL_KMOD_ALT) != 0) {
 					cvarSystem->SetCVarBool("r_fullscreen", !renderSystem->IsFullScreen());
@@ -6627,8 +6925,15 @@ bool Sys_SDL_PumpEvents(void) {
 
 			case SDL_EVENT_MOUSE_MOTION:
 			{
+				// One run of reports at a time, however fast the mouse polls (HF-09).
+				(void)SDL3_JoinMouseMotionRun(event.motion);
 				// Touch synthesises no mouse events (SDL_HINT_TOUCH_MOUSE_EVENTS 0).
 				idKeyInput::NotePointerSource(false);
+				// The motion a menu cursor warp makes is not the player's.
+				if (!(s_ignoreNextMenuWarpMotion && fabsf(event.motion.x - s_menuWarpWindowX) <= 1.0f &&
+						fabsf(event.motion.y - s_menuWarpWindowY) <= 1.0f)) {
+					SDL3_NoteInterfaceMouse(event.motion.which, std::fabs(event.motion.xrel) + std::fabs(event.motion.yrel));
+				}
 				if (RetainedUI_IsOpen() && !(console && console->Active())) {
 					if (SDL3_ShouldRouteMenuMouse() && !SDL3_IsMouseCaptured())
 						SDL3_QueueRetainedPointer(event.motion.x,event.motion.y,eventTime);
@@ -6703,6 +7008,7 @@ bool Sys_SDL_PumpEvents(void) {
 			case SDL_EVENT_MOUSE_BUTTON_DOWN:
 			case SDL_EVENT_MOUSE_BUTTON_UP: {
 				idKeyInput::NotePointerSource(false);
+				if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) SDL3_NoteInterfaceMouse(event.button.which, 1000.0f);
 				const bool routedMouseInput = SDL3_IsMouseCaptured() || SDL3_ShouldRouteMenuMouse();
 				if (RetainedUI_IsOpen() && !(console && console->Active()) && SDL3_ShouldRouteMenuMouse())
 					SDL3_QueueRetainedPointer(event.button.x,event.button.y,eventTime);
@@ -6719,6 +7025,7 @@ bool Sys_SDL_PumpEvents(void) {
 			}
 
 			case SDL_EVENT_MOUSE_WHEEL: {
+				SDL3_NoteInterfaceMouse(event.wheel.which, 1000.0f);
 				float deltaY = event.wheel.y;
 				if (event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
 					deltaY = -deltaY;
@@ -6791,14 +7098,17 @@ bool Sys_SDL_PumpEvents(void) {
 
 			case SDL_EVENT_GAMEPAD_AXIS_MOTION:
 				if (in_joystick.GetBool()) {
-					if (event.gaxis.which != s_sdlGamepadId) {
-						const sdlController_t *waiting = SDL3_FindController(event.gaxis.which);
-						if (waiting != NULL && waiting->pad != NULL && SDL3_GamepadAxisIsUse(waiting->pad, event.gaxis.axis)) {
-							SDL3_NoteControllerUse(event.gaxis.which, eventTime);
+					if (s_sdlGamepad && event.gaxis.which == s_sdlGamepadId) {
+						++s_controllerAxisEvents;
+						// every axis event of the cycle reads the state its first one did
+						if (!SDL3_ControllerAxesCurrent(s_sdlGamepadId)) {
+							SDL3_UpdateGamepadAxes(eventTime);
 						}
 					}
-					if (s_sdlGamepad && event.gaxis.which == s_sdlGamepadId) {
-						SDL3_UpdateGamepadAxes(eventTime);
+					// use of any controller, the active one included: it is how the roster knows rest
+					const sdlController_t *source = SDL3_FindController(event.gaxis.which);
+					if (source != NULL && source->pad != NULL && SDL3_GamepadAxisIsUse(source->pad, event.gaxis.axis)) {
+						SDL3_NoteControllerUse(event.gaxis.which, eventTime);
 					}
 				}
 				break;
@@ -6862,14 +7172,15 @@ bool Sys_SDL_PumpEvents(void) {
 
 			case SDL_EVENT_JOYSTICK_AXIS_MOTION:
 				if (in_joystick.GetBool()) {
-					if (event.jaxis.which != s_sdlJoystickId) {
-						const sdlController_t *waiting = SDL3_FindController(event.jaxis.which);
-						if (waiting != NULL && waiting->joystick != NULL && SDL3_JoystickAxisIsUse(waiting->joystick)) {
-							SDL3_NoteControllerUse(event.jaxis.which, eventTime);
+					if (s_sdlJoystick && event.jaxis.which == s_sdlJoystickId) {
+						++s_controllerAxisEvents;
+						if (!SDL3_ControllerAxesCurrent(s_sdlJoystickId)) {
+							SDL3_UpdateJoystickAxes();
 						}
 					}
-					if (s_sdlJoystick && event.jaxis.which == s_sdlJoystickId) {
-						SDL3_UpdateJoystickAxes();
+					const sdlController_t *source = SDL3_FindController(event.jaxis.which);
+					if (source != NULL && source->joystick != NULL && SDL3_JoystickAxisIsUse(source->joystick)) {
+						SDL3_NoteControllerUse(event.jaxis.which, eventTime);
 					}
 				}
 				break;
@@ -7886,6 +8197,10 @@ bool Sys_PostVRPointer(bool onScreen, float u, float v) {
 	}
 	const float windowX = (transform.drawAreaX + idMath::ClampFloat(0.0f, 1.0f, u) * transform.drawAreaWidth) * transform.pixelToWindowX;
 	const float windowY = (transform.drawAreaY + idMath::ClampFloat(0.0f, 1.0f, v) * transform.drawAreaHeight) * transform.pixelToWindowY;
+	// The pointer is a controller in the player's hand: prompts name its
+	// buttons, never a keyboard's (a retained menu's pointer and clicks bypass
+	// the main event loop that otherwise tells the families apart).
+	idKeyInput::PreliminaryJoystickEvent(127);
 	if (RetainedUI_IsOpen()) {
 		SDL3_QueueRetainedPointer(windowX, windowY, eventTime);
 		return true;
@@ -8129,6 +8444,7 @@ static bool SDL3_WindowServices_PrepareWindowSystem(void) {
 		cmdSystem->AddCommand("listDisplays", SDL3_ListDisplays_f, CMD_FL_SYSTEM, "lists SDL3 displays and monitor indices");
 		cmdSystem->AddCommand("listDisplayModes", SDL3_ListDisplayModes_f, CMD_FL_SYSTEM, "lists SDL3 fullscreen display modes (optional display index)");
 		cmdSystem->AddCommand("listControllers", SDL3_ListControllers_f, CMD_FL_SYSTEM, "lists SDL3 controller, sensor, touchpad, and battery diagnostics");
+		cmdSystem->AddCommand("inputStats", SDL3_InputStats_f, CMD_FL_SYSTEM, "shows how many mouse reports and controller axis events the input layer received and how few it processed; inputStats reset starts the count again");
 		cmdSystem->AddCommand("calibrateGyro", SDL3_CalibrateGyro_f, CMD_FL_SYSTEM, "measures the active controller's gyro bias: hold it still for two seconds");
 		cmdSystem->AddCommand("virtualController", SDL3_VirtualController_f, CMD_FL_SYSTEM | CMD_FL_CHEAT, "development: attach and drive SDL virtual controllers inside this process, so the controller layer can be tested without hardware or operating-system input; requires cheats");
 		cmdSystem->AddCommand("sdl3MouseCaptureDiagnostics", SDL3_MouseCaptureDiagnostics_f, CMD_FL_SYSTEM, "toggles SDL3 mouse capture and prints backend state; optional repeat count is clamped to 1..8");
@@ -8865,8 +9181,9 @@ static bool SDL3_WindowServices_ApplyScreenParmsStrict(const renderWindowRequest
 		actual.pixelWidth != parms.width || actual.pixelHeight != parms.height ||
 		(parms.displayHz > 0 && std::floor(actual.refreshRate + 0.5f) != parms.displayHz)))
 		return SDL3_StrictWindowFailure("Observed exclusive display mode does not match the request",error,errorSize);
+	// The window itself may be smaller than the display, as on a notched MacBook.
 	if (desktopFullscreen && (!actual.currentModeValid || actual.modePixelWidth != desktopPixelWidth || actual.modePixelHeight != desktopPixelHeight ||
-		actual.pixelWidth != desktopPixelWidth || actual.pixelHeight != desktopPixelHeight))
+		!openq4::DesktopFullscreenPixelsFit(actual.pixelWidth,actual.pixelHeight,desktopPixelWidth,desktopPixelHeight)))
 		return SDL3_StrictWindowFailure("Observed desktop fullscreen mode does not match the display",error,errorSize);
 	win32.cdsFullscreen = parms.fullScreen;
 	SDL3_SetFullscreenState(parms.fullScreen);

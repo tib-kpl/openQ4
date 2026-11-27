@@ -2381,25 +2381,39 @@ static bool VK_Post_RenderMotionVectors( const viewDef_t *viewDef, const vkPostM
 				push.params[ 1 ] = push.params[ 2 ] = push.params[ 3 ] = 0.0f;
 				vkCmdPushConstants( cmd, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 						0, sizeof( push ), &push );
-				vkCmdDrawIndexed( cmd, (uint32_t)tri->numIndexes, 1, 0, 0, 0 );
+				vkCmdDrawIndexed( cmd, VK_Device_DrawIndexCount( tri->numIndexes ), 1, 0, 0, 0 );
 				drew = true;
 				continue;
 			}
-			// The weapon's depth hack only rescales clip z, which the vector
-			// ignores, so last frame's plain projection still matches.
+			// The weapon's depth hack rescales clip z, which the vector ignores.
+			// cl_gunfov also replaces its field of view, the same on both
+			// frames, so last frame's projection takes this frame's refit
+			// (RB_MotionVectorPreviousProjection); without it every weapon
+			// pixel would carry a constant bogus vector.
 			vkPostMotionVectorPush_t push;
 			VK_BuildSurfMVP( viewDef, surf, push.currentMvp );
 			if ( weaponStill ) {
 				// this frame's own transform: an exact, zero vector
 				memcpy( push.previousMvp, push.currentMvp, sizeof( push.previousMvp ) );
 			} else {
+				float previousProjection[ 16 ];
+				memcpy( previousProjection, previous.projectionMatrix, sizeof( previousProjection ) );
+				if ( surf->space->weaponDepthHack ) {
+					float weaponProjection[ 16 ];
+					R_GetDepthHackProjectionMatrix( viewDef, true, 0.0f, weaponProjection );
+					if ( weaponProjection[ 0 ] != viewDef->projectionMatrix[ 0 ]
+							|| weaponProjection[ 5 ] != viewDef->projectionMatrix[ 5 ] ) {
+						previousProjection[ 0 ] = weaponProjection[ 0 ];
+						previousProjection[ 5 ] = weaponProjection[ 5 ];
+					}
+				}
 				float previousModelView[ 16 ];
 				myGlMultMatrix( previousModelMatrix, previous.worldModelViewMatrix, previousModelView );
-				myGlMultMatrix( previousModelView, previous.projectionMatrix, push.previousMvp );
+				myGlMultMatrix( previousModelView, previousProjection, push.previousMvp );
 			}
 			vkCmdPushConstants( cmd, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 					0, sizeof( push ), &push );
-			vkCmdDrawIndexed( cmd, (uint32_t)tri->numIndexes, 1, 0, 0, 0 );
+			vkCmdDrawIndexed( cmd, VK_Device_DrawIndexCount( tri->numIndexes ), 1, 0, 0, 0 );
 			if ( temporal ) { ++vkTemporalMotionDrawn; }
 			drew = true;
 		}
@@ -2754,6 +2768,7 @@ static bool VK_Post_DepthOfField( const viewDef_t *viewDef, idRenderTexture *sce
 			return false;
 		}
 	}
+	vkGpuPhaseScope timing( VK_Exec_ActiveCmd(), VK_GPU_PHASE_DOF );
 	// Both captures come from the scene target, before any pass moves off it.
 	idImage *depthImage = VK_Post_FinalDepth( viewDef );
 	idImage *scene = VK_Post_CaptureScene( viewDef );
@@ -4098,7 +4113,8 @@ bool VK_PostProcess_DrawUnderwater( const viewDef_t *viewDef ) {
 	block.depthInfo[ 0 ] = viewDef->projectionMatrix[ 10 ];
 	block.depthInfo[ 1 ] = viewDef->projectionMatrix[ 14 ];
 	block.depthInfo[ 2 ] = amount;
-	block.depthInfo[ 3 ] = (float)backEnd.frameCount * ( 1.0f / 60.0f );
+	// the view's own clock, not a count of rendered frames (as on OpenGL)
+	block.depthInfo[ 3 ] = viewDef->floatTime;
 	block.tint[ 0 ] = idMath::ClampFloat( 0.0f, 1.0f, tr.underwaterTint.x );
 	block.tint[ 1 ] = idMath::ClampFloat( 0.0f, 1.0f, tr.underwaterTint.y );
 	block.tint[ 2 ] = idMath::ClampFloat( 0.0f, 1.0f, tr.underwaterTint.z );

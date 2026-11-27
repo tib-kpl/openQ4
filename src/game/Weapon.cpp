@@ -1,10 +1,10 @@
 // RAVEN BEGIN
-// bdube: note that this file is no longer merged with legacy engine updates
+// bdube: note that this file is no longer merged with Doom3 updates
 //
 // MERGE_DATE 09/30/2004
 
-
-
+#include "../idlib/precompiled.h"
+#pragma hdrstop
 
 #include "Game_local.h"
 
@@ -18,6 +18,39 @@
 
 static bool OpenQ4_TurboWeaponReloadsDisabled( void ) {
 	return OpenQ4_TurboModeActive();
+}
+
+/*
+================
+OpenQ4_FindPreMultiplayerWeaponDict
+
+idGameLocal::FindEntityDef silently redirects every lookup from "X" to "X_mp"
+while a multiplayer game is running, and every stock weapon_*_mp def zeroes the
+four muzzle_kick_* keys.  rvWeapon::MuzzleRise is identical in both game trees,
+so that redirect is the whole reason a weapon shoves the view model back in
+single player and sits perfectly still in multiplayer.  Walk back across it to
+reach the def the redirect replaced.
+
+Deliberately not gameLocal.FindEntityDef(): that is the call applying the
+redirect, and it would hand back the multiplayer def again.
+================
+*/
+static const idDict *OpenQ4_FindPreMultiplayerWeaponDict( const idDeclEntityDef *weaponDef ) {
+	static const char	mpSuffix[] = "_mp";
+	const int			mpSuffixLength = sizeof( mpSuffix ) - 1;
+
+	if ( !gameLocal.isMultiplayer || weaponDef == NULL ) {
+		return NULL;
+	}
+
+	idStr name = weaponDef->GetName();
+	if ( name.Length() <= mpSuffixLength || idStr::Icmp( name.c_str() + name.Length() - mpSuffixLength, mpSuffix ) != 0 ) {
+		return NULL;
+	}
+	name.CapLength( name.Length() - mpSuffixLength );
+
+	const idDeclEntityDef *baseDef = static_cast<const idDeclEntityDef *>( declManager->FindType( DECL_ENTITYDEF, name.c_str(), false ) );
+	return baseDef ? &baseDef->dict : NULL;
 }
 
 int rvWeapon::GetFirstPersonShadowSuppressLightId( void ) const {
@@ -482,7 +515,7 @@ void rvViewWeapon::UpdatePresentationModel( void ) {
 			presentationRenderEntity.callback = NULL;
 			presentationRenderEntity.numJoints = presentationAnimator->NumJoints();
 			presentationRenderEntity.joints = presentationJoints;
-			presentationRenderEntity.hModel->BoundsFromJoints( presentationJoints, presentationRenderEntity.bounds );
+			presentationAnimator->GetPresentationBounds( presentationRenderEntity.hModel, presentationJoints, presentationRenderEntity.bounds );
 		}
 	}
 	idVec3 origin;
@@ -733,6 +766,7 @@ rvWeapon::rvWeapon ( void ) {
 	memset ( &animDoneTime, 0, sizeof(animDoneTime) );
 	memset ( &wsfl, 0, sizeof(wsfl) );
 	memset ( &wfl, 0, sizeof(wfl) );
+	netRaiseStartTime = -1;
 
 	hitscanAttackDef = -1;
 	
@@ -768,6 +802,9 @@ rvWeapon::~rvWeapon( void ) {
 		
 	// Disassociate with the view model
 	if ( viewModel ) {
+		if ( gameLocal.IsMultiplayerMode() ) {
+			StopSound( SND_CHANNEL_ANY, false );
+		}
 		viewModel->weapon = NULL;
 	}
 }
@@ -814,7 +851,15 @@ void rvWeapon::Init( idPlayer* _owner, const idDeclEntityDef* def, int _weaponIn
 		
 		spawnArgs.Copy ( *modDict );
    	}
-   	
+
+	// openQ4: multiplayer weapons that fire straight from the ammo pool stay
+	// that way. The weapon mods a buying mode sells were made for single
+	// player's clips (the nailgun's rate-of-fire mod brings a 100-nail one);
+	// their clip would only add a reload to a weapon that has none.
+	if ( mods && gameLocal.isMultiplayer && weaponDef->dict.GetInt( "clipSize" ) == 0 ) {
+		spawnArgs.SetInt( "clipSize", 0 );
+	}
+
    	// Associate the weapon with the view model
 	viewModel->weapon = this;
 }
@@ -907,6 +952,23 @@ void rvWeapon::Spawn ( void ) {
 	muzzle_kick_maxtime	= SEC2MS( spawnArgs.GetFloat( "muzzle_kick_maxtime" ) );
 	muzzle_kick_angles	= spawnArgs.GetAngles( "muzzle_kick_angles" );
 	muzzle_kick_offset	= spawnArgs.GetVector( "muzzle_kick_offset" );
+
+	// openQ4: the stock multiplayer defs zero the kick above, so the multiplayer
+	// view model never moves when it fires.  Take each weapon's own single player
+	// values back off the def the "_mp" redirect replaced.  This is presentation
+	// only - MuzzleRise feeds the view model transform, and no stock weapon sets
+	// launchFromBarrel, so neither aim nor muzzle origin can follow it.  Whether the
+	// kick is shown at all is g_weaponMuzzleKick's call, made in MuzzleRise.
+	const bool defHasMuzzleKick = muzzle_kick_maxtime > 0 && ( muzzle_kick_angles != ang_zero || muzzle_kick_offset != vec3_origin );
+	if ( !defHasMuzzleKick ) {
+		const idDict *singlePlayerDict = OpenQ4_FindPreMultiplayerWeaponDict( weaponDef );
+		if ( singlePlayerDict ) {
+			muzzle_kick_time	= SEC2MS( singlePlayerDict->GetFloat( "muzzle_kick_time" ) );
+			muzzle_kick_maxtime	= SEC2MS( singlePlayerDict->GetFloat( "muzzle_kick_maxtime" ) );
+			muzzle_kick_angles	= singlePlayerDict->GetAngles( "muzzle_kick_angles" );
+			muzzle_kick_offset	= singlePlayerDict->GetVector( "muzzle_kick_offset" );
+		}
+	}
 
 	// General weapon properties
 	wfl.silent_fire		= spawnArgs.GetBool( "silent_fire" );
@@ -1164,7 +1226,7 @@ void rvWeapon::InitLights ( void ) {
 	light = &lights[WPLIGHT_FLASHLIGHT_WORLD];
 	light->suppressLightInViewID = owner->entityNumber+1;
 	light->allowLightInViewID = 0;
-	light->lightId = ( WPLIGHT_FLASHLIGHT_WORLD + 1 ) * 100 + owner->entityNumber; 	
+	light->lightId = ( WPLIGHT_FLASHLIGHT_WORLD + 1 ) * 100 + owner->entityNumber;
 }
 
 /*
@@ -1227,9 +1289,16 @@ void rvWeapon::InitDefs( void ) {
 			gameLocal.Warning( "Unknown hitscan '%s' for weapon '%s'", name, weaponDef->GetName ( ) );
 		} else {
 			attackAltDict = def->dict;
+			if ( hitscanAttackDef < 0 ) {
+				// openQ4: rvWeapon::Hitscan transmits this index for both fire modes and
+				// the client resolves its impact effects from it, so a weapon whose only
+				// hitscan is the alt one has to leave a valid index here - it used to
+				// stay -1 and put DeclByIndex( -1 ) on the receiving end.
+				hitscanAttackDef = def->Index();
+			}
 		}
 		wfl.attackAltHitscan = true;
-	} 
+	}
 
 	// get the melee damage def
 	meleeDistance = spawnArgs.GetFloat( "melee_distance" );
@@ -1697,7 +1766,12 @@ const idJointMat *rvWeapon::PoseVRArms( const idJointMat *joints, int numJoints,
 		vrArmJointCount = numJoints;
 	}
 	memcpy( vrArmJoints, joints, numJoints * sizeof( vrArmJoints[0] ) );
-	const idMat3 toModel = axis.Transpose();
+	// The model is drawn larger than built (vr_weaponScale, ForeshortenAxis):
+	// axis carries that scale, so world points come back into the model by its
+	// inverse and world turns by the unscaled axis.
+	const float scale = Max( axis[ 0 ].Length(), 1e-3f );
+	const idMat3 toModel = axis.Transpose() * ( 1.0f / ( scale * scale ) );
+	const idMat3 toModelAxis = axis.Transpose() * ( 1.0f / scale );
 	const int *parents = viewAnimator->ModelDef()->JointParents();
 
 	// the weapon hand
@@ -1706,6 +1780,7 @@ const idJointMat *rvWeapon::PoseVRArms( const idJointMat *joints, int numJoints,
 		idVec3 elbow;
 		if ( owner->SolveVRViewArm( weaponHand, origin + vrArmJoints[ arm.wrist ].ToVec3() * axis, arm.length, elbow ) ) {
 			VRBody_AimViewArm( arm, ( elbow - origin ) * toModel, vrArmJoints );
+			ShortenVRViewForearm( arm, scale, vrArmJoints );
 		}
 	}
 
@@ -1740,8 +1815,9 @@ const idJointMat *rvWeapon::PoseVRArms( const idJointMat *joints, int numJoints,
 				heldAxis[i].y = -heldAxis[i].y;
 			}
 			heldAxis[0] = -heldAxis[0];
-			const idVec3 freeOrigin = ( palm + held * aimAxis - origin ) * toModel;
-			const idMat3 freeAxis = heldAxis * aimAxis * toModel;
+			// held is in the model's units, drawn scale times larger
+			const idVec3 freeOrigin = ( palm + ( held * scale ) * aimAxis - origin ) * toModel;
+			const idMat3 freeAxis = heldAxis * aimAxis * toModelAxis;
 
 			const idVec3 animatedOrigin = vrArmJoints[ arm.wrist ].ToVec3();
 			const idMat3 animatedAxis = vrArmJoints[ arm.wrist ].ToMat3();
@@ -1759,9 +1835,52 @@ const idJointMat *rvWeapon::PoseVRArms( const idJointMat *joints, int numJoints,
 		idVec3 elbow;
 		if ( owner->SolveVRViewArm( offHand, origin + vrArmJoints[ arm.wrist ].ToVec3() * axis, arm.length, elbow ) ) {
 			VRBody_AimViewArm( arm, ( elbow - origin ) * toModel, vrArmJoints );
+			ShortenVRViewForearm( arm, scale, vrArmJoints );
 		}
 	}
 	return vrArmJoints;
+}
+
+/*
+================
+rvWeapon::ShortenVRViewForearm
+
+openQ4 VR: the view model's forearms are built long and thin, at full length
+behind hands half life size. Drawn scale times larger (vr_weaponScale), the
+hands match the player's own, and each forearm is pressed back along itself,
+towards its wrist, to the length the body's arm solver reached its elbow
+with (SolveVRViewArm takes the forearm's modelled length in world units).
+Only the forearm's joints change, so the hand and the gun keep their size.
+================
+*/
+void rvWeapon::ShortenVRViewForearm( const vrViewArm_t &arm, float scale, idJointMat *joints ) {
+	if ( scale <= 1.001f && scale >= 0.999f ) {
+		return;
+	}
+	const idVec3 wrist = joints[ arm.wrist ].ToVec3();
+	idVec3 along = VRBody_ViewArmElbow( arm, joints ) - wrist;
+	if ( along.Normalize() < 1e-4f ) {
+		return;
+	}
+	// squash = identity - ( 1 - 1 / scale ) * along * along^T: points keep
+	// their distance across the forearm and lose 1 - 1 / scale along it
+	const float shorten = 1.0f - 1.0f / scale;
+	idMat3 squash;
+	for ( int i = 0; i < 3; i++ ) {
+		for ( int j = 0; j < 3; j++ ) {
+			squash[ i ][ j ] = ( i == j ? 1.0f : 0.0f ) - shorten * along[ i ] * along[ j ];
+		}
+	}
+	const int forearmJoints[ 2 ] = { arm.forearm, arm.elbow };
+	for ( int n = 0; n < 2; n++ ) {
+		const int joint = forearmJoints[ n ];
+		if ( joint < 0 ) {
+			continue;
+		}
+		const idVec3 position = wrist + ( joints[ joint ].ToVec3() - wrist ) * squash;
+		joints[ joint ].SetRotation( joints[ joint ].ToMat3() * squash );
+		joints[ joint ].SetTranslation( position );
+	}
 }
 
 /*
@@ -1867,14 +1986,18 @@ void rvWeapon::Think ( void ) {
 	if ( gameLocal.isNewFrame || presentationViewModelTime < 0 ) {
 		playerViewOrigin = owner->firstPersonViewOrigin;
 		playerViewAxis = owner->firstPersonViewAxis;
-		// openQ4 VR: shots leave the tracked weapon hand along its aim, which
-		// the usercmd angles already carry. Aimed by the head, they leave the
-		// tracked head, where the crosshair is drawn from: from the body's own
-		// eye a shot over cover the player had ducked behind hit the cover.
-		if ( !owner->GetVRAimOrigin( playerViewOrigin ) ) {
-			owner->GetVRHeadOrigin( playerViewOrigin );
+		if ( !gameLocal.isMultiplayer ) {
+			// openQ4 VR: shots leave the tracked weapon hand along its aim, which
+			// the usercmd angles already carry. Aimed by the head, they leave the
+			// tracked head, where the crosshair is drawn from: from the body's own
+			// eye a shot over cover the player had ducked behind hit the cover.
+			if ( !owner->GetVRAimOrigin( playerViewOrigin ) ) {
+				owner->GetVRHeadOrigin( playerViewOrigin );
+			}
 		}
 		CalculateViewModelTransform( playerViewOrigin, playerViewAxis, viewModelOrigin, viewModelAxis );
+		// openQ4 VR: the view model hangs at the weapon hand; shots still
+		// leave the eye, which is what the server simulates
 		owner->GetVRWeaponTransform( viewModelOrigin, viewModelAxis, false );
 		UpdatePresentationViewModelState( playerViewOrigin, playerViewAxis, viewModelOrigin, viewModelAxis );
 	}
@@ -1915,6 +2038,14 @@ void rvWeapon::Think ( void ) {
 	// don't show shadows of the world model in first person
 	if ( worldModel && worldModel->GetRenderEntity() ) {
 		const int suppressShadowLightId = GetFirstPersonShadowSuppressLightId();
+
+		// openQ4 (#237): the gun in the player's hands asks for noSelfShadow as
+		// the body and head do (idPlayer::Spawn), so r_shadowMapCharacterSelfShadow
+		// promotes neither.  Without it the skinned gun alone cast onto
+		// noSelfShadow props such as crates while the body holding it did not,
+		// and it could shadow the view weapon.  Set here as well as in
+		// InitWorldModel so a world model restored from a save follows the rule.
+		worldModel->GetRenderEntity()->noSelfShadow = true;
 
 		// always show your own weapon
 		if( owner->entityNumber == gameLocal.localClientNum ) {
@@ -1966,6 +2097,26 @@ void rvWeapon::Think ( void ) {
 	}
 }
 
+void rvWeapon::ShiftMatchTime( int deltaMsec ) {
+	if ( deltaMsec <= 0 ) {
+		return;
+	}
+	stateThread.ShiftMatchTime( deltaMsec );
+	const int maxInt = 0x7fffffff;
+#define SHIFT_WEAPON_TIME( value ) \
+	do { if ( ( value ) > 0 ) { ( value ) = ( value ) > maxInt - deltaMsec ? maxInt : ( value ) + deltaMsec; } } while ( 0 )
+	SHIFT_WEAPON_TIME( lastAttack );
+	SHIFT_WEAPON_TIME( hideStartTime );
+	SHIFT_WEAPON_TIME( kick_endtime );
+	SHIFT_WEAPON_TIME( nextAttackTime );
+	SHIFT_WEAPON_TIME( muzzleFlashEnd );
+	SHIFT_WEAPON_TIME( clipPredictTime );
+	for ( int channel = 0; channel < ANIM_NumAnimChannels; ++channel ) {
+		SHIFT_WEAPON_TIME( animDoneTime[ channel ] );
+	}
+#undef SHIFT_WEAPON_TIME
+}
+
 /*
 ================
 rvWeapon::InitWorldModel
@@ -1984,9 +2135,11 @@ void rvWeapon::InitWorldModel( void ) {
 	// the weapon and builds a new one against the same idAnimatedEntity - so anything the
 	// previous weapon left bound to it survives onto this one.  InitViewModel starts with
 	// rvViewWeapon::Clear(), which stops every effect and sound on the view model; there
-	// was no equivalent here.  A weapon freed part way through its fire cycle never runs
-	// its own teardown, so a looping muzzle effect from the outgoing weapon keeps playing
-	// on top of the new one.
+	// was no equivalent here, and this is the model every *other* player sees.  A weapon
+	// freed part way through its fire cycle (SetWeapon(-1) out of ReadFromSnapshot, the
+	// weaponCatchup branch of Weapon_Combat, OwnerDied) never runs its own teardown, so a
+	// looping muzzle effect from the outgoing weapon would keep playing on top of the new
+	// one - one player visibly firing two different weapons at once.
 	ent->StopAllEffects();
 	ent->StopSound( SND_CHANNEL_ANY, false );
 
@@ -2012,6 +2165,8 @@ void rvWeapon::InitWorldModel( void ) {
 		worldModelRenderEntity = ent->GetRenderEntity();
 		if ( worldModelRenderEntity ) {
 			worldModelRenderEntity->suppressSurfaceInViewID = owner->entityNumber+1;
+			// openQ4 (#237): the gun keeps its owner's shadow rule (see Think)
+			worldModelRenderEntity->noSelfShadow = true;
 			worldModelRenderEntity->suppressShadowInViewID = owner->entityNumber+1;
 			worldModelRenderEntity->suppressShadowInLightID = GetFirstPersonShadowSuppressLightId();
 			if ( gameLocal.isMultiplayer ) {
@@ -2099,6 +2254,8 @@ rvWeapon::WriteToSnapshot
 ================
 */
 void rvWeapon::WriteToSnapshot( idBitMsgDelta &msg ) const {
+	// this can probably be reduced a bit, there's no clip/reload in MP
+	// it seems that's used to drive some of the weapon model firing animations though (such as RL)
 	msg.WriteBits( ammoClip, ASYNC_PLAYER_INV_CLIP_BITS );
 }
 
@@ -2917,7 +3074,7 @@ rvWeapon::isReady
 ================
 */
 bool rvWeapon::IsReady( void ) const {
-	return !wfl.hide && !(gameLocal.time - hideStartTime < hideTime) && (viewModel && !viewModel->IsHidden()) && ( ( status == WP_READY ) || ( status == WP_OUTOFAMMO ) );
+	return !wfl.hide && ! ( gameLocal.time - hideStartTime < hideTime ) && ( viewModel && !viewModel->IsHidden()) && ( ( status == WP_READY ) || ( status == WP_OUTOFAMMO ) );
 }
 
 /*
@@ -3279,9 +3436,11 @@ rvWeapon::ForeshortenAxis
 ================
 */
 idMat3 rvWeapon::ForeshortenAxis( const idMat3& axis ) const {
-	// openQ4 VR: a gun held in the hand keeps its true length
+	// openQ4 VR: a gun held in the hand keeps its true proportions, scaled from
+	// the half life size the flat screen's view models are built at to match
+	// the player's own hands (vr_weaponScale)
 	if ( owner != NULL && owner->IsVRHandAiming() ) {
-		return axis;
+		return axis * owner->GetVRWeaponScale();
 	}
 	return idMat3( axis[0] * viewModelForeshorten, axis[1], axis[2] );
 }
@@ -3520,7 +3679,7 @@ void rvWeapon::SetClip ( int amount ) {
 rvWeapon::UseAmmo
 ================
 */
-void rvWeapon::UseAmmo ( int amount ) {
+void rvWeapon::UseAmmo( int amount ) {
 	owner->inventory.UseAmmo( ammoType, amount * ammoRequired );
 	if ( clipSize && ammoRequired && !OpenQ4_TurboWeaponReloadsDisabled() ) {
 		ammoClip -= ( amount * ammoRequired );
@@ -3667,15 +3826,17 @@ void rvWeapon::Attack( bool altAttack, int num_attacks, float spread, float fuse
 	// Muzzle flash effect
 	// openQ4: a zoomed (alternate) attack uses "fx_altmuzzleflash" when the weapon
 	// has one, as The Awakening's game code did: its goob gun's flamethrower mod
-	// fires unseen projectiles and the flame is this effect
-	const char *flashKey = ( wsfl.zoom && weaponDef->dict.GetString( "fx_altmuzzleflash" )[0] ) ? "fx_altmuzzleflash" : "fx_muzzleflash";
-	const char *worldFlashKey = ( wsfl.zoom && weaponDef->dict.GetString( "fx_altmuzzleflash_world" )[0] ) ? "fx_altmuzzleflash_world" : "fx_muzzleflash_world";
+	// fires unseen projectiles and the flame is this effect. Campaign only: the
+	// multiplayer library always used the plain flash.
+	const bool altFlash = wsfl.zoom && !gameLocal.isMultiplayer;
+	const char *flashKey = ( altFlash && weaponDef->dict.GetString( "fx_altmuzzleflash" )[0] ) ? "fx_altmuzzleflash" : "fx_muzzleflash";
+	const char *worldFlashKey = ( altFlash && weaponDef->dict.GetString( "fx_altmuzzleflash_world" )[0] ) ? "fx_altmuzzleflash_world" : "fx_muzzleflash_world";
 	bool muzzleTint = spawnArgs.GetBool( "muzzleTint" );
-	rvClientEffect* muzzleFlashEffect = viewModel->PlayEffect( flashKey, flashJointView, false, vec3_origin, false, EC_IGNORE, muzzleTint ? owner->GetHitscanTint() : vec4_one );
+	rvClientEffect* muzzleFlashEffect = viewModel->PlayEffect( flashKey, flashJointView, false, vec3_origin, false, false, EC_IGNORE, muzzleTint ? owner->GetHitscanTint() : vec4_one );
 	DisableViewEffectWeaponDepthHack( muzzleFlashEffect );
 
 	if ( worldModel && flashJointWorld != INVALID_JOINT ) {
-		worldModel->PlayEffect( gameLocal.GetEffect( weaponDef->dict, worldFlashKey ), flashJointWorld, vec3_origin, mat3_identity, false, vec3_origin, false, EC_IGNORE, muzzleTint ? owner->GetHitscanTint() : vec4_one );
+		worldModel->PlayEffect( gameLocal.GetEffect( weaponDef->dict, worldFlashKey ), flashJointWorld, vec3_origin, mat3_identity, false, vec3_origin, false, false, EC_IGNORE, muzzleTint ? owner->GetHitscanTint() : vec4_one );
 	}
 
 	owner->WeaponFireFeedback( &weaponDef->dict );
@@ -3699,6 +3860,15 @@ void rvWeapon::Attack( bool altAttack, int num_attacks, float spread, float fuse
 		statManager->WeaponFired( owner, weaponIndex, num_attacks );
 		
 	}
+// openQ4 BEGIN
+	// A client used to wait for the server's copy of its own shot, so the tracer and impacts
+	// arrived a round trip after the muzzle flash, from where the server had the gun by then.
+	// Draw the shot now instead, from the gun drawn on this frame; Hitscan only traces and
+	// plays effects on a client.  Damage stays on the server.
+	else if ( ( altAttack ? wfl.attackAltHitscan : wfl.attackHitscan ) && PredictsOwnHitscan() ) {
+		Hitscan( altAttack ? attackAltDict : attackDict, muzzleOrigin, muzzleAxis, num_attacks, spread, power );
+	}
+// openQ4 END
 }
 
 /*
@@ -3742,18 +3912,10 @@ void rvWeapon::LaunchProjectiles ( idDict& dict, const idVec3& muzzleOrigin, con
 		// Calculate a random launch direction based on the spread
 		ang = idMath::Sin( spreadRad * gameLocal.random.RandomFloat() );
 		spin = (float)DEG2RAD( 360.0f ) * gameLocal.random.RandomFloat();
-//RAVEN BEGIN
-//asalmon: xbox must use muzzle Axis for aim assistance
-#ifdef _XBOX
-		dir = muzzleAxis[ 0 ] + muzzleAxis[ 2 ] * ( ang * idMath::Sin( spin ) ) - muzzleAxis[ 1 ] * ( ang * idMath::Cos( spin ) );
-		dir += dirOffset;
-#else
 		dir = playerViewAxis[ 0 ] + playerViewAxis[ 2 ] * ( ang * idMath::Sin( spin ) ) - playerViewAxis[ 1 ] * ( ang * idMath::Cos( spin ) );
 		dir += dirOffset;
-#endif
-//RAVEN END
 		dir.Normalize();
-	
+
 		// If a projectile entity has already been created then use that one, otherwise
 		// spawn a new one based on the given dictionary
 		if ( projectileEnt ) {
@@ -3892,6 +4054,20 @@ void rvWeapon::Hitscan( const idDict& dict, const idVec3& muzzleOrigin, const id
 
 	GetGlobalJointTransform( true, flashJointView, fxOrigin, fxAxis, dict.GetVector( "fxOriginOffset" ) );
 
+// openQ4 BEGIN
+	// The shooting client draws this shot itself as it predicts it (rvWeapon::Attack), so it
+	// and the server have to agree on every pellet.  Both run the shot on the same game frame,
+	// so in multiplayer the spread comes from a generator seeded by the shooter and that
+	// frame's time rather than from the shared game generator.  Single player is unchanged.
+	const int spreadSeed = idGameLocal::HitscanSpreadSeed( owner ? owner->entityNumber : 0, gameLocal.time );
+	idRandom shotRandom( spreadSeed );
+	idRandom &spreadRandom = gameLocal.isMultiplayer ? shotRandom : gameLocal.random;
+	const bool predicted = gameLocal.isClient;
+	if ( predicted ) {
+		gameLocal.NotePredictedHitscan( hitscanAttackDef );
+	}
+// openQ4 END
+
 	if ( gameLocal.isServer ) {
 
 		assert( hitscanAttackDef >= 0 );
@@ -3915,9 +4091,9 @@ void rvWeapon::Hitscan( const idDict& dict, const idVec3& muzzleOrigin, const id
 	idVec3 end;
 	for( i = 0; i < num_hitscans; i++ ) {
 		if( weaponDef->dict.GetBool( "machinegunSpreadStyle" ) ) {	
-			float r = gameLocal.random.RandomFloat() * idMath::PI * 2.0f;
-			float u = idMath::Sin( r ) * gameLocal.random.CRandomFloat() * spread * 16;
-			r = idMath::Cos( r ) * gameLocal.random.CRandomFloat() * spread * 16;
+			float r = spreadRandom.RandomFloat() * idMath::PI * 2.0f;
+			float u = idMath::Sin( r ) * spreadRandom.CRandomFloat() * spread * 16;
+			r = idMath::Cos( r ) * spreadRandom.CRandomFloat() * spread * 16;
 #ifdef _XBOX
 			end = muzzleOrigin + ( ( 8192 * 16 ) * muzzleAxis[ 0 ] );
 			end += ( r * muzzleAxis[ 1 ] );
@@ -3929,9 +4105,34 @@ void rvWeapon::Hitscan( const idDict& dict, const idVec3& muzzleOrigin, const id
 #endif
 			dir = end - muzzleOrigin;
 		} else if( weaponDef->dict.GetBool( "shotgunSpreadStyle" ) ) {
-			float r = gameLocal.random.CRandomFloat() * spread * 16;
-			float u = gameLocal.random.CRandomFloat() * spread * 16;
+			float r;
+			float u;
+			if ( gameLocal.isMultiplayer ) {
+				int radius;
+				float angle;
 
+				// this may look slightly odd, but ensures with an odd number of pellets we get
+				// two complete circles, and the outer one gets the extra hit
+				int circleHitscans = num_hitscans - (num_hitscans / 2);
+				if (i < circleHitscans)
+				{
+					radius = spread * 14;
+					angle = i * (idMath::TWO_PI / circleHitscans);
+				}
+				else
+				{
+					radius = spread * 6;
+					angle = (i - circleHitscans) * (idMath::TWO_PI / num_hitscans) * 2;
+				}
+
+				r = radius * (idMath::Cos(angle) + (spreadRandom.CRandomFloat() * 0.2f));
+				u = radius * (idMath::Sin(angle) + (spreadRandom.CRandomFloat() * 0.2f));
+			} else {
+				// single player keeps retail's random square spread
+				r = spreadRandom.CRandomFloat() * spread * 16;
+				u = spreadRandom.CRandomFloat() * spread * 16;
+			}
+			
 #ifdef _XBOX
 			end = muzzleOrigin + ( ( 8192 * 16 ) * muzzleAxis[ 0 ] );
 			end += ( r * muzzleAxis[ 1 ] );
@@ -3943,8 +4144,8 @@ void rvWeapon::Hitscan( const idDict& dict, const idVec3& muzzleOrigin, const id
 #endif
 			dir = end - muzzleOrigin;
 		} else {
-			ang = idMath::Sin( spreadRad * gameLocal.random.RandomFloat() );
-			spin = (float)DEG2RAD( 360.0f ) * gameLocal.random.RandomFloat();
+			ang = idMath::Sin( spreadRad * spreadRandom.RandomFloat() );
+			spin = (float)DEG2RAD( 360.0f ) * spreadRandom.RandomFloat();
 			//RAVEN BEGIN
 			//asalmon: xbox must use the muzzleAxis so the aim can be adjusted for aim assistance
 #ifdef _XBOX
@@ -3974,7 +4175,20 @@ void rvWeapon::Hitscan( const idDict& dict, const idVec3& muzzleOrigin, const id
 			}
 		}
 
-		gameLocal.HitScan( dict, muzzleOrigin, dir, fxOrigin, owner, false, 1.0f, NULL, areas );
+// openQ4 BEGIN
+		idEntity *hit;
+		if ( predicted ) {
+			hit = gameLocal.HitScan( dict, muzzleOrigin, dir, fxOrigin, owner, false, 1.0f, NULL, NULL, idGameLocal::HITSCAN_EFFECTS_PREDICTED );
+		} else {
+			hit = gameLocal.HitScan( dict, muzzleOrigin, dir, fxOrigin, owner, false, 1.0f, NULL, areas );
+		}
+		if ( i == 0 && gameLocal.isMultiplayer && net_mpHitscanDebug.GetBool() ) {
+			LogHitscanDebug( predicted ? "predicted" : "server", hitscanAttackDef, fxOrigin, dir, spreadSeed, hit );
+		}
+		if ( predicted ) {
+			continue;
+		}
+// openQ4 END
 
 		if ( gameLocal.isServer ) {
 			for ( int area = 0; area < 2; area++ ) {
@@ -3996,6 +4210,59 @@ void rvWeapon::Hitscan( const idDict& dict, const idVec3& muzzleOrigin, const id
 		}
 	}
 }
+
+// openQ4 BEGIN
+/*
+================
+rvWeapon::PredictsOwnHitscan
+
+Only the newest predicted frame: replays of frames already shown must not draw the shot
+again, and every other entity's shots still arrive from the server.  Demo playback replays
+the recorded server copies instead.
+================
+*/
+bool rvWeapon::PredictsOwnHitscan( void ) const {
+	return gameLocal.isClient && gameLocal.isMultiplayer && gameLocal.isNewFrame &&
+		gameLocal.GetDemoState() != DEMO_PLAYING &&
+		owner != NULL && owner->entityNumber == gameLocal.localClientNum &&
+		hitscanAttackDef >= 0 && net_mpPredictHitscan.GetBool();
+}
+
+/*
+================
+rvWeapon::LogHitscanDebug
+
+gunGap is how far the shot's visual starts from the flash joint of the gun this weapon
+holds now, aimGap the angle between the shot and the view this weapon aims along now.  For
+a shot drawn when it is predicted both are what the frame itself shows (aimGap is then the
+spread); for the server's copy they grow with the round trip times the turn rate.
+================
+*/
+void rvWeapon::LogHitscanDebug( const char *kind, int hitscanDefIndex, const idVec3 &fxOrigin, const idVec3 &dir, int seed, const idEntity *hit ) const {
+	const bool local = owner != NULL && owner->entityNumber == gameLocal.localClientNum;
+	float gunGap = -1.0f;
+	float aimGap = -1.0f;
+	if ( local && viewModel && flashJointView != INVALID_JOINT ) {
+		// The shot's visual starts at the flash joint moved by the hit-scan's own offset.
+		const idDeclEntityDef *def = static_cast<const idDeclEntityDef *>( declManager->DeclByIndex( DECL_ENTITYDEF, hitscanDefIndex, false ) );
+		idVec3 flashOrigin;
+		idMat3 flashAxis;
+		const_cast<rvWeapon *>( this )->GetGlobalJointTransform( true, flashJointView, flashOrigin, flashAxis,
+			def ? def->dict.GetVector( "fxOriginOffset" ) : vec3_origin );
+		gunGap = ( fxOrigin - flashOrigin ).Length();
+		// A received direction is quantized and not quite unit length, and acos of a dot
+		// product near 1 amplifies that; the cross and dot products keep it small.
+		idVec3 aim = dir;
+		aim.Normalize();
+		aimGap = RAD2DEG( idMath::ATan( aim.Cross( playerViewAxis[ 0 ] ).Length(), aim * playerViewAxis[ 0 ] ) );
+	}
+	// hit is the entity the trace stopped on, -1 for none; actor says whether that counts as a body.
+	gameLocal.Printf( "MP_HITSCAN kind=%s client=%d owner=%d local=%d def=%d time=%d newFrame=%d seed=%d fx=%.2f,%.2f,%.2f dir=%.5f,%.5f,%.5f gunGap=%.2f aimGap=%.3f hit=%d actor=%d\n",
+		kind, gameLocal.isClient ? 1 : 0, owner ? owner->entityNumber : -1, local ? 1 : 0, hitscanDefIndex, gameLocal.time,
+		gameLocal.isNewFrame ? 1 : 0, seed, fxOrigin.x, fxOrigin.y, fxOrigin.z, dir.x, dir.y, dir.z, gunGap, aimGap,
+		hit ? hit->entityNumber : -1, hit && hit->IsType( idActor::GetClassType() ) ? 1 : 0 );
+}
+// openQ4 END
 
 /*
 ================
@@ -4203,7 +4470,29 @@ rvWeapon::NetCatchup
 ================
 */
 void rvWeapon::NetCatchup( void ) {
+	netRaiseStartTime = -1;
+	if ( gameLocal.isMultiplayer && net_mpHitscanDebug.GetBool() ) {
+		gameLocal.Printf( "MP_WEAPON catchup client=%d owner=%d local=%d time=%d status=%d\n",
+			gameLocal.isClient ? 1 : 0, owner ? owner->entityNumber : -1,
+			owner != NULL && owner->entityNumber == gameLocal.localClientNum ? 1 : 0, gameLocal.time, (int)status );
+	}
 	ExecuteState ( "NetCatchup" );
+}
+
+/*
+================
+rvWeapon::SetNetRaiseStartTime
+
+openQ4: the server makes a player's weapon for a new life and raises it on its own frame,
+but a client learns of the respawn from a snapshot while it predicts ahead of that frame.
+Starting the client's raise when the snapshot arrives would make it ready late, and the
+catch-up it used to take instead made it ready at once, firing shots the server never
+fired.  The raise the weapon starts next is played from this game time instead, so its
+animation, and the ready frame AnimDone derives from it, match the server's.
+================
+*/
+void rvWeapon::SetNetRaiseStartTime( int time ) {
+	netRaiseStartTime = time;
 }
    
 /*
@@ -4226,16 +4515,34 @@ void rvWeapon::PlayAnim( int channel, const char *animname, int blendFrames ) {
 		viewAnimator->Clear( channel, gameLocal.time, FRAME2MS( blendFrames ) );
 		animDoneTime[channel] = 0;
 	} else {
+		// openQ4: every raise state sets WP_RISING and then plays its "raise", so this is
+		// the raise a weapon made for a new life starts; see SetNetRaiseStartTime.
+		int startTime = gameLocal.time;
+		const bool raise = status == WP_RISING;
+		if ( raise && netRaiseStartTime >= 0 ) {
+			startTime = Min( netRaiseStartTime, gameLocal.time );
+		}
+		if ( raise ) {
+			netRaiseStartTime = -1;
+		}
+
 		viewModel->Show();
-		viewAnimator->PlayAnim( channel, anim, gameLocal.time, FRAME2MS( blendFrames ) );
+		viewAnimator->PlayAnim( channel, anim, startTime, FRAME2MS( blendFrames ) );
 		animDoneTime[channel] = viewAnimator->CurrentAnim( channel )->GetEndTime();
 		
 		// Play the animation on the world model as well
 		if ( worldAnimator ) {
 			worldAnimator->GetAnim( animname );
 			if ( anim ) {
-				worldAnimator->PlayAnim( channel, anim, gameLocal.time, FRAME2MS( blendFrames ) );
+				worldAnimator->PlayAnim( channel, anim, startTime, FRAME2MS( blendFrames ) );
 			}
+		}
+
+		if ( raise && gameLocal.isMultiplayer && net_mpHitscanDebug.GetBool() ) {
+			gameLocal.Printf( "MP_WEAPON raise client=%d owner=%d local=%d time=%d start=%d done=%d\n",
+				gameLocal.isClient ? 1 : 0, owner ? owner->entityNumber : -1,
+				owner != NULL && owner->entityNumber == gameLocal.localClientNum ? 1 : 0,
+				gameLocal.time, startTime, animDoneTime[channel] );
 		}
 	}
 }
@@ -4355,8 +4662,9 @@ void rvWeapon::CacheWeapon( const char *weaponName ) {
 		return;
 	}
 
-	// Warm the weapon declaration and directly referenced defs up front so first
-	// activation does not have to synchronously discover media on the gameplay path.
+	// Local MP clients instantiate weapon classes on demand when a newly acquired
+	// weapon becomes active. Warm the full weapon dict so that first-use asset
+	// loads do not stall the frame during the pickup/switch path.
 	gameLocal.CacheDictionaryMedia( &weaponDef->dict );
 
 	kv = weaponDef->dict.MatchPrefix( "def_", NULL );

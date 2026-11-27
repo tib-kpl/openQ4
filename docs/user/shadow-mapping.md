@@ -19,9 +19,24 @@ Choose a preset on **Settings → Display → Graphics → Performance Preset** 
 
 **New in 0.15.0:** in 0.14.1 only Maximum used cascades, so on Quality and Ultra the shadows of characters and nearby objects outdoors were blocky or missing.
 
-The change applies at once; you don't need to restart the renderer. **Settings → Display → Effects → Enable Shadows** (**Image Quality** in 0.14.1) turns all shadows off or on, whichever kind the preset uses.
+The change applies at once; you don't need to restart the renderer.
 
-To use shadow maps with any other preset, turn on **Settings → Display → Effects → Shadow Maps** under Enable Shadows and press **Apply Changes** (not in 0.14.1), or open the console and enter:
+**After 0.15.0:** to pick shadows yourself on any preset, open **Settings → Display → Effects → Shadows**, choose a level and press **Apply Changes**. The list holds the same six levels the presets use:
+
+| Shadows | Same as preset | Settings |
+|---|---|---|
+| Off | Minimum, Low Power, Low | `r_shadows 0` |
+| Original | Performance, Balanced | `r_shadows 1`, `r_useShadowMap 0` |
+| Soft (Low) | Enhanced | 1024 maps for spotlights and sunlight with a simple soft edge; point lights keep the original shadows (`r_shadowMapPointLights 0`) |
+| Soft (Medium) | Quality | Every light: 2048 maps with 9-sample contact-hardening edges, 512 point-light maps, cascaded sunlight |
+| Soft (High) | Ultra | 4096 maps with 13-sample edges in an 8192 atlas |
+| Soft (Ultra) | Maximum | 1024 point-light maps with 13-sample edges, cascades for spotlights too, a 16384 atlas |
+
+A level sets every shadow setting in its row at once, and the row shows a return arrow when it differs from your preset; see [Custom settings](display-settings.md#custom-settings). The list reads **Custom** when the console variables below have been set to a mix no level uses.
+
+In 0.15.0 and the classic menus, **Settings → Display → Effects → Enable Shadows** (**Image Quality** in 0.14.1) turns all shadows off or on, whichever kind the preset uses, and **Shadow Maps** under it switches shadow maps on with whatever quality the last preset left (not in 0.14.1).
+
+From the console, on any version:
 
 ```cfg
 seta r_shadows 1
@@ -203,6 +218,9 @@ On every platform, openQ4 never draws a half-finished shadow: it rejects incompl
 | `r_shadowMapStableAlphaHash` | `1` | `0..1` | Keeps that cutout pattern fixed to the world, so it doesn't crawl as the camera moves. |
 | `r_shadowMapTranslucentReceivers` | `1` | `0..1` | Lets see-through surfaces receive shadows like solid ones, as `r_stencilTranslucentShadows` does for the original shadows. |
 | `r_shadowMapCasterCulling` | `2` | `0..4` | Which side of an object's surfaces the shadow records. `2` (automatic) matches the original shadows: a lamp behind a one-sided panel shines through it, and solid props keep a grounded contact shadow. `0` records both sides, `1` the side facing the light, `3` the side facing away for every object, and `4` is the earlier automatic mode, kept for comparison. |
+| `r_shadowMapDistantFarShell` | `1` | `0..1` | Sunlight and other distant lights record every object by the rule the original shadows use, the surfaces facing away from the light, and keep almost no bias (`r_shadowMapDistantFarShellBias`). Shadows then reach into corners and under ledges as the original ones do, where they used to stop short by up to tens of units. `0` restores the earlier behaviour. **Not in 0.15.0.** |
+| `r_shadowMapPrelightCasters` | `1` | `0..2` | What the level's own geometry casts into the shadow of a light mounted outside the area it lights (sunlight, distant fill lights): `1` uses the shadow volume the map compiler stored for that light, so the shadow matches the original one; `0` casts each surface whole, as in 0.15.0; `2` uses the stored volume for every light that has one. **Not in 0.15.0.** |
+| `r_shadowMapPrelightCutouts` | `1` | `0..1` | With `r_shadowMapPrelightCasters`, a grate or other see-through surface inside such a light's area keeps the holes in its shadow. `0` casts it solid, as the original shadows do. **Not in 0.15.0.** |
 
 ### Sharpness and memory
 
@@ -227,6 +245,7 @@ On every platform, openQ4 never draws a half-finished shadow: it rejects incompl
 | `r_shadowMapFilterTaps` | `9` | `1..13` | Samples per spotlight edge (1, 5, 9 or 13). More is smoother and costs more. |
 | `r_shadowMapPCSSLightRadius` | `4.0` | `0..16` | How far contact-hardening searches for the object casting a shadow, in shadow-map pixels. |
 | `r_shadowMapPCSSMaxRadius` | `8.0` | `0..16` | The widest edge contact-hardening can draw, in shadow-map pixels. |
+| `r_vkShadowBilinearPCSS` | `1` | `0..1` | Vulkan only. Blends each contact-hardening sample across the four shadow-map pixels around it, so soft edges are smooth ramps instead of grain. `0` uses one pixel per sample, which is what OpenGL draws. |
 | `r_shadowMapDistantFilterScale` | `0.35` | `0..1` | Narrows soft edges for sunlight and other distant lights, whose shadow pixels cover far more ground, so their outlines stay crisp. `1` uses the ordinary spotlight width. |
 | `r_shadowMapPointFilterMode` | `0` | `0..1` | Point-light edge style: `0` fixed blur, `1` even soft edge. Point lights don't use contact-hardening. |
 | `r_shadowMapPointFilterRadius` | `1.0` | `0..8` | Point-light edge width. Large lights cover a lot of ground per pixel, so wide values can wash out contact detail. |
@@ -242,6 +261,7 @@ On every platform, openQ4 never draws a half-finished shadow: it rejects incompl
 | `r_shadowMapCascadeLambda` | `0.75` | `0..1` | How the cascades divide that distance: lower spaces them evenly, higher packs more detail close to you. |
 | `r_shadowMapCascadeBlend` | `0.15` | `0..0.5` | Width of the crossfade between neighbouring cascades. |
 | `r_shadowMapCascadeStabilize` | `1` | `0..1` | Holds cascades steady to stop shimmering as you move. |
+| `r_shadowMapCascadeStableExtent` | `2` | `0..4` | How many of the nearest cascades keep one sharpness whichever way you look, so their shadow edges do not shift as you turn. They give up the extra sharpness some directions had; the far cascade would lose the most, which is why the default steadies the two nearest only. `0` sizes every cascade as tightly as the view allows, `4` steadies all of them. |
 
 ### Stored shadows and update limits
 
@@ -249,11 +269,12 @@ On every platform, openQ4 never draws a half-finished shadow: it rejects incompl
 |---|---:|---:|---|
 | `r_shadowMapStaticCache` | `1` | `0..1` | Stores the shadows of still scenery and reuses them every frame. Moving objects are drawn on top. |
 | `r_shadowMapStaticCutouts` | `1` | `0..1` | Stores grates, railings and fences with the still scenery when their holes can't change, so a light reaching one isn't redrawn every frame. Cutouts that animate are still drawn each frame. `0` redraws every cutout each frame. |
-| `r_shadowMapResidentFrames` | `120` | `1..3600` | Frames an unused stored shadow is kept before its space can be reused. |
+| `r_shadowMapResidentFrames` | `120` | `1..3600` | How long an unused stored shadow is kept before its space can be reused, counted in frames at 60 a second: `120` is two seconds at any frame rate. |
+| `r_shadowMapCullOffscreenLiveCasters` | `1` | `0..1` | Leaves a moving or animating object out of a light's shadow map while none of its shadow from that light can reach the screen. Stored shadows of still scenery are never affected, and sunlight keeps every object. `0` draws them all every frame. |
 | `r_shadowMapStaticHysteresisFrames` | `2` | `0..120` | Frames to wait after moving objects leave before a point light that can't layer moving objects over its stored shadow is stored again. |
 | `r_shadowMapProjectedCacheSize` | `8` | `0..16` | How many full-size spotlight shadows to store (half-size ones count as a quarter each). `0` turns storing off. On Vulkan this caps the memory used, at most 128 MiB on Quality and 512 MiB on Ultra; on OpenGL the shadow atlas is the limit. Shadows in use on screen are never dropped. |
 | `r_shadowMapPointCacheSize` | `64` | `0..96` | How many point-light shadows to store. |
-| `r_shadowMapPointCacheMegs` | `512` | `64..8192` | Video memory the stored point-light shadows may use, in MiB. The default holds all 64 at the default size. A light without a slot is still shadowed; it is just drawn afresh each frame. |
+| `r_shadowMapPointCacheMegs` | `512` | `64..8192` | Video memory the stored point-light shadows may use, in MiB. The default holds all 64 at the default size. Larger point shadows (`r_shadowMapPointSize` above 512, as the highest Shadows setting uses) get three times this figure, 1536 MiB at the default, which again holds all 64. A light without a slot is still shadowed; it is just drawn afresh each frame. |
 | `r_shadowMapCacheCSM` | `0` | `0..1` | Also stores cascade shadows while their fit is unchanged. Most useful for fixed views. |
 | `r_shadowMapMaxUpdatesPerView` | `0` | `0..1024` | Limits how many shadows are drawn afresh per frame; `0` means no limit, which every preset uses. A low limit keeps cost bounded on weak hardware but can leave moving shadows slightly behind. A light whose shadow would otherwise go missing is drawn anyway. |
 | `r_shadowMapSubviewPolicy` | `1` | `0..2` | Shadows in mirrors and security cameras: `0` draws them like the main view, `1` reuses stored shadows or falls back to the original shadows, `2` prefers the original shadows. A shadow that would otherwise go missing is still drawn. |
@@ -271,6 +292,7 @@ Shadow artifacts usually come in two kinds: speckles or stripes on a lit surface
 | `r_shadowMapNormalOffsetScale` | `1.0` | `0..8` | Nudges the shadow lookup off sloped surfaces. Helps with stripes, but too high moves contact edges, especially on large lights. |
 | `r_shadowMapDistantNormalOffsetDepth` | `1` | `0..1` | For sunlight and other distant lights, sizes that nudge to the shadow pixel at each surface's distance from the light, so nearby shadows stay attached. `0` uses one size, the one for the far end of the light. **New in 0.15.0.** |
 | `r_shadowMapReceiverPlaneBias` | `0` | `0..1` | An experimental alternative bias. Leave it off for normal play. |
+| `r_shadowMapDistantFarShellBias` | `0` | `0..1` | How much of the bias above sunlight and distant lights keep while `r_shadowMapDistantFarShell` is on. Their shadows hold only surfaces facing away from the light, so a lit surface cannot shade itself, and any bias only lets light into the corner behind a wall or under a roof. Raise it in small steps if speckles appear in sunlight. **Not in 0.15.0.** |
 | `r_shadowMapPolygonFactor` | `0.25` | `0..16` | Pushes shadow-casting surfaces back in proportion to their slope while the shadow is drawn. |
 | `r_shadowMapPolygonOffset` | `0.5` | `0..64` | Pushes shadow-casting surfaces back by a fixed amount while the shadow is drawn. |
 | `r_shadowMapPointBias` | `0.00010` | `0..0.05` | Basic point-light bias. |
@@ -310,7 +332,7 @@ These help when reporting a shadow problem. Leave the last five settings at thei
 | `r_shadowMapSkipStencilShadows` | `1` | Skips building original shadows for lights drawn with shadow maps, which saves processor time. A light whose map fails gets them back the next frame. |
 | `r_shadowMapConservativeCasters` | `1` | Lets objects off screen cast shadows onto what you can see. |
 | `r_shadowMapPointCompose` | `1` | Comparison switch: draws a point light's moving objects over its stored shadow instead of redrawing all six faces. |
-| `r_shadowMapPointLayered` | `1` | Comparison switch, OpenGL: draws all six faces of a point light's shadow in one pass where the graphics driver allows it, which saves processor time. `0` draws the faces one at a time. The picture is identical. |
+| `r_shadowMapPointLayered` | `1` | Comparison switch: draws all six faces of a point light's shadow in one pass where the graphics driver allows it, which saves processor time. `0` draws the faces one at a time. The picture is identical. OpenGL since 0.15.0; Vulkan in development builds after it. |
 | `r_shadowMapCacheMovingLights` | `0` | Comparison switch: a moving light gets a new shadow every frame, so it is drawn directly rather than stored. `1` stores it anyway. A light that only changes colour is not moving. |
-| `r_shadowMapCascadeFarCache` | `1` | Comparison switch, OpenGL: keeps the still scenery of the cascades' whole-light map between frames and draws only moving objects over it. `0` redraws it every frame. The picture is identical. **New in 0.15.0.** |
+| `r_shadowMapCascadeFarCache` | `1` | Comparison switch, OpenGL: keeps the still scenery of the cascades' whole-light map between frames and draws only moving objects over it. `0` redraws it every frame. The picture is identical. Vulkan always redraws it: storing it was measured there and cost the graphics card more than it saved. **New in 0.15.0.** |
 | `r_vkShadowSampleResident` | `1` | Comparison switch, Vulkan: reads a stored spotlight shadow in place instead of copying it each frame. The picture is identical. |

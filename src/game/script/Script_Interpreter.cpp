@@ -1,6 +1,6 @@
 
-
-
+#include "../../idlib/precompiled.h"
+#pragma hdrstop
 
 #include "../Game_local.h"
 
@@ -10,6 +10,7 @@ idInterpreter::idInterpreter()
 ================
 */
 idInterpreter::idInterpreter() {
+	localstackLimit = gameLocal.IsMultiplayerMode() ? LOCALSTACK_SIZE_MULTIPLAYER : LOCALSTACK_SIZE;
 	localstackUsed = 0;
 	terminateOnExit = true;
 	debug = 0;
@@ -682,7 +683,7 @@ void idInterpreter::EnterFunction( const function_t *func, bool clearStack ) {
 	c = func->locals - func->parmTotal;
 	assert( c >= 0 );
 
-	if ( localstackUsed + c > LOCALSTACK_SIZE ) {
+	if ( localstackUsed + c > localstackLimit ) {
 		Error( "EnterFuncton: locals stack overflow\n" );
 	}
 
@@ -796,7 +797,9 @@ void idInterpreter::CallEvent( const function_t *func, int argsize ) {
 				const char *lastVarName = LastScriptVariable->Name();
 				// Map-authored entity symbols use '$name'. Local script vars (for example
 				// function args like 'vehicle') may legitimately be null in guard logic.
-				if ( lastVarName != NULL && lastVarName[0] == '$' && idStr::Cmp( "$null_entity", lastVarName ) ) {
+				// The multiplayer library warned for every name but $null_entity.
+				const bool warnName = gameLocal.isMultiplayer || ( lastVarName != NULL && lastVarName[0] == '$' );
+				if ( lastVarName != NULL && warnName && idStr::Cmp( "$null_entity", lastVarName ) ) {
 					Warning( "Entity '%s' is a null entity", lastVarName );
 				}
 			} else {
@@ -1070,19 +1073,22 @@ bool idInterpreter::Execute( void ) {
 
 // RAVEN BEGIN
 // bdube: if the debugger is running then we need to check to see if any breakpoints have beeng hit
-// jmarshall - reval
-		//if ( gameLocal.editors & EDITOR_DEBUGGER ) {
-		//	common->DebuggerCheckBreakpoint ( this, &gameLocal.program, instructionPointer );
-		//} else if ( g_debugScript.GetBool ( ) ) {
-		//	static int lastLineNumber = -1;
-		//	if ( lastLineNumber != gameLocal.program.GetStatement ( instructionPointer ).linenumber ) {				
-		//		gameLocal.Printf ( "%s (%d)\n", 
-		//			gameLocal.program.GetFilename ( gameLocal.program.GetStatement ( instructionPointer ).file ),
-		//			gameLocal.program.GetStatement ( instructionPointer ).linenumber
-		//			);
-		//		lastLineNumber = gameLocal.program.GetStatement ( instructionPointer ).linenumber;
-		//	}
-		//}
+		// openQ4: game_sp left the debugger check and g_debugScript trace commented
+		// out (jmarshall); game_mp kept them.
+		if ( gameLocal.IsMultiplayerMode() ) {
+			if ( gameLocal.editors & EDITOR_DEBUGGER ) {
+				common->DebuggerCheckBreakpoint ( this, &gameLocal.program, instructionPointer );
+			} else if ( g_debugScript.GetBool ( ) ) {
+				static int lastLineNumber = -1;
+				if ( lastLineNumber != gameLocal.program.GetStatement ( instructionPointer ).linenumber ) {				
+					gameLocal.Printf ( "%s (%d)\n", 
+						gameLocal.program.GetFilename ( gameLocal.program.GetStatement ( instructionPointer ).file ),
+						gameLocal.program.GetStatement ( instructionPointer ).linenumber
+						);
+					lastLineNumber = gameLocal.program.GetStatement ( instructionPointer ).linenumber;
+				}
+			}
+		}
 // RAVEN END
 
 		switch( st->op ) {

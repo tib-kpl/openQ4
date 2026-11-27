@@ -376,7 +376,7 @@ vec3 SamplePointTranslucentShadow() {
         return vec3(1.0);
     }
     float depth = PointShadowRadialDepth(vPointShadowVector, far);
-    if (depth <= 0.0 || depth >= 1.0) {
+    if (!(depth > 0.0 && depth < 1.0)) {
         return vec3(1.0);
     }
 
@@ -419,7 +419,7 @@ float SampleShadowFactor() {
     }
 
     float depth = PointShadowRadialDepth(vPointShadowVector, far);
-    if (depth <= 0.0 || depth >= 1.0) {
+    if (!(depth > 0.0 && depth < 1.0)) {
         return 1.0;
     }
     vec3 direction = SafeNormalize(vPointShadowVector);
@@ -545,7 +545,7 @@ vec4 PointShadowDebugOutput() {
     }
 
     float depth = PointShadowRadialDepth(vPointShadowVector, far);
-    if (depth <= 0.0 || depth >= 1.0) {
+    if (!(depth > 0.0 && depth < 1.0)) {
         return vec4(1.0, 1.0, 0.0, 1.0);
     }
     vec3 direction = SafeNormalize(vPointShadowVector);
@@ -656,15 +656,28 @@ void main() {
     vec4 bumpSample = RetailTexture(bumpMap, bumpTexCoord, gPBRBumpDx, gPBRBumpDy);
     if (pc.d.x > 0.5) {
         vec3 localNormal = PBRDirectNormal(bumpTexCoord);
+        // EvaluatePBRDirect builds its radiance from these two samples, so
+        // where they are black the result is black whatever the shadow says:
+        // outside the projected image and past the falloff the filter, most
+        // of this shader's cost, has nothing to resolve.
+        vec3 reach = textureProj(lightFalloffMap, vLightFalloffTexCoord).rgb
+            * textureProj(lightProjectionMap, vLightProjectionTexCoord).rgb;
+        bool lit = max(reach.r, max(reach.g, reach.b)) > 0.0 || ShadowVisualDebugMode();
+        float shadowFactor = 1.0;
+        if (lit) {
+            shadowFactor = SampleShadowFactor();
+        }
         vec3 packed = EvaluatePBRDirect(localNormal,
-            diffuseTexCoord, specularTexCoord, SampleShadowFactor());
+            diffuseTexCoord, specularTexCoord, shadowFactor);
         if (ShadowVisualDebugMode()) {
             outColor = PointShadowDebugOutput();
             return;
         }
         // Direct radiance is linear in the light color, so the colored
         // translucent transmittance can filter the evaluated result.
-        packed *= SamplePointTranslucentShadow();
+        if (lit) {
+            packed *= SamplePointTranslucentShadow();
+        }
         outColor = vec4(packed, PBRTransparentAlpha(diffuseTexCoord));
         return;
     }
@@ -703,8 +716,11 @@ void main() {
         specularTerm = CelSpecularTerm(EnhancedSpecularTerm(halfAngle, SafeNormalize(vViewVector), localNormal, specularSample));
     } else {
         float specularDot = clamp(dot(halfAngle, localNormal), 0.0, 1.0);
+        // The doubling is inside the term, as interaction.frag and the OpenGL
+        // receivers have it: cel banding clamps and steps the same value
+        // whether or not the light is shadow mapped.
         specularTerm = texture(specularTableMap, vec2(specularDot, 0.5)).r * 2.0;
-        specularTerm = CelSpecularTerm(specularTerm * 0.5) * 2.0;
+        specularTerm = CelSpecularTerm(specularTerm);
     }
     vec3 specular = specularSample * inter.specularColor.rgb * specularTerm;
 

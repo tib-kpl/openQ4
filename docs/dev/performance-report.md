@@ -1804,7 +1804,9 @@ and a compose copies the cached cube into the scratch cube with
 blit each face. A cube now costs one bind of it and one back to the scene
 target, where it took one bind a face (two composing) besides those. Without the extensions, or when the
 two cubes' images differ, the faces are drawn one at a time as before, and
-`r_shadowMapPointLayered 0` forces that for comparison. Shadows are
+`r_shadowMapPointLayered 0` forces that for comparison. Vulkan followed on
+24 November, with one rendering scope a cube where it had six
+([measurements](vulkan-resource-profiling.md#shadow-map-savings-from-opengl-24-november-2026)). Shadows are
 bit-identical: hub2 with `ai_freeze 1` and `g_stopTime 1`, five views with
 the static cache off and five with it on, and four views of the combat wave
 (composing over cached cubes), each captured layered, face by face and
@@ -2394,3 +2396,1047 @@ HUD state before the event runs.
 **Left alone.** The vehicle HUD's gauges (16k uncached vertices) have moving
 fills, where a cached layer would be invalidated as they move; the Awakening
 speeder's race pips (23k in the bench) were not measured in the engine.
+
+## 21. Depth of field (REN-12), 25 November 2026
+
+REN-12's depth of field had not been priced. It is situational rather than part of
+the always-on chain: the weapon wheel, a focused in-world screen, scripted cinematic
+focus and the `r_dof` capture camera.
+
+**Method.** Hidden-window ladders on airdefense1's reference pose, frozen
+(`g_stopTime 1`), Ultra with `r_depthOfField 1`, view 2538x1312 (a 2560x1440 window),
+RTX 4060 Laptop. Each variant sits between DoF-off windows. The game's lens is driven
+through the `script` console command with no input: the screen-focus lens is
+`sys.setDepthOfFieldLens( 50, 12, 12 )` plus `sys.setDepthOfField( 48, 2, 0 )`
+(the focused screen's 50 mm f/2 at 12 px), the cinematic lens
+`sys.setDepthOfFieldLens( 85, 0, 0 )` plus autofocus at f/2. Vulkan gains a `dof`
+GPU phase (`r_vkGpuPhaseProfile`) around the captures, passes and composite. It is
+timed inside one command buffer, so CPU contention on the shared machine does not
+reach it. The phase includes the drain of the work before it, so it reads higher
+than the whole-frame delta. OpenGL has only the whole-frame GPU time, read at the
+25th percentile of each window's own frames. A first OpenGL run, taken while peers
+compiled, stalled 100-800 ms a frame and was discarded.
+
+**Where the time went.** The bokeh gather took every blurred pixel through the
+quality's full spiral: 128 samples for a script or a focused screen, 64 for the
+wheel, whatever the pixel's blur. At 1080p the screen-focus lens's 6-texel disc put
+128 samples 0.94 texels apart, three times denser than the wheel's 1.55. The
+other passes are small by comparison, but the 3x3 tent read nine taps and the
+composite rewrote every in-focus pixel unchanged.
+
+**The change.**
+- The game's focus (wheel, screen, script) now takes the samples its blur needs.
+  On the largest disc they sit 1.5 gather texels apart (`DOF_GATHER_SPACING`), or
+  as far apart as the quality's count puts them, whichever is wider. A smaller
+  disc keeps that spacing with fewer samples, in proportion to its area, but never
+  fewer than 16. The screen-focus lens takes 51 samples at 1080p, 75 at this view
+  and still 128 at 4K. The wheel keeps 64 from 1080p up and takes 31 at 720p.
+  The `r_dof` capture camera keeps its quality's full count on every pixel, and so
+  does the game's focus under `r_dofFixedSamples 1`, the reference toggle.
+- The tent is four bilinear taps half a texel off centre, the same filter
+  exactly. The composite discards pixels it would leave unchanged. The gather
+  loop no longer carries an angle for round apertures and folds the per-pass
+  terms out of the loop.
+
+| Vulkan `dof` phase, ms | Before | After | After, `r_dofFixedSamples 1` |
+| --- | ---: | ---: | ---: |
+| Screen-focus lens | 1.93 | 1.34 | 1.88 |
+| Cinematic lens | 1.85 | 1.18 | 1.61 |
+| `r_dof` camera, quality 2 | 0.89 | 0.67 | - |
+| `r_dof` camera, quality 3 | 2.41 | 1.88 | - |
+
+At 1920x1080 the laptop GPU shifted clocks between windows (DoF-off windows
+3.0-7.5 ms), so only same-launch figures are firm: the screen-focus lens took
+0.92 ms against 1.33 with the full count, and before the change it took 1.40-1.70.
+
+OpenGL was not resolved. Three ladders of each build at 2560x1440, run once the
+machine was quiet, still found the GPU clock moving between windows (DoF-off
+windows 5.2-15.4 ms), several times the difference being measured. In the one
+stretch where the off windows on both sides agree within 0.1 ms, after the
+change, the screen-focus and cinematic lenses each add 0.84 ms of whole-frame
+time. Before the change, the screen-focus lens reads 0.71-0.84 ms in its
+least-disturbed windows. These figures are inside the noise, so they show
+neither a saving nor a cost. Both backends run the same shader algorithm. Timing
+OpenGL properly needs a timer query around the pass, like the Vulkan phase.
+
+**Pictures.** Inside one launch, spaced samples against the full count differ by
+at most 6 levels (screen) and 8 levels (cinematic) at the 99.9th percentile. Both
+are at PSNR 44 dB, and the share of pixels off by more than 8 levels (0.09 %)
+matches two identical windows of the old build. Crops at 1:1 cannot be told apart.
+Across launches the scene's animation moves 60 % of pixels even with DoF off. On
+the static fifth of the frame, the new shaders at full count match the old ones to
+1-2 levels, and the camera's frames are identical.
+
+## 22. A renderer round: copies, layouts and posed bounds (FPS-08), 25 November 2026
+
+A round of profiling and code audit across the renderer on both backends, to
+find work a frame does for nothing and defects on shipping paths. Four audits
+read the OpenGL frame path, the front end, the Vulkan frame path and the post
+chain; every finding was checked against the code before it was changed, and
+the ones that could not be measured or reproduced are listed at the end as
+leads rather than fixed.
+
+**Method.** The Visual Studio collector that section 15 used returned no CPU
+samples at all (another profiler on the shared machine held the kernel
+sampling session), so the profiles here come from `tools/debug/cpu_sampler.py`,
+which suspends the busiest thread, copies its stack and walks it offline: 300
+samples a second for 25 s in a hidden 1280x720 window, Quality preset, the
+suite's `combat_airdefense1` wave and `indoor_hub2` view under
+`benchmarkViewSweep`. Shares are of the main thread's running samples; samples
+blocked in a wait or in the hidden window's pacing spin are dropped. The walk
+cannot unwind through the graphics drivers, so driver time shows as a share
+without callers and about half the samples have no path back to the frame
+loop: engine functions are ranked by their own share, not by inclusive time
+that passes through a driver. Other sessions kept the machine at 100% load
+throughout, so nothing here is a wall-clock A/B. Each change is judged by a
+count the engine prints, a picture comparison inside one launch, a GPU
+timestamp inside one command buffer, or a sample ratio.
+
+**Where the main thread's time goes** (combat wave, Vulkan, share of running
+samples):
+
+| Work | Share | Notes |
+| --- | ---: | --- |
+| Vulkan driver | 10% or more | attributed to the driver's nearest export |
+| `memcpy` | 7.9% | 2.2% copying geometry into the frame ring (`VK_Ring_Alloc`), 0.8% frame-temp vertices for effects |
+| BSE effects (`R_AddEffectSurfaces`) | 8.4% | with their servicing in the game tic, 2.3% more |
+| Skinning for drawing | 2.5% | `TransformVertsAndTangents` |
+| Skinning for bounds | 2.3% | `TransformVertsNew` under `BoundsFromJoints`: once a tic and once a rendered frame for every animating model |
+| Legacy HUD state under the retained HUD | 1.8% | `idUserInterfaceLocal::StateChanged` from `idPlayer::DrawHUD` |
+| Receiver scan for shadow-map admission | 1.4% | `R_ShadowMapReceiversAllowMaps`, rescanned each time an interaction of the light is rebuilt |
+| Ambient caches for regenerated meshes | 1.4% | `R_CreateAmbientCache`: a new static block for every skinned surface every frame |
+| Overlays on skinned models | 1.2% | `AddOverlaySurfacesToModel` |
+
+On OpenGL the same engine rows appear under a driver share of at least 12%,
+plus 4% in the driver's locks.
+
+### 22.1 Poses between tics take their bounds from the tic
+
+`idRenderModelMD5::BoundsFromJoints` skins every vertex of a model to bound one
+pose. The game asks for it once a tic (`idAnimator::GetBounds`) and again for
+every pose drawn between two tics (`idEntity::UpdatePresentationPose`, the view
+weapon, client models), so a character's mesh was skinned for its bounds once
+a tic and once more for every rendered frame, besides the skin that draws it.
+
+A skinned vertex is a weighted sum of what each of its joints makes of a
+joint-space offset, `v = sum( w * ( R * o + t ) )`. Between two poses it
+therefore moves no further, on any model axis, than the furthest any joint
+carries any of its offsets, times the vertex's summed weights. Each joint's
+offsets lie in a box known from the mesh, and the largest of a linear function
+over a box comes from its centre and half size. So the mesh in the new pose
+lies inside its exact bounds in the old pose, widened on each axis by that
+travel: about a dozen multiplies a joint (`PosedBoundsCore.h`,
+`idRenderModel::BoundsFromReferencePose`). The animator keeps the pose its
+exact bounds were skinned from (`idAnimator::GetPresentationBounds`) and
+poses between tics are bounded from it; a pose more than
+`r_posedBoundsReferenceLimit` (16) units of travel away is skinned as before,
+and so is every tic, so nothing the game logic reads changes.
+
+Two cheaper-looking routes were measured on the stock characters first and set
+aside. The union of the posed joint boxes alone holds the mesh but is 14-20%
+longer than the exact bounds on its worst axis and 30-45% larger in volume
+(marine, Strogg marine, gladiator, grunt and gunner over their animations),
+because a vertex weighted lightly to a distant joint drags that joint's box
+with it. Skinning only the vertices whose joint boxes reach outside the bounds
+found so far is exact but skips only 12-37% of the vertices on four of five
+characters (48% at best with one vertex to a test).
+
+- **Containment.** `r_posedBoundsFromReference 2` skins every pose it answers
+  and compares. In the combat wave, 20,000 answers: none outside its widened
+  bounds, 99.8% within the limit, mean travel 0.3-1.4 units and at most 15.8.
+  `PosedBoundsCoreTest` checks 1,200 random pose pairs against a
+  double-precision skin, a quarter turn that only the box's half size can
+  bound, unnormalized weights, joints without weights and non-finite joints.
+- **Cost.** Skinning for bounds is `idSIMD_SSE2::TransformVertsNew` and skinning
+  for drawing is `TransformVertsAndTangents`, which the change does not touch
+  and which stands for how much animated geometry a profile saw. Main-thread
+  samples in 30 s profiles of the combat wave on Vulkan (300 a second, one
+  rendered frame a tic; the wave differs from launch to launch, so each
+  setting was profiled twice, alternating):
+
+  | Profile | Bounds skinning, samples | Draw skinning, samples | Bounds / draw |
+  | --- | ---: | ---: | ---: |
+  | Every pose skinned (`r_posedBoundsFromReference 0`) | 85, 110 | 97, 99 | 0.88, 1.11 |
+  | Widened | 36, 66 | 79, 84 | 0.46, 0.79 |
+
+  Bounds skinning falls from 0.99 to 0.62 of the draw skinning on
+  average, with a wide spread between launches. A third of the bounds requests
+  were for poses between tics in the baseline profile (34% by callers), and
+  what remains is the tic's own exact skin. That one runs once a tic and the
+  pose between tics once a rendered frame, so the share removed should grow
+  with the frame rate. That was not measured: a hidden window paces at 60 Hz,
+  and slowing time to get several frames a tic (`timescale 0.25`) switches the
+  interpolation off, so those profiles show no poses between tics at all.
+
+### 22.2 OpenGL copies the view only for a reader
+
+`r_debugRenderToTexture 1` now counts whole-view colour and depth copies
+(`CpyFrameBuf`, `CpyDepthBuf`).
+
+- **The post-process pass.** `RB_STD_DrawShaderPasses` copied the view into
+  `_currentRender`, a float image, whenever its first surface sorted as
+  post-process. The game's resolve, anti-aliasing and composite passes sort
+  there and sample only `_forwardRenderResolvedAlbedo` and `_postProcessAlbedo*`,
+  so every frame on every preset from Performance up paid a full-window copy
+  that nothing read. The pass now scans its surfaces for a stage that samples
+  `_currentRender` (the test the per-stage fallback already used) and copies
+  only then (`r_postProcessCaptureOnDemand`).
+- **The light grid's depth copy.** `RB_PrepareLightGridDepthTexture` ran in
+  every view once the light grid program existed, which is from the first map
+  with a grid until the renderer restarts: the HUD, each of the game's
+  fullscreen passes, and every view of later maps without a grid. It now runs
+  where the light grid pass can draw, a 3D view of a world with a grid
+  (`r_lightGridDepthOnDemand`). The fog pass, which writes no depth, no longer
+  discards the copy either; Vulkan had the same reset and loses it too.
+
+| Quality preset, hidden window, copies a frame | Colour before | Colour after | Depth before | Depth after |
+| --- | ---: | ---: | ---: | ---: |
+| `game/airdefense2` (light grid, as every multiplayer map) | 3 | 2 | 10 | 3 |
+| `game/hub2` | 2 | 1 | 3 | 3 |
+| `game/airdefense1`, combat wave | 3 | 2 | 4 | 4 |
+
+Pictures: with the world frozen (`g_stopTime 1`), captures with the old and
+new behaviour inside one launch are identical in every pixel in hub2 and in
+airdefense2.
+
+### 22.3 Vulkan leaves multisampled depth an attachment
+
+Section 19 found that moving a multisampled depth image out of its attachment
+layout and back costs about a pass over every sample, and removed that round
+trip around depth captures. Two more were left:
+
+- `VK_Exec_SetRenderTarget` moved the outgoing target's depth to the sampled
+  layout with its colour. The game unbinds its multisampled forward target once
+  a frame and the next frame's bind moved the depth back. No shader samples a
+  multisampled depth image (only colour has `sampler2DMS` readers); every
+  reader takes a resolved copy.
+- The frame's depth resolve (`VK_Exec_ResolveRenderTargets` with
+  `resolveDepth`) left its source in the sampled layout too.
+
+Both now keep a multisampled depth image in the attachment layout
+(`r_vkDepthTargetLayoutReference 1` restores the moves). Every later user
+starts from the tracked layout, so only barriers change.
+
+Two barriers a frame go (123 to 121 in `rendererVulkanMemoryInfo` at every
+sample count). Whole-frame GPU time comes from `rendererBenchmarkCapture`, 256
+frames a window, at 2560x1440 in a hidden window on hub2 with the world frozen
+(`g_stopTime 1`), Quality preset with the sample count overridden. Windows
+alternate between the two settings in one launch, and each window of the new
+layouts is paired with the reference window after it; two launches:
+
+| Anti-aliasing | Pairs | Reference minus new, median of the pairs | Reference slower in |
+| --- | ---: | ---: | ---: |
+| 2x | 8 | +0.10 ms | 6 |
+| 4x | 8 | +0.05 ms | 6 |
+| 8x | 7 | +0.28 ms | 7 |
+
+Other sessions' clients shared the GPU through both launches. The frame read
+about 6.3 ms at every sample count, where a quiet stretch earlier in the day
+read 4.6 ms at 2x and 6.3 ms at 8x, and windows of one setting moved by up to
+0.4 ms. The saving at 2x and 8x is small but repeats; the 4x figure is inside
+the noise.
+
+That quiet stretch had used `r_vkDepthCaptureLayoutReference` as the reference
+and read 0.34, 1.18 and 2.30 ms at 2x, 4x and 8x. The switch also restores the
+round trips that section 19 removed, so those figures are that change and this
+one together, at the Quality preset, whose SSAO and soft-particle captures make
+more of them than the 0.13.2 settings section 19 measured. They are not this
+change's, which is why it has a switch of its own.
+
+Pictures at 2x and 4x are identical in every pixel between the two settings
+inside one launch, and the Khronos validation layer reports nothing with the
+new layouts.
+
+### 22.4 Defects fixed
+
+- **A light updated while effects are added broke the view's visibility
+  stamps.** `R_CreateLightRefs` and `R_CreateEntityRefs` bumped `tr.viewCount`
+  to tell which areas already hold a reference. The view being built keeps its
+  visible areas, entities and lights under the same counter. Effects are
+  serviced inside `R_AddEffectSurfaces`, and an effect whose light starts,
+  moves or changes size there rebuilds that light's references in the middle
+  of the view. From then on, for the rest of that view, `R_CullEffectByArea`
+  finds no area visible and drops the effects later in the list, and an entity
+  or light asked for again gets a second view entry. Area references now have
+  their own stamp (`tr.areaRefCount`, `portalArea_t::refCount`). This one was
+  found by reading and was not seen in play: in the combat wave no light's
+  references were rebuilt while effects were added (`bse_frameCounters` now
+  prints the count as `areaRefs`), at normal speed or with `timescale 0.25`,
+  and the effects culled by area are as many on the old build as on the new
+  (11.7 and 11.3 a view).
+- **A freed frame-temp overflow block was revived and never freed again.** When
+  a frame's temp allocations overflow the legacy arena, `AllocFrameTemp` hands
+  out a static block that is already on the deferred free list.
+  `R_TouchVertexCache` cannot tell it from a live static block, and
+  `idVertexCache::Touch` moved it back among the live ones, where nothing owned
+  it: the header and its memory leaked for the rest of the session. `Touch`
+  now leaves a block without an owner alone. Only Vulkan fills that arena
+  (OpenGL streams temp data through the upload ring), and a stock firefight
+  filled 1.8 MB of its 2 MB, so Vulkan's arena is now 8 MB.
+- **The underwater view was timed in frames.** Its warp, caustics and particle
+  drift read `backEnd.frameCount / 60`, so they ran at the frame rate's
+  multiple of their authored speed and through a pause. Both backends now pass
+  the view's `floatTime`, as materials do.
+- **A full Vulkan pipeline set stayed full.** The sets are keyed on the scene
+  target's formats and sample count, and nothing evicted. A full stage set
+  returned no pipeline for every new key, which drops the surface; the other
+  sets returned another key's pipeline. A full set now asks for every pipeline
+  to be retired at the next frame start (the path a swapchain format change
+  takes), at most once in 600 frames, and the stage set holds 256 instead of
+  64. Cycling sixteen anti-aliasing and HDR settings in one session did not
+  fill the old set in hub2, so no failure was reproduced.
+  `rendererVulkanMemoryInfo` now prints each set's count.
+
+### 22.5 Smaller savings
+
+- The automatic temporal anti-aliasing rule read `com_maxfps` through the cvar
+  system by name, and is asked for every surface that keeps its previous
+  positions; it now finds the cvar once.
+- `R_AddModelSurfaces` projected the bounds of every view entity for its
+  scissor, including entities that are in the view only to cast a shadow and
+  whose rectangle is already empty. Intersecting into an empty rectangle
+  leaves it empty, so those are skipped.
+
+### 22.6 Leads, not changed
+
+In rough order of what they look worth. None is measured unless it says so.
+[Section 23](#23-the-renderer-round-continued-state-queries-and-the-receiver-scan-fps-08-25-november-2026) takes them up one by one and says what
+became of each.
+
+- **Vulkan copies stencil shadow volumes into the frame ring every frame**
+  (`VK_Exec_BindShadowGeometry`), where ambient geometry is resident. Balanced
+  and Performance draw all shadows as volumes. In hub2 at
+  Balanced the frame ring takes 1.49 MB a frame with stencil shadows and
+  0.50 MB with `r_shadows 0` (`rendererVulkanMemoryInfo`, 331 frames each): about
+  1 MB a frame, some 0.14 ms of copying at the rate the static geometry work
+  measured.
+- **The receiver scan** above rescans a light's whole interaction list each
+  time one of its interactions is rebuilt (1.4% of the combat wave on Vulkan).
+  Keeping the verdict across a change needs the entity-side inputs it reads
+  (view entities, remembered models) to invalidate it too.
+- **Regenerated skinned surfaces take a new static vertex block every frame**,
+  and a second for stencil shadow casters. Frame-temp blocks for surfaces
+  regenerated this frame would do, once every holder of the pointer drops it
+  when the snapshot is kept into the next frame.
+- **OpenGL's light grid pass** sets about 90 pieces of state per receiver
+  surface (25 uniforms, six texture units bound and unbound) for one draw.
+- **OpenGL's soft-particle stage** rebinds its program and uploads nine
+  uniforms for every stage; six are constant for the view.
+- **The game's post chain** makes two or three plain full-screen copies a
+  frame (the resolve into the SMAA source, SMAA's normalize pass, and a
+  resolve that is a copy when anti-aliasing is off).
+- **SSAO copies the finished depth into its own image** even when
+  `_currentDepth` already holds it.
+- **Subviews and the resolution scale.** Read from the code, not reproduced:
+  with Resolution Scale below 100% on OpenGL, a remote camera's crop is sized
+  against the window, not the scaled target, and direct mirrors draw at native
+  scale into it.
+- **Back sides of two-sided skinned surfaces** re-derive their tangents every
+  frame; the front side's, with the normal negated, are the same basis.
+- **Every draw surface zeroes a 296-byte deformation record** that only the
+  shared deformation path reads.
+- **The legacy HUD's state** is still evaluated every frame under the retained
+  HUD (1.8% of the combat wave).
+
+## 23. The renderer round continued: state queries and the receiver scan (FPS-08), 25 November 2026
+
+The leads section 22 ranked were taken up one by one: each was measured first,
+with the profiles and the kit of that section, and only what held up was
+changed. Two changes came of it, one of them from a profile rather than from
+the list, and most of the list turned out smaller than it read (23.4). The
+method and the machine are section 22's: a hidden 1280x720 window that paces
+at 60 Hz, the Quality preset, the suite's `combat_airdefense1` wave and
+`indoor_hub2` view, other sessions sharing the machine, and so counts and
+comparisons inside one launch rather than wall-clock frame rates.
+
+### 23.1 OpenGL asks the driver for nothing it set itself
+
+**The cost.** A state query (`glIsEnabled`, `glGetIntegerv`, `glGetError`) is
+answered from the driver's own state. A driver that queues an application's
+commands for a worker thread (NVIDIA's threaded optimisation, Mesa's glthread)
+has to finish every queued command before it can answer, so each query makes
+the calling thread wait for the driver. A profile of the light grid map for
+lead four showed it: a third of the main thread's running samples sat in the
+driver's wait for its own thread, called from `idImage::CopyDepthbuffer`,
+`CopyFramebuffer` and the shadow map passes, where section 22's profiles of a
+driver without a worker thread had the same share inside the driver's drawing
+code.
+
+**The count.** A wrapper that notes the call site of every state query that
+reaches the driver (`r_glStateQueryReport`) counted 49 a frame in hub2 at the
+Quality preset:
+
+| Queries a frame | Asked by | For |
+| ---: | --- | --- |
+| 24 | the four copies of the screen and the depth buffer | both framebuffer bindings, the read and draw buffers, the scissor test and its box, to put them back |
+| 7 | render target clears | the scissor test, to turn it off and back on |
+| 9 | three shadow map passes | blending, the scissor and stencil tests and the clear colour, to put them back |
+| 3 | the SSAO occlusion pass | the viewport, the scissor box and the scissor test |
+| 3 | full-screen passes | the array buffer binding |
+| 1 | the multisample resolve | the scissor test |
+| 2 | the error flag | once at the end of the frame, once in the resolve |
+
+Every one of those values had been set by the renderer. The combat wave, with
+six or seven copies and about seven shadow map passes a frame, asked 68 to 73
+as the fight went on.
+
+**What changed.**
+
+- *State the renderer set is remembered* (`GLQueryShadow.h`,
+  `r_glStateQueries`). In the OpenGL module, macros replace `glEnable`,
+  `glDisable`, `glScissor`, `glViewport`, `glClearColor`, `glPushAttrib` and
+  `glPopAttrib` and the queries for every source file, which is every caller
+  there is. The setters record what they set (the enables of blending and the
+  scissor, stencil, cull and depth tests, the scissor box, the viewport, the
+  clear colour); a pushed attribute group comes back with its pop; a query of a
+  recorded value is answered without the driver. A value nothing has set yet is
+  asked for once. A value the driver may not keep as given is not recorded: a
+  scissor box with a negative size, a viewport larger than the implementation's
+  limit, a clear colour outside [0,1]. The array buffer binding is answered
+  from the vertex cache's own record. The call sites are unchanged.
+- *A copy takes the state it puts back from the bound target*
+  (`r_glCopyTargetState`). The back end binds a render target to both
+  framebuffer bindings and selects its buffers every time it makes one current,
+  and records it in `backEnd.renderTexture`, which the copies already trusted
+  for their source. A target is compared with OpenGL the first time a copy sees
+  it and every 64th copy after that; one that differs is reported and asked
+  about from then on, and the copy that found the difference uses the driver's
+  answer. The check found one such caller at once: the SSAO pass points
+  `backEnd.renderTexture` at its world depth target for one copy without
+  binding it. It now names the target that stays bound
+  (`backEnd.copyBoundTarget`).
+- *The resolve reads the error flag only when the answer is used*: before a
+  depth resolve, whose own check must not find an older error, or while errors
+  are being reported (`r_ignoreGLErrors 0`). The check at the end of the frame
+  still finds whatever is pending. What differs is the rare frame with an
+  error in it: an error raised while the scene was drawn now stays pending
+  through the post chain, where a buffer storage operation would count it as
+  its own failure, as it already did for any error raised after the resolve.
+
+| Queries reaching the driver, a frame (Quality) | Before | After |
+| --- | ---: | ---: |
+| `game/hub2` | 49.0 | 1.24 |
+| `game/airdefense2` (light grid) | 49.0 | 1.31 |
+| `game/airdefense1`, combat wave | 68 to 73 | 1.4 |
+
+What is left in these scenes is the error flag at the end of the frame and,
+once in 64 copies, the four values a copy compares. Paths they do not run may
+still ask, and an image upload still reads the error flag (a preset switch
+that reloads textures shows as up to 19 reads a frame while it lasts);
+`r_glStateQueryReport` names the call site of every query that reaches the
+driver.
+
+**Exactness.** Both changes have a mode that answers, asks the driver as well
+and reports a difference (`r_glStateQueries 2`, `r_glCopyTargetState 2`). With
+both on, no difference in hub2, in airdefense2, in the combat wave, or in hub2
+under each of the nine presets from Minimum to Maximum. Screenshots with the
+world frozen are identical in every pixel between the old and the new path
+inside one launch, in hub2 and in airdefense2. `renderer_gl_display_policy`
+compiles both pieces against a driver that counts the queries it answers and
+keeps OpenGL's rules for the attribute stack, clamped viewports and rejected
+sizes; all 25 deliberate breakages of the two pieces fail it.
+
+**What it buys depends on the driver, and was not measured where it matters.**
+With a driver that draws on the calling thread a query is cheap, and the
+main thread's CPU time is the same (hub2 view sweep, CPU seconds a second of
+the main thread over 25 s, a launch each):
+
+| | Launch 1 | 2 | 3 | 4 | 5 | Mean |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Queries asked (`r_glStateQueries 0`, `r_glCopyTargetState 0`) | 0.325 | 0.311 | 0.292 | 0.318 | 0.221 | 0.293 |
+| Answered | 0.289 | 0.318 | 0.291 | 0.305 | 0.281 | 0.297 |
+
+In those launches no other thread of the process used more than 0.011 CPU
+seconds a second: the driver was not using a worker thread, with either path.
+It had been in two earlier profiles of the old path, where its wait for that
+thread was 21% (hub2, 12 s) and 33% (airdefense2, 25 s) of the main thread's
+running samples; in the hub2 launch it stopped using the thread before the
+next window. Whether NVIDIA's driver uses its worker thread is its own
+decision ("Threaded optimisation: Auto") and cannot be set from the
+application, so the frame time with the thread in use and the queries gone was
+not measured. The claim that stands is the count.
+
+**Not covered.** The state record belongs to the OpenGL module; the OpenGL ES
+module keeps its queries except in the copies, whose code is shared.
+On Linux both pieces pass GCC's syntax check in all three renderer modules
+(every file of the OpenGL module, the changed files of the other two) and
+Clang's for the changed OpenGL files; nothing was run there, and macOS was not
+compiled. A frame handed to a headset ends with the record forgotten, since
+the compositor's calls are not the renderer's; that path was not run on a
+headset.
+
+### 23.2 Vulkan's receiver scan follows its interactions
+
+A light that renders shadow maps may leave its stencil volumes out only if
+none of its receivers needs them (`R_ShadowMapReceiversAllowMaps`: authored
+GLSL lighting has no shadow map sampler). The verdict for a view was memoized
+on the view light and thrown away whenever one of the light's interactions
+changed state. An animating entity frees and rebuilds its interaction with
+every light it touches in every view, so each of those cost a walk of that
+light's whole interaction list: 1.4% of the combat wave on Vulkan in section
+22's profile.
+
+The memo is now corrected from the interaction that changed
+(`R_ShadowMapReceiverScanChanged`, `r_shadowMapReceiverScanIncremental`). While
+it allows maps, every interaction on the list passed, so the one that changed
+decides alone. While it does not, the scan stopped at the interaction that
+blocked it and read nothing after it: nothing that happens to another
+interaction changes the verdict while that one still blocks, and once it does
+not, or leaves the list, the list is read again at the next question. Only a
+whole scan ever concludes that a light's receivers allow maps. An interaction
+that is being built also takes the verdict its entity recorded from the same
+model a moment earlier instead of walking the model's surfaces again for every
+light.
+
+| Combat wave, Vulkan, Quality | Whole scan after any change | Corrected in place |
+| --- | ---: | ---: |
+| Whole scans of a light's list, a frame | 50.0 | 6.1 |
+| Interactions tested, a frame | 4,948 | 651 (546 in whole scans, 105 one at a time) |
+| The scan and its upkeep, of the main thread's running samples | 1.66% (49 of 2,955) | 0.61% (35 of 5,745) |
+
+A second launch of the new path tested 761 interactions a frame and sampled
+0.63% (36 of 5,712); the old path's second launch was lost to a stall of the
+sampler. Other sessions loaded the machine unevenly across the launches (1,801
+frames in the old path's window, 1,410 and 1,524 in the new path's), so it is
+the shares that compare, not the sample counts, and frame time was not
+compared at all.
+
+`r_shadowMapReceiverScanIncremental 2` keeps the old protocol's verdict beside
+the new one and compares them at every question: 206,899 answers in the
+combat wave and 106,350 in hub2, none different.
+`rendererVulkanMemoryInfo` prints the counts.
+
+### 23.3 Smaller
+
+- `_currentRender` and `_currentDepth` are recognised by image name for every
+  image of every stage drawn, and the emitter-panel test by material name for
+  every surface of every interaction built. Each now looks at the first
+  character before it compares the prefix (0.5% of the combat wave on Vulkan,
+  0.3% on OpenGL, in string compares).
+- `rendererVulkanMemoryInfo` splits what Vulkan's frame rings were filled with:
+  vertex streams that are not resident, index lists, the index lists of
+  surfaces whose vertices are resident, and the two streams of stencil shadow
+  volumes (`r_vkResourceProfile 1`).
+
+### 23.4 Section 22's leads, measured
+
+| Lead | What the measurement says | Now |
+| --- | --- | --- |
+| Vulkan copies stencil shadow volumes into the frame ring | hub2 view sweep, kB a frame: 1,223 into the rings at Performance, of them 482 of volume vertices and 425 of volume indexes; 1,177 at Balanced, 467 and 368. At Quality the view's lights render shadow maps and no volume is uploaded | left: resident copies of static volumes need a key that outlives the frame, and the upload memo is keyed on pointers and lives one frame. The largest piece of Vulkan's uploads at the presets that draw volumes |
+| The receiver scan | 23.2 | done |
+| A static vertex block a frame for every skinned surface | 1.4% of the combat wave on Vulkan, of which about 0.4% is the allocation and 0.4% the copy; frame-temp blocks would save the first | left: a snapshot kept into the next frame holds the pointer |
+| OpenGL's light grid state per receiver | 0.36% of the main thread's running samples with 45 receivers in view (`game/airdefense2`), about 0.02 ms a frame | set aside |
+| OpenGL's soft-particle uniforms | the stage is 3.0% of the combat wave on OpenGL, 1.1% of it the draws themselves and 0.4% the depth capture | left |
+| The post chain's plain copies, SSAO's own depth copy | not measured: GPU time, and a `_currentDepth` taken earlier in the view is not known to be the finished depth | left |
+| Subviews under Resolution Scale | not reproduced. Both stock render maps are 512x256, a subview's crop is taken in the virtual units of the crop around it, so it always fits; the camera feeds of `game/storage1` and `game/mcc_1` show nothing at the start of the map | open, unverified |
+| Back-side tangents | `R_DeriveTangents` is 0.03% of the combat wave | set aside |
+| The 296-byte deformation record | every `memset` on the main thread together is 0.27%; five shared domains read the zeroed record without asking whether it was initialised | set aside |
+| The legacy HUD's state under the retained HUD | 1.2% on Vulkan, 0.4% on OpenGL; the stock windows' scripts still run their time events from that state under the retained HUD | left to the interface work |
+
+[Section 24](#24-resident-stencil-shadow-volumes-on-vulkan-fps-08-26-november-2026) takes up the first row.
+
+New from this round:
+
+- **Vulkan copies every index list into the frame ring every frame**, the
+  lists of surfaces whose vertices are resident included: 164 of 188 kB a
+  frame at Performance and 319 of 441 kB at Quality in the hub2 sweep.
+  Resident index lists need an identity for an index array first; a vertex
+  stream has its cache block's.
+- **At Quality the same sweep uploads 441 kB of vertex streams that are not
+  resident a frame**, against 94 kB at Performance. Not looked into.
+- **The error flag at the end of the frame is the one state query left on
+  OpenGL** (`GL_CheckErrors`), and a depth resolve for temporal anti-aliasing
+  adds one in the middle of the frame. It is how a driver error reaches the
+  log today; reading it less often would remove the last forced wait.
+
+## 24. Resident stencil shadow volumes on Vulkan (FPS-08), 26 November 2026
+
+Section 23.4 left one lead as the largest piece of Vulkan's uploads: at
+Performance and Balanced, which draw every shadow as a stencil volume, both
+streams of every volume were copied into the frame rings every frame.
+(Enhanced still draws its point lights' shadows that way; the three presets
+below Performance draw no shadows.) This section takes it up. The method is section 22's (hidden 1280x720 window paced
+at 60 Hz, `indoor_hub2`, other sessions sharing the machine), with one
+addition: where a setting can be switched inside a launch, the two settings
+alternate in phases of the same launch and the main thread's CPU time is read
+at each phase boundary, so that both see the same map, driver state and load.
+
+### 24.1 What the copies were made of
+
+Counted over one whole revolution of the hub2 view sweep (22 s, 1,321
+frames), the rings took 1,465 kB a frame, 965 kB of it shadow volumes: 508 kB
+of volume vertices and 457 kB of volume index lists. Balanced and Performance
+give the same numbers; at Quality the view's lights render shadow maps and no
+volume is uploaded. (Section 23's figures were eight-second windows of the
+same sweep, which is why they differ from these and between the two presets.)
+
+A temporary counter in the upload path, since removed, split two 600-frame
+windows of that sweep by what a volume is:
+
+| Share of the volume bytes | Window A | Window B |
+| --- | ---: | ---: |
+| Vertices of volumes that own their projected vertices (prelight volumes) | 77% | 59% |
+| Index lists of those volumes | 76% | 53% |
+| ... of which the same bytes as the frame before | 100% | 100% |
+| Vertices of volumes cast from an entity's surface, in a block that persists | about 46% of the rest | about 23% of the rest |
+| Index lists of such volumes that repeat | 59% of the rest | 31% of the rest |
+| Index bytes a draw actually reads (caps left out when the view is outside) | 84% | 72% |
+
+So most of the copying moved bytes that never change: dmap's combined volume
+of the static world for each static light. What does change is cast from
+models that animate. Copying only the index range a draw reads was the other
+idea; at a sixth to a quarter of the index bytes that still have to be copied
+it was not worth a second code path.
+
+### 24.2 What changed
+
+Vulkan already keeps the vertex streams of surfaces that outlive their frame
+in a persistent buffer (`r_vkStaticGeometry`): a stream is identified by its
+vertex cache block and the serial of that block's allocation, and is copied
+once when it has been the same allocation for 150 ms.
+
+- *A volume's vertex stream is such a block.* A prelight volume's projected
+  vertices have a block of their own; a volume cast from an entity's surface
+  borrows the block of that surface's paired vertices, which every light's
+  volume of the surface shares. Either becomes resident the same way, in the
+  same buffer.
+- *An index list becomes resident where it shares a block's life.* An index
+  list is not in the vertex cache and has no serial. But the surface that owns
+  a block was allocated with its index list and frees the block when it is
+  freed (`R_GeoFreeVertexCaches`), so for that surface the block's header and
+  serial identify the list too. A volume qualifies when it has projected
+  vertices and the block names the surface's own `shadowCache` field as its
+  owner: every prelight volume. Its list is kept under the block's key with
+  one bit set, with the list's address and length beside the serial, so that
+  a surface that ever showed another list under the same block would start
+  again. A volume that borrows its block does not qualify: its list is one of
+  many over that block, a new one for each light and each time the
+  interaction is built again, and it stays in the ring.
+- The buffer takes index lists as well as vertices, and an index offset is
+  decoded like a vertex offset (`VK_Exec_IndexStream`) wherever a volume is
+  bound, including the shared interaction domain's prepared volumes.
+
+`r_vkStaticShadowVolumes 0` copies every volume as before.
+`rendererVulkanMemoryInfo` prints the volume bytes drawn from resident copies.
+
+### 24.3 Result
+
+| hub2 view sweep, one revolution, kB a frame (Balanced and Performance alike) | Copied | Resident |
+| --- | ---: | ---: |
+| Into the frame rings, everything | 1,465 | 781 |
+| Volume vertices into the rings | 508 | 113 |
+| Volume index lists into the rings | 457 | 162 |
+| Volume bytes drawn from resident copies | 0 | 685 |
+
+Seven tenths of the volume bytes and nearly half of everything the rings took
+no longer move. At Enhanced, which draws only its point lights' shadows as
+volumes, the same revolution copied 848 kB of volumes a frame and copies 186.
+In the combat wave at Balanced, where sixteen animated
+characters cast volumes that are rebuilt every tic, 606 of 1,284 kB of volume
+bytes a frame come from resident copies. It depends on the map: at the player
+start of four others (Balanced, one revolution, kB a frame),
+
+| Map | Volume bytes still copied | Drawn from resident copies |
+| --- | ---: | ---: |
+| `game/mcc_1` | 125 | 706 |
+| `game/airdefense2` | 97 | 128 |
+| `game/storage2` | 0 | 66 |
+| `game/medlabs` | 439 | 106 |
+
+`medlabs` draws few prelight volumes there: its volumes are cast from entity
+surfaces, whose lists stay in the ring.
+
+**What it costs to copy.** Main thread CPU time a frame at a static hub2 view
+where the old path copies 1,050 kB of volumes a frame and the new one 267 kB,
+phases of 900 frames alternating in one launch, four of each:
+
+| ms of main-thread CPU a frame | Copied | Resident | Difference |
+| --- | ---: | ---: | ---: |
+| Balanced | 3.18 (2.95 to 3.30) | 2.68 (2.59 to 2.78) | 0.50 |
+| Performance | 3.31 (3.04 to 3.63) | 3.00 (2.62 to 3.21) | 0.31 |
+| Balanced, a quieter machine | 2.87 (2.81 to 3.00) | 2.19 (2.10 to 2.27) | 0.68 |
+
+Each of the twelve adjacent pairs is lower with the volumes resident, by 0.07
+to 0.90 ms. That is 0.4 to 0.9 ms for each megabyte no longer copied, several
+times the 0.14 ms section 22 assumed. The rings are memory mapped for the
+device to read, and by this measurement writing them is slow; the same then
+holds for what the rings still take (24.4). Two later launches at Enhanced,
+on a machine whose load moved a phase by a millisecond either way, did not
+resolve the difference: 3.73 against 3.64 ms and 3.16 against 3.05 ms, six of
+eight pairs lower.
+
+**Exactness.** `r_vkStaticGeometry 2` compares every resident stream with its
+source at every draw. With it on: 212,939 draws of resident streams in hub2 at
+three presets, the combat wave and the four maps above, none different. (The
+comparison reads the resident buffer back, and those runs drew 3 to 43 frames
+a second; hub2 and the combat wave draw 60 without it.) Pictures of a frozen world are identical in every
+pixel with volumes resident and copied, with the scene drawn normally and with
+the volumes themselves drawn in colour (`r_showShadows 2`).
+`renderer_vulkan_static_geometry` runs the real functions against an
+allocator double: promotion, a recycled header, another list under the same
+block, a borrowed block, a copy of the surface, both switches and the
+comparison mode; all 22 deliberate breakages of the new code fail it.
+
+**Not covered.** The render thread modes (`r_vkRenderThread 1` and `2`) were
+not run; in mode 2 the snapshot's copies never qualify, as before. The buffer
+(96 MiB) held 2 to 4 MB of resident streams in these scenes, so its eviction
+under pressure, which volumes now share with surfaces, was exercised only by
+the test. On Linux the executor passes GCC's and Clang's syntax checks and the
+two tests pass; the game was not run there.
+
+### 24.4 What the rings still take
+
+hub2 view sweep, one revolution, kB a frame:
+
+| | Performance | Balanced | Quality |
+| --- | ---: | ---: | ---: |
+| Everything | 780 | 781 | 813 |
+| Volume vertices (models that animate) | 113 | 113 | 0 |
+| Volume index lists (volumes cast from entity surfaces) | 162 | 162 | 0 |
+| Vertex streams that are not resident | 177 | 178 | 427 |
+| Index lists | 277 | 277 | 320 |
+| ... of surfaces whose vertices are resident | 222 | 223 | 226 |
+| ... of which the surface's own list | 122 | 122 | 122 |
+
+Leads, in the order the numbers suggest:
+
+- **A surface's own index list could ride on its vertex block as a prelight
+  volume's does**: the surface owns the block and the list alike. That is the
+  last row, more than half of the index bytes of resident surfaces. Light
+  interactions draw subsets of their own over the same block and would stay.
+- **The index lists of static volumes cast from entity surfaces** (a static
+  model under a light that never moved keeps its volume) repeat every frame
+  and are still copied: a third to a half of that row in play, all of it
+  while the world stands still. They need an identity of their own, for
+  instance an index cache block given to a volume once it has lasted.
+- **At Quality 0.4 MB a frame of vertex streams are not resident**, as section
+  23 noted; still not looked into.
+
+[Section 25](#25-a-surfaces-own-index-list-on-vulkan-fps-08-26-november-2026) takes up the first of these.
+
+## 25. A surface's own index list on Vulkan (FPS-08), 26 November 2026
+
+Section 24.4's first lead, taken up with section 24's method and machine.
+Vulkan copied every index list into the frame's index ring every frame, the
+lists of surfaces whose vertices are resident included: 223 kB a frame over a
+revolution of the hub2 view sweep at every preset, 122 kB of it the list a
+surface draws itself with. Section 24 priced a megabyte copied into the rings
+at 0.4 to 0.9 ms.
+
+### 25.1 What changed
+
+A model surface's own index list shares the life of its vertex block exactly
+as a prelight volume's does (24.2): the surface owns the block (the block
+names the surface's `ambientCache` field as its owner) and the list alike, and
+frees the block when it is freed. So once a surface's vertex stream is
+resident, the list it draws itself with is kept in the same buffer under that
+block's key (`VK_StaticGeo_SurfaceIndexOffset`), with the list's address and
+length checked at every draw.
+
+- *Only beside a resident vertex stream.* That one condition leaves out
+  everything that should be left out: 2D surfaces, whose blocks are recycled
+  inside a frame; surfaces the compute pass may skin; and whatever is rebuilt
+  every tic, which never stays long enough to become resident.
+- *Only for the surface that owns the block.* A light interaction draws the
+  same block with an index subset of its own, a new one for each light; it is
+  refused, and so is a copy of the surface made for a frame. When an
+  interaction lies wholly inside its light and points at the surface's own
+  list, the per-frame memo already serves it from the surface's copy.
+- *What keeps the list true.* No code was found that changes a kept surface's
+  index list alone. What rebuilds a kept surface's geometry in place
+  (overlays, beams, a re-posed skinned mesh and its reversed back side) frees
+  its vertex caches first, as OpenGL's buffer objects need it to, and the
+  block's new serial starts the list again.
+- The three places that bound an uploaded surface's index list straight from
+  the ring (`VK_Exec_BindTriGeometry`, the planned world-ambient draws and the
+  planned 2D draws) decode the offset like the others. Two binds remain on the
+  ring: the raw shadow batch and the special-effects quad, which bind what
+  they have just put there.
+
+`r_vkStaticSurfaceIndexes 0` copies every surface's list as before.
+`rendererVulkanMemoryInfo` prints the list bytes drawn from resident copies.
+
+### 25.2 Result
+
+| hub2 view sweep, one revolution, kB a frame | Copied | Resident |
+| --- | ---: | ---: |
+| Balanced: into the frame rings, everything | 789 | 671 |
+| Balanced: index lists into the ring | 287 | 167 |
+| Quality: into the frame rings, everything | 810 | 691 |
+| Quality: index lists into the ring | 317 | 197 |
+| Index lists drawn from resident copies, either preset | 0 | 122 |
+
+At a static hub2 view the rings take 285 kB a frame at Quality where they
+took 470, and 543 at Balanced where they took 678. In the combat wave at
+Quality 407 kB of index lists a frame are drawn from resident copies, and at
+the player start of four other maps 29 (`game/airdefense2`), 38
+(`game/storage2`), 90 (`game/medlabs`) and 108 kB (`game/mcc_1`).
+
+**Time.** Not resolved. At the static view at Quality, phases of 900 frames
+alternating in one launch, the two pairs that ran undisturbed were each 0.035
+ms a frame lower with the lists resident (4.10 against 4.13 and 4.24 against
+4.27), which is two steps of that clock at this phase length. Other sessions
+then loaded the machine until the client drew 17 frames a second, and the
+rest of that launch and the Balanced one are void. A later launch, read by
+the thread's cycle count instead (exact where the accounted time moves in
+steps), did not resolve it on the busy machine either: 6.16 against 6.18 ms,
+with phases of either kind moving by 0.7 ms. Section 24's price for a
+megabyte puts the 0.12 MB of the sweep at 0.05 to 0.11 ms a frame.
+
+**Exactness.** With `r_vkStaticGeometry 2`, which compares every resident
+stream with its source at every draw: 329,735 draws of resident streams,
+none different, in hub2 at Balanced and Quality, the combat wave, the player
+start of four other maps and a second map loaded in the same launch, where
+every block of the first map is freed and its headers come back with new
+serials. Pictures of a frozen world are identical in every pixel with the
+lists resident and copied, at Quality and at Balanced.
+`renderer_vulkan_static_geometry` and `renderer_vulkan_gui_upload` run the
+real functions: the delay, the owner, a light interaction's triangles (with a
+subset and with the surface's own list), a frame's copy, a surface without a
+list, another list under the same block, a recycled header, both switches,
+the comparison mode, the gate on the vertex stream and the 2D case; all
+34 deliberate breakages of sections 24 and 25 fail one of the two.
+
+**Not covered.** As in section 24: the render thread modes were not run, the
+buffer's eviction under pressure was exercised only by the test, and nothing
+was run on Linux beyond the two tests and GCC's and Clang's syntax checks.
+
+### 25.3 What the rings still take
+
+hub2 view sweep, one revolution, kB a frame:
+
+| | Balanced | Quality |
+| --- | ---: | ---: |
+| Everything | 671 | 691 |
+| Volume vertices (models that animate) | 113 | 0 |
+| Volume index lists (volumes cast from entity surfaces) | 162 | 0 |
+| Vertex streams that are not resident | 177 | 428 |
+| Index lists | 167 | 197 |
+| ... of light interactions over a resident surface | 107 | 102 |
+
+The two index rows that remain have one thing in common: a light
+interaction's index subset and the index list of a volume cast from an
+entity's surface both belong to an interaction, not to a surface, and no
+vertex cache block shares their life. A static interaction keeps both for as
+long as neither its light nor its entity changes. Giving such a list an index
+cache block of its own once the interaction has lasted would let both become
+resident; that is a change to the front end, for Vulkan only. The 0.4 MB of
+vertex streams that are not resident at Quality is still not looked into.
+[Section 26](#26-the-vertex-streams-quality-copies-every-frame-fps-08-26-november-2026) looks into it.
+
+## 26. The vertex streams Quality copies every frame (FPS-08), 26 November 2026
+
+Section 25.3's last line, looked into with section 24's method and machine.
+It ends in a finding and one counter; nothing in what is drawn changes.
+
+### 26.1 What they are
+
+Models that are built anew every frame: skinned meshes, almost all of it.
+
+| hub2 view sweep, one revolution, a frame | Balanced | Quality | Quality, `r_shadowMapConservativeCasters 0` |
+| --- | ---: | ---: | ---: |
+| Vertex streams copied into the ring, kB | 183 | 427 | 318 |
+| ... of models generated anew each frame, kB | 156 | 401 | 292 |
+| Streams of such models | 3.2 | 8.4 | 7.5 |
+
+What is left at Quality is 24 kB of frame-temporary geometry (deforms and
+effects), up to 18 kB of streams still inside the 150 ms before they become
+resident, 1.5 kB of 2D and under 1 kB of small rigid surfaces rebuilt each
+frame.
+
+A counter in the upload, taken out again afterwards, sorted every stream that
+went to the ring by the reason the resident cache gave for refusing it:
+
+- *The cache is right to refuse them.* Every one of these streams sat in a
+  block whose header had been seen with another serial. A skinned mesh frees
+  its vertex caches and takes new ones each time it is posed
+  (`idMD5Mesh::UpdateSurface`), so no block of it lives the 150 ms a resident
+  copy asks for, and none should.
+- *None is copied twice.* Of 11,167 such streams in the Quality window, none
+  had been copied earlier in its frame: the per-frame memo holds between the
+  shadow-map passes and the view.
+- *Most of them really move.* A hash of each stream against the same
+  surface's previous one: 83% of the bytes at Quality differed (88% at
+  Balanced). The other 17%, 70 kB a frame, are meshes posed again into the
+  pose they already had.
+- *Why Quality has more.* A shadow map draws the caster itself, where a
+  stencil shadow draws a volume built from it. A skinned mesh whose shadow is
+  in view while the mesh is not reaches the card as a volume at Balanced (the
+  113 kB of volume vertices in 25.3, 32 bytes a vertex) and as the mesh's
+  whole vertex stream at Quality (64 bytes a vertex). On top of that,
+  `r_shadowMapConservativeCasters` (on by default) submits casters whose own
+  interaction is not visible: 109 kB a frame of the 427, and a larger share
+  of the meshes that did not move (about 30% of those bytes were unchanged).
+
+In the combat wave at Quality, three windows at different moments of the
+fight: 1,103 of 2,024 kB a frame, 738 of 1,627 and 541 of 783 belonged to
+generated models. The rest was not broken down there.
+
+### 26.2 What was decided
+
+Nothing is wasted in the way the earlier sections found waste: this is
+geometry that changes, copied once. By section 24's price for a megabyte it
+costs 0.16 to 0.36 ms a frame at Quality in this sweep and 0.06 to 0.14 at
+Balanced. Three ways to make it smaller were weighed and none was taken:
+
+- *Position-only caster streams.* A mesh that only shadow maps draw needs its
+  positions, 12 bytes of the 64 (and texture coordinates where its material
+  is perforated). By the difference between the presets about 245 kB a frame
+  are such meshes, so the bound is about 200 kB, 0.08 to 0.18 ms. It needs a
+  second vertex layout in the caster pipelines and the knowledge, at the
+  first upload, that the view will not draw the mesh later in the frame.
+- *The conservative caster rule.* 109 kB a frame here, with the skinning and
+  the shadow-map draws of those meshes. It is a rule about which shadows are
+  right, not about uploads, and was left as it is; the figure is what it
+  costs in this view.
+- *Meshes posed into the same pose.* 70 kB a frame at Quality. Skipping them
+  means the front end knowing a pose has not changed before it skins, which
+  would save the skinning as well; the entities concerned were not
+  identified.
+
+Skinning on the graphics card (`r_gpuSkinning`) is what would take the whole
+row away, and has prerequisites of its own.
+
+### 26.3 The counter that stays
+
+With `r_vkResourceProfile 1`, `rendererVulkanMemoryInfo` prints
+`deformedVertexBytes` beside `vertexStreamBytes`: of the vertex streams copied
+into the ring, those of models generated anew each frame, the subsets a light
+interaction draws over one included. It is the "generated" row above, so the
+split can be read on any map without the temporary counter.
+`renderer_vulkan_gui_upload` runs the real upload for it (a generated model,
+a light's subset over one, a rigid surface, a resident stream); with three
+more deliberate breakages, all 37 of sections 24 to 26 fail one of the two
+tests. GCC's and Clang's syntax checks and both tests pass on Linux.
+
+**Not covered.** The classification is one view sweep in one map; the combat
+wave has only the counter's two numbers. The 17% and the 245 kB are read from
+one launch each, and the second is a difference between two presets, not a
+count of caster-only meshes.
+
+## 27. An interaction's index lists on Vulkan (FPS-08), 26 November 2026
+
+Section 25.3's lead, taken up with section 24's method and machine. Two kinds
+of index list belong to a light interaction, not to a surface: the part of a
+surface a light reaches (its light triangles), and a stencil volume cast from
+an entity's surface, which borrows that surface's vertex block. Vulkan copied
+both into the frame's index ring every frame, about 105 kB a frame of light
+triangles over resident surfaces in the hub2 view sweep at either preset.
+
+### 27.1 What changed
+
+Such a list has no identity the executor can trust. It lives on the heap, and
+when its interaction is rebuilt the same address can come back with the same
+length and other triangles. Sections 24 and 25 got an identity from the
+vertex block a list shares its life with; these lists share none.
+
+The front end has always had a place for one: a surface's `indexCache`, a
+vertex cache block for its index list, filled only where `r_useIndexBuffers`
+says a buffer object draws faster, which is off by default and means nothing
+to Vulkan, whose vertex cache is plain memory. So in the Vulkan module a
+surface interaction that has lasted is given such blocks for its own lists
+(`R_InteractionIndexBlockDue`), and the executor keeps a resident copy under
+the block exactly as it does for a vertex stream
+(`VK_StaticGeo_InteractionIndexOffset`): the block's serial is the list's
+identity, and the block is freed with the surface that holds the list.
+
+- *Lasting.* A surface interaction is stamped when it is first linked into a
+  view and is due its blocks 150 ms later. One that is rebuilt every tic (a
+  moving light, an animated model) has its surfaces freed, the stamp with
+  them, before that, so nothing is allocated and freed again for it each
+  frame. The time is read once a frame, so every view of a frame answers
+  alike. With the executor's own 150 ms a list is resident about 0.3 s after
+  its interaction is first drawn.
+- *Only lists nothing else covers.* A volume with projected vertices owns its
+  vertex block and its list rides on that (24.2). A light that reaches the
+  whole surface draws the surface's own list (25.1). A packed surface's light
+  triangles are a frame's copy with a frame's block. None of the three is
+  given a block.
+- *Only while it would be used.* No blocks while a frame snapshot for the
+  render thread would copy them (its copies are not served), with
+  `r_vkStaticGeometry 0`, or when the device refused the resident buffer.
+- *Only the surface that owns the block*, and only for the whole block: a
+  frame's copy of the surface is refused, as in 25.1. The lookup comes after
+  the per-frame memo, after the surface's own (25.1) in the upload and after
+  the volume's own (24.2) in the shadow bind.
+- The block holds a copy of the list. `r_vkStaticGeometry 2` therefore
+  compares the resident copy with the block and the block with the list
+  drawn from, at every draw.
+
+`r_vkStaticInteractionIndexes 0` copies these lists as before and gives no
+further list a block; blocks already given stay until their interactions go.
+`rendererVulkanMemoryInfo` prints the bytes drawn from resident copies.
+
+### 27.2 Result
+
+| hub2 view sweep, one revolution, kB a frame | Copied | Resident |
+| --- | ---: | ---: |
+| Balanced: into the frame rings, everything | 656 | 535 |
+| Balanced: surfaces' index lists into the ring | 154 | 56 |
+| Balanced: volumes' index lists into the ring | 163 | 138 |
+| Quality: into the frame rings, everything | 687 | 589 |
+| Quality: index lists into the ring | 194 | 96 |
+| Interactions' lists drawn from resident copies, Balanced | 0 | 124 |
+| ... at Quality | 0 | 100 |
+
+Of the volumes' lists only 25 kB a frame become resident while the world
+plays: the rest belong to models that animate. With the world frozen all of them do,
+and the rings take 186 kB a frame at Balanced where they took 556, and 180
+at Quality where they took 282.
+
+Elsewhere, interactions' lists drawn from resident copies, kB a frame: 171
+to 181 in the combat wave at Quality, and at the player start of four other
+maps 82 (`game/airdefense2`), 0 (`game/storage2`), 54 (`game/medlabs`) and
+400 (`game/mcc_1`).
+
+**Memory.** After one revolution of the sweep at Balanced 521 blocks hold
+0.26 MB of lists a second time in main memory, and the resident buffer holds
+3.10 MB where it held 2.83, of 96.
+
+**Time.** Not measured. Other sessions' builds held the machine at full load
+for most of this work, and sections 24 and 25 showed that an effect of this
+size does not come out of that. Section 24's price for a megabyte puts the
+0.10 to 0.12 MB of the sweep at 0.04 to 0.11 ms a frame. Against it stand one
+touch of each block's place in the vertex cache's list a frame and a lookup
+in the resident table where a copy was made; neither was priced.
+
+**Exactness.** With `r_vkStaticGeometry 2`: 285,610 draws of resident
+streams, none different, in hub2 at Balanced and Quality, the combat wave,
+the player start of four other maps and a second map loaded in the same
+launch. Pictures of a frozen world are identical in every pixel with the
+lists resident, copied and resident again, at Quality and at Balanced.
+`renderer_vulkan_static_geometry` runs the real lookup and the front end's
+real rule: the delay on both sides, the owner, a frame's copy, part of a
+block, a block that is not an index block, a recycled header, a volume cast
+from a surface, the switches, both comparisons, the clock read once a frame,
+an interaction rebuilt every tic, the render thread and a refused buffer;
+`renderer_vulkan_gui_upload` runs the real upload for the order of the three
+answers. All 62 deliberate breakages of sections 24 to 27 fail one of the
+two. GCC's and Clang's syntax checks of the front end in the OpenGL, OpenGL
+ES and Vulkan modules pass on Linux, with both tests, and a hidden OpenGL
+session in hub2 ran as before.
+
+**Not covered.** The render thread modes were not run: the rule stands down
+there by reading, and by the test. The lists' blocks are never purged while
+their interactions live (the vertex cache purges nothing), so a level in
+which very many static interactions are each drawn once keeps them all; hub2
+is the only total that was read. Nothing was run on Linux beyond the tests
+and the syntax checks.
+
+### 27.3 What the rings still take
+
+hub2 view sweep, one revolution, kB a frame:
+
+| | Balanced | Quality |
+| --- | ---: | ---: |
+| Everything | 535 | 589 |
+| Volume vertices (models that animate) | 113 | 0 |
+| Volume index lists (models that animate) | 138 | 0 |
+| Vertex streams (models that animate, section 26) | 177 | 428 |
+| Index lists | 56 | 96 |
+
+What is left is geometry that is built anew every frame or every tic, with
+the lists that go with it: the meshes of section 26, their shadow volumes at
+Balanced, and the light triangles of interactions that are rebuilt. Nothing
+static of any size is copied in this view any more. The ways further down
+are section 26.2's, and skinning on the graphics card.

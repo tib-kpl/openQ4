@@ -15,7 +15,8 @@ hardware, so please report how it runs on yours (see
 
 **In this guide:** [what you need](#what-you-need) ·
 [quick start](#quick-start) · [turning VR on](#turning-vr-on) ·
-[controls](#controls) · [aiming and weapons](#aiming-and-weapons) ·
+[VR Mode and headset detection](#vr-mode-and-headset-detection) ·
+[menus in VR](#menus-in-vr) · [controls](#controls) · [aiming and weapons](#aiming-and-weapons) ·
 [your body](#your-body) · [comfort](#comfort) ·
 [seated or standing](#seated-or-standing) · [display](#display) ·
 [performance](#performance) · [weapon position](#weapon-position) ·
@@ -30,8 +31,10 @@ hardware, so please report how it runs on yours (see
    monitor.
 2. Start your headset's software (for example SteamVR or the Meta Quest Link
    app) and make it your system's active OpenXR runtime.
-3. Start openQ4, open **Settings → Game Options → Virtual Reality** and turn
-   **VR Mode** on (Enabled in the classic menus). The headset shows the menu on a floating screen.
+3. Start openQ4, open **Settings → Game Options → Virtual Reality** and set
+   **VR Mode** to **On** or **Automatic**. The headset shows the menu on a
+   floating screen. (**Not in 0.15.0:** if a VR runtime is installed, the title
+   screen asks once whether to play in VR by itself; **Yes** sets Automatic.)
 4. Stand (or sit) where you want to play, face forwards, and hold the
    weapon-hand thumbstick in for a second to recentre.
 5. Point at the menu with your right controller: a dot shows where it points,
@@ -66,9 +69,9 @@ on the same tab. If nothing appears in the headset, see
 ## Turning VR on
 
 1. Start your headset and its OpenXR runtime (for example SteamVR).
-2. In openQ4, open **Settings → Game Options → Virtual Reality** and turn
-   **VR Mode** on (Enabled in the classic menus). VR starts at once. The setting is saved, so the next
-   launch starts in VR too.
+2. In openQ4, open **Settings → Game Options → Virtual Reality** and set
+   **VR Mode** to **On** (or **Automatic**, below). VR starts at once. The
+   setting is saved, so the next launch starts in VR too.
 
 In the headset, point at a tab and pull the trigger to open it, or squeeze the
 weapon-hand grip to step to the next tab. The Virtual Reality tab holds the
@@ -78,11 +81,62 @@ the laser sight, vibration, the two-handed grip, the comfort vignette, physical
 crouching, the play space and (**not in 0.14.1**) your own body. The tables in
 this guide list every setting, including those you can only set in the console.
 
-When VR is on, the desktop window shows what your left eye sees. To turn VR off,
-turn **VR Mode** off again (Disabled in the classic menus; you can point at it in the headset).
+When VR is on, the desktop window shows what your left eye sees, or the
+floating screen while a menu is up (**not in 0.15.0**). To turn VR off, set
+**VR Mode** to **Off** again (you can point at it in the headset).
 
-From the console, `vr_enable 1` and `vr_enable 0` do the same, and you can
-launch with `+set vr_enable 1`.
+From the console, `vr_enable 1` and `vr_enable 0` do the same, `vr_enable 2`
+is Automatic, and you can launch with `+set vr_enable 1`.
+
+## VR Mode and headset detection
+
+**Not in 0.15.0.** VR Mode has three choices:
+
+- **Off** never asks your VR software for anything, so openQ4 starts exactly
+  as a desktop game.
+- **On** plays in VR whenever a headset is there, and waits for one that isn't
+  connected yet. This is what turning VR Mode on always did.
+- **Automatic** asks your VR runtime for a headset as the game starts. If one
+  answers, the game starts in VR (on OpenGL, when the renderer is left to
+  choose itself); if none does, it plays on the desktop. A headset you switch
+  on later doesn't take over in the middle of a fight: the menus show
+  **VR headset found** with **Play in VR**, and you switch when you're ready
+  (`vr_start` does the same).
+
+openQ4 finds your VR runtime by reading which one is set as active, without
+starting it: `XR_RUNTIME_JSON`, then on Windows the Khronos registry key, on
+Linux the `openxr/1/active_runtime.json` files. Only On, Automatic or **Look
+for Headset** actually ask the runtime, because asking can start it (SteamVR
+opens when a game first asks for it). With Automatic and SteamVR, expect
+SteamVR to open with openQ4.
+
+The first time openQ4 finds a VR runtime installed and you've never chosen a
+VR Mode, the title screen asks once: **play in VR by itself whenever a headset
+is connected?** **Yes** sets Automatic; **No** keeps VR off. Either answer is
+remembered and the question doesn't come back; `vr_offer reset` asks again.
+
+**Look for Headset** on the Virtual Reality tab (or `vr_detect`) asks the
+runtime now, whatever VR Mode is, and tells you what it found. Every decision
+is written to the log as a `VR_RUNTIME`, `VR_MODE`, `VR_OFFER` or `VR_DETECT`
+line, which helps when you report a problem.
+
+## Menus in VR
+
+**Not in 0.15.0.** While you play in the headset the menus adapt to it:
+
+- **VR SETUP** opens over the title or pause menu the first time VR starts:
+  seated or standing, **Measure My Height**, **Recentre View**, snap or smooth
+  turning, your weapon hand and the comfort vignette. Open it again from
+  **VR SETUP** next to EXIT on the pause menu, **Comfort Setup** on the
+  Virtual Reality tab, or `vr_setup`.
+- **Settings → Game Options** opens on the Virtual Reality tab.
+- Settings that only change the desktop view leave the page while you're in
+  VR: the flat gun's position and field of view, and stereoscopic 3D.
+- Menu text is at least 25% larger (`ui_retainedVRTextScale`, from 1 to 2),
+  so it reads at the floating screen's distance.
+- Typing a name or a server address opens the game's own on-screen keyboard,
+  which you point at and click, instead of your desktop's.
+- Prompts show the controller's buttons, and the laser dot is the pointer.
 
 ### When the headset or runtime goes away
 
@@ -146,8 +200,10 @@ use these instead (**not in 0.14.1**; before, some had no flashlight or jump):
 
 Menus open on a floating screen in front of you, and the game world stays around
 you while the game is paused. Point your weapon-hand controller at the screen:
-a dot shows where it points, and the trigger clicks there like a mouse. The
-sticks and the A and B buttons work in menus too.
+a round dot shows where it points, and the trigger clicks there like a mouse. The
+sticks and the A and B buttons work in menus too. Button prompts name your
+controller's buttons while you point (**after 0.15.0**; in 0.15.0 pointing
+switched them to keyboard keys, and the dot was square).
 
 In single player, screens in the world, such as door panels, lift calls and
 terminals, answer your weapon hand the same way: point at one and its cursor
@@ -180,7 +236,9 @@ weapon hand, where a rifle's foregrip would be, and squeeze its grip. The
 off-hand controller buzzes briefly, and the gun then points from your rear hand
 through your front hand until you let go. Squeezing the off-hand grip anywhere
 else opens the weapon wheel: turn your weapon hand towards the weapon you want
-and let go of the grip to switch to it.
+and let go of the grip to switch to it. **After 0.15.0** you can instead push
+the weapon-hand stick towards the weapon, so your gun stays on its target while
+you choose; the stick doesn't turn you while the wheel is open.
 
 The off-hand trigger zooms with a scoped weapon, such as the machinegun or the
 railgun: your whole view magnifies as the scope would, and the laser dot is
@@ -211,7 +269,8 @@ stand, and arms that run from your shoulders to your hands.
 - Duck, lean or crouch in your room and your knees bend to follow, with your
   feet on the floor.
 - Your weapon hand stays on the gun's grip, and your arm bends at the elbow to
-  reach it wherever you hold it.
+  reach it wherever you hold it. **After 0.15.0** the hands are the size of
+  your body's (see [weapon position](#weapon-position)).
 - Your other hand follows its own controller. It goes back to the gun when you
   take the two-handed grip, and while the gun needs it: to reload, and to draw
   a weapon or put it away.
@@ -330,7 +389,7 @@ and the size of your play area.
 | `vr_worldScale` | 39.37 | game units per metre; lower makes the world feel bigger |
 | `vr_hudDistance` | 1.4 | HUD distance in metres |
 | `vr_hudWidth` | 1.2 | HUD width in metres |
-| `vr_hudHeightOffset` | -0.1 | HUD height relative to your eyes, in metres, when you aim with the controller (head aiming centres the HUD so its crosshair lines up) |
+| `vr_hudHeightOffset` | -0.3 | HUD height relative to your eyes, in metres, when you aim with the controller (head aiming centres the HUD so its crosshair lines up) |
 | `vr_screenDistance` | 2.5 | menu and cinematic screen distance in metres |
 | `vr_screenWidth` | 3.0 | menu and cinematic screen width in metres |
 | `vr_mirror` | 1 | desktop window: 0 black, 1 left eye, 2 the floating screen |
@@ -346,6 +405,14 @@ nothing.
 The floating screen and the HUD take the shape of the game window, so menus
 look the same as on your monitor. Mirrors and other reflective surfaces show
 each eye its own reflection.
+
+**After 0.15.0**, when you aim with the controller, the HUD hangs below your
+line of sight, its top edge at about eye level: glance down for your health
+and ammunition, and the middle of your view stays clear for what you are
+shooting at. In 0.15.0 it sat 0.1 m below eye level, with its panels around
+the middle of your view. If your configuration still holds that old height,
+openQ4 moves it to the new one once; any other height you chose stays. For the
+old placement, set `vr_hudHeightOffset -0.1`.
 
 Multiplayer objective markers show flag bases and DeadZone zones on the HUD.
 Their symbols show status, with distance as the only text. They follow your
@@ -381,8 +448,16 @@ eyes, and dynamic resolution stays off, so the image stays steady.
 
 ## Weapon position
 
-Each gun appears full size in your hand, gripped where its own model holds it,
-with its barrel pointing along your controller's aim and the laser. If a gun
+Each gun appears in your hand gripped where its own model holds it, with its
+barrel pointing along your controller's aim and the laser. Quake 4 builds its
+first-person guns, and the hands holding them, at about half life size, which
+a flat screen never shows. **After 0.15.0** openQ4 draws them 1.75 times as
+large in VR, so the hands match your own body's arms and the machinegun is
+about as long as a real rifle; in 0.15.0 the hands looked like a child's.
+A long gun reaches further back too: held close to your chest, the rocket
+launcher's rear comes up to your face, as a real one would rest on your
+shoulder, so hold it a little further out. `vr_weaponScale` sets the size,
+and 1 draws them as modelled. If a gun
 still doesn't sit naturally, nudge it relative to the controller:
 
 | Setting | Default | Direction |
@@ -391,6 +466,7 @@ still doesn't sit naturally, nudge it relative to the controller:
 | `vr_weaponOffsetY` | 0 | to the controller's left |
 | `vr_weaponOffsetZ` | 0 | up |
 | `vr_weaponPitch` | 0 | tilt in degrees; positive tilts down |
+| `vr_weaponScale` | 1.75 | size of the gun and the hands holding it, from 0.5 to 3; 1 is the size Quake 4 models them at (**after 0.15.0**) |
 
 If you played an earlier openQ4 VR build, its old offsets of -5 and -3 push the
 gun out of your hand, so openQ4 resets that pair to 0 once at startup.
@@ -486,8 +562,9 @@ resolution and refresh rate openQ4 is using. `vr_debug 1` logs session events.
   about your room never causes it, so room scale is the gentlest way to move.
 - **The world feels too big or too small**: change `vr_worldScale` (lower makes
   the world bigger).
-- **The HUD is hard to read or too close**: change `vr_hudDistance`,
-  `vr_hudWidth` and `vr_hudHeightOffset`.
+- **The HUD is hard to read, too close, or in the way**: change `vr_hudDistance`,
+  `vr_hudWidth` and `vr_hudHeightOffset` (more negative hangs it lower).
+- **The gun or the hands look too big or too small**: change `vr_weaponScale`.
 - **One arm hangs at your side**: its controller has lost tracking (asleep,
   out of the sensors' view, or its battery is flat). It follows again as soon
   as the runtime tracks it.
@@ -543,7 +620,14 @@ General settings (the others are in the sections above):
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| `vr_enable` | 0 | 1 plays in VR (**VR Mode** on the Virtual Reality tab); takes effect at once |
+| `vr_enable` | 0 | **VR Mode** on the Virtual Reality tab: 0 off, 1 on (plays in VR whenever a headset is there), 2 automatic (**not in 0.15.0**: VR when a headset answers at launch, else the desktop, offering one that connects later); takes effect at once |
+| `vr_offerAnswered` | 0 | **Not in 0.15.0.** 1 once you answered the title screen's one-time question about playing in VR |
+| `vr_setupDone` | 0 | **Not in 0.15.0.** 1 once VR SETUP opened at your first VR entry |
+| `vr_detect` | | **Not in 0.15.0.** Command: asks your VR runtime for a headset now and reports it |
+| `vr_start` | | **Not in 0.15.0.** Command: with Automatic, plays in VR on a headset it found after launch |
+| `vr_setup` | | **Not in 0.15.0.** Command: opens VR SETUP over the title or pause menu |
+| `vr_offer` | | **Not in 0.15.0.** Command: `status`, `yes`, `no`, `open`, or `reset` to ask the one-time question again |
+| `ui_retainedVRTextScale` | 1.25 | **Not in 0.15.0.** Menu text size while in VR, at least your usual text size |
 | `vr_pauseOnFocusLoss` | 1 | single player: 1 opens the pause menu when the headset comes off or its own menu takes the controllers |
 | `vr_mirror` | 1 | desktop window: 0 black, 1 left eye, 2 the floating screen |
 | `vr_debug` | 0 | 1 logs VR session events, 2 also logs every frame (for problem reports) |

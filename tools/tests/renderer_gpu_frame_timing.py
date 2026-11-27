@@ -245,7 +245,7 @@ def main() -> int:
         require(public_header, token, "public renderer module ABI")
 
     module_api = read(RENDERER / "RenderModuleAPI.h")
-    require(module_api, "#define RENDER_API_VERSION\t\t\t38", "renderer module ABI v38")
+    require(module_api, "#define RENDER_API_VERSION\t\t\t39", "renderer module ABI v39")
 
     core = read(RENDERER / "GpuFrameTimingCore.h")
     require(core, "elapsedMicroseconds == 0", "zero-duration rejection")
@@ -387,6 +387,11 @@ def main() -> int:
         require(vk_gui, token, "feedback capture phase attribution")
     for token in ('"feedbackDepthResolve"', '"feedbackDepthCopy"', '"feedbackColor"'):
         require(vk_timing, token, "feedback capture phase names")
+    # REN-12: the depth of field's captures, passes and composite are one phase.
+    vk_post = read(RENDERER / "Vulkan" / "vk_PostProcess.cpp")
+    require(function_body(vk_post, "static bool VK_Post_DepthOfField("),
+            "vkGpuPhaseScope timing( VK_Exec_ActiveCmd(), VK_GPU_PHASE_DOF );", "depth of field phase attribution")
+    require(vk_timing, '"dof"', "depth of field phase name")
     copy_render = function_body(vk_gui, "bool VK_Exec_CopyRender(")
     require(copy_render, "!r_vkDepthCaptureLayoutReference.GetBool() ) ) {",
             "depth captures keep the source in its attachment layout unless the reference is asked for")

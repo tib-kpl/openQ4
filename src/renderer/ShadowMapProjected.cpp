@@ -22,6 +22,7 @@ void R_ShadowMapResetProjectedLightState( shadowMapProjectedLightState_t &state 
 	for ( int matrixIndex = 0; matrixIndex < 16; matrixIndex++ ) {
 		state.baseShadowMatrix[matrixIndex] = ( matrixIndex == 0 || matrixIndex == 5 || matrixIndex == 10 || matrixIndex == 15 ) ? 1.0f : 0.0f;
 	}
+	state.receiverBiasScale = 1.0f;
 	for ( int i = 0; i < SHADOWMAP_PROJECTED_MAX_CASCADES; i++ ) {
 		state.splitDepths[i] = 1.0e30f;
 		state.biasScale[i] = 1.0f;
@@ -275,6 +276,18 @@ static float R_ShadowMapProjectedFarPlaneWidth( const viewLight_t *vLight ) {
 		return distantWidth;
 	}
 	if ( parms.parallel ) {
+		// The width the orthographic map really spans: its S and T rows turn a
+		// world unit into 1 / halfWidth of clip space, and the wider of the two
+		// sets the texel. The box's largest radius is neither: a sun slanting
+		// across its box covers the box's diagonal, and one shining down the
+		// box's long axis covers only its short sides.
+		idPlane parallelPlanes[4];
+		if ( R_ShadowMapBuildParallelClipPlanes( vLight, parallelPlanes ) ) {
+			const float across = Min( parallelPlanes[0].Normal().Length(), parallelPlanes[1].Normal().Length() );
+			if ( across > idMath::FLOAT_EPSILON ) {
+				return 2.0f / across;
+			}
+		}
 		return 2.0f * Max( Max( idMath::Fabs( parms.lightRadius[0] ), idMath::Fabs( parms.lightRadius[1] ) ), idMath::Fabs( parms.lightRadius[2] ) );
 	}
 	if ( parms.pointLight ) {
@@ -457,22 +470,28 @@ bool R_ShadowMapClipPlanesMirrorWinding( const idPlane clipPlanes[4] ) {
 	return determinant < 0.0;
 }
 
-// Measured on 23 November 2026 (shadowmapping-audit-2026-11-09.md, "What the
-// stock volumes hold"): for the two synthesized projections, parallel and
-// distant point, this verdict leaves open casters storing the triangles
-// turned towards the light and sealed hulls their far shell, the reverse of
-// what R_ShadowMapCasterFaces intends. The static world of such a light does
-// not depend on it (the prelight front caps are stored in both windings);
-// its other casters do. Not changed: see the audit for what a correction
-// costs and what it needs first.
+// For the two synthesized projections, parallel and distant point, the
+// determinant calls the picture mirrored (their axes come from NormalVectors,
+// a left-handed pair), and the faces a caster pass kept on that verdict were
+// measured to be the reverse of the ones asked for: open geometry stored its
+// light-facing triangles and sealed hulls their far shell
+// (shadowmapping-audit-2026-11-09.md, "What the stock volumes hold"). With
+// the verdict turned, mcc_landing's light_9083 drawn from whole world
+// surfaces goes from 48.9% of a view shadowed where stencil lights to 0.01%,
+// the same as from its prelight caps. Authored projectors keep the
+// determinant, which measures right for them (storage2's alarm lights, hub2's
+// light_7984). With r_shadowMapDistantFarShell 0 the earlier verdict stands.
 bool R_ShadowMapLightMirrorsCasterWinding( const viewLight_t *vLight ) {
 	if ( vLight == NULL || R_ClassifyShadowMapLight( vLight ).pointLight ) {
 		return false;
 	}
 	idPlane clipPlanes[4];
 	R_ShadowMapBuildBaseClipPlanesForLight( vLight, clipPlanes );
-	return R_ShadowMapClipPlanesMirrorWinding( clipPlanes );
+	const bool mirrored = R_ShadowMapClipPlanesMirrorWinding( clipPlanes );
+	return R_ShadowMapLightStoresFarShell( vLight ) ? !mirrored : mirrored;
 }
+
+extern idCVar r_shadowMapDistantFarShellBias;
 
 // World distance over which the stored falloff depth spans 0..1. The depth
 // row is the authored falloff plane (clipPlanes[2] = lightProject[3]), whose
@@ -494,6 +513,15 @@ static float R_ShadowMapLightWorldTexelSize( const viewLight_t *vLight, const in
 	}
 
 	idVec3 radius = vLight->lightRadius;
+	if ( vLight->lightDef != NULL && vLight->lightDef->parms.parallel ) {
+		// A parallel light's map spans its orthographic footprint and nothing
+		// else. Its lightCenter is a direction, of whatever length the mapper
+		// typed, and the box's depth along the rays is not width in the map.
+		const float footprint = R_ShadowMapProjectedFarPlaneWidth( vLight );
+		if ( footprint > 0.0f ) {
+			return footprint / Max( 1, tileSize );
+		}
+	}
 	if ( vLight->lightDef != NULL ) {
 		const renderLight_t &parms = vLight->lightDef->parms;
 		radius[0] = Max( idMath::Fabs( radius[0] ), idMath::Fabs( parms.lightRadius[0] ) + idMath::Fabs( parms.lightCenter[0] ) );
@@ -534,9 +562,11 @@ float R_ShadowMapTexelDepthStep( const float worldTexelSize, const float depthRa
 }
 
 void R_ShadowMapProjectedTexelDepthSteps( const shadowMapProjectedLightState_t &state, float steps[SHADOWMAP_PROJECTED_MAX_CASCADES] ) {
+	// the steps size the receiver's texel bias and its filter taps' bias
+	const float scale = Max( 0.0f, state.receiverBiasScale );
 	for ( int cascadeIndex = 0; cascadeIndex < SHADOWMAP_PROJECTED_MAX_CASCADES; cascadeIndex++ ) {
 		steps[cascadeIndex] = cascadeIndex < state.cascadeCount
-			? R_ShadowMapTexelDepthStep( state.worldTexelSize[cascadeIndex], state.depthRange[cascadeIndex] )
+			? R_ShadowMapTexelDepthStep( state.worldTexelSize[cascadeIndex], state.depthRange[cascadeIndex] ) * scale
 			: 0.0f;
 	}
 }
@@ -576,7 +606,7 @@ float R_ShadowMapProjectedNormalOffsetWorld( const shadowMapProjectedLightState_
 	if ( cascadeIndex < 0 || cascadeIndex >= SHADOWMAP_PROJECTED_MAX_CASCADES ) {
 		return 0.0f;
 	}
-	const float scale = Max( 0.0f, normalOffsetScale );
+	const float scale = Max( 0.0f, normalOffsetScale ) * Max( 0.0f, state.receiverBiasScale );
 	if ( depthScaled && scale > 0.0f && state.texelPerDepth[cascadeIndex] > 0.0f ) {
 		return -( state.texelPerDepth[cascadeIndex] * scale );
 	}
@@ -596,7 +626,14 @@ static void R_ShadowMapTransformPointToClip( const idVec3 &point, const idPlane 
 // whose texel size changes each frame.
 static const float SHADOWMAP_CASCADE_EXTENT_LADDER = 1.25f;
 
-float R_ShadowMapQuantizeCascadeExtent( const float rawExtent, const int tileSize ) {
+// An extent taken from the slice's bounding sphere (R_ShadowMapSliceStableBox)
+// does not follow the view's direction at all, only where the eye stands, so
+// its ladder can be much finer: the coarse one would throw away up to a
+// quarter of the resolution to absorb a breathing that is not there. Eight
+// steps to a doubling: a step for each tenth of the way to a distant source.
+static const float SHADOWMAP_CASCADE_STABLE_EXTENT_LADDER = 1.0905077f;
+
+float R_ShadowMapQuantizeCascadeExtent( const float rawExtent, const int tileSize, const float ladder ) {
 	const float minExtent = 2.0f / Max( 1, tileSize );
 	if ( rawExtent <= minExtent ) {
 		return minExtent;
@@ -604,8 +641,13 @@ float R_ShadowMapQuantizeCascadeExtent( const float rawExtent, const int tileSiz
 	if ( rawExtent >= 1.0f ) {
 		return 1.0f;
 	}
-	const float steps = ceil( log( rawExtent / minExtent ) / log( SHADOWMAP_CASCADE_EXTENT_LADDER ) - 1.0e-4f );
-	return Min( 1.0f, minExtent * idMath::Pow( SHADOWMAP_CASCADE_EXTENT_LADDER, steps ) );
+	const float step = ladder > 1.0f ? ladder : SHADOWMAP_CASCADE_EXTENT_LADDER;
+	const float steps = ceil( log( rawExtent / minExtent ) / log( step ) - 1.0e-4f );
+	return Min( 1.0f, minExtent * idMath::Pow( step, steps ) );
+}
+
+float R_ShadowMapQuantizeCascadeExtent( const float rawExtent, const int tileSize ) {
+	return R_ShadowMapQuantizeCascadeExtent( rawExtent, tileSize, SHADOWMAP_CASCADE_EXTENT_LADDER );
 }
 
 // One cascade texel spans (2 * extent / tileSize) in base NDC. Snapping the
@@ -619,20 +661,44 @@ float R_ShadowMapSnapCascadeCenter( const float rawCenter, const float quantized
 	return floor( rawCenter / snapStep + 0.5f ) * snapStep;
 }
 
+// The share of a fitted crop left for the slice itself once the guard is
+// taken out of it. The guard is counted in texels of the crop being fitted,
+// as the receivers count it (ShadowAtlasGuardBand clamps every tap
+// guardTexels of the sampled tile inside its edge), and one such texel is
+// 2 * extent / tileSize of base clip space, so the guard grows and shrinks
+// with the crop:
+//   extent >= rawExtent + ( 2 * guardTexels + snap ) * extent / tileSize
+// where snap is the texel the stabilized centre may move by half of to either
+// side. Sizing the guard in texels of the base projection, as this did until
+// November 2026, reserved 1 / extent times too much: around Air Defense 1's
+// sun the guard alone was as wide as the nearest slice, and at Quality that
+// cascade drew at 0.91 units a texel where 0.58 holds every tap
+// (shadowmapping-audit-2026-11-27.md).
+static float R_ShadowMapCascadeGuardKeep( const float guardTexels, const int tileSize, const bool stabilize ) {
+	const float tile = static_cast<float>( Max( 2, tileSize ) );
+	const float reserved = 2.0f * Max( 0.0f, guardTexels ) + ( stabilize ? 1.0f : 0.0f );
+	// a small tile under a wide filter keeps at least half of itself
+	return 1.0f - Min( 0.5f, reserved / tile );
+}
+
+// floorExtent is the half-width the crop keeps whatever is left of the slice
+// inside the projection (R_ShadowMapSliceStableBox): a slice sliding over the
+// light's edge would otherwise shrink its crop, and change its scale, on the
+// way out.
 static void R_ShadowMapFitCascadeAxis( float &minimum, float &maximum,
-		const float filterGuard, const int tileSize, const bool stabilize ) {
+		const float guardTexels, const int tileSize, const bool stabilize,
+		const float floorExtent = 0.0f ) {
 	// Only the intersection with the light projection needs coverage. Clipping
 	// after quantization could shrink the crop and change its texel scale.
 	minimum = idMath::ClampFloat( -1.0f, 1.0f, minimum );
 	maximum = idMath::ClampFloat( -1.0f, 1.0f, maximum );
 	float center = ( minimum + maximum ) * 0.5f;
-	float extent = Max( ( maximum - minimum ) * 0.5f + filterGuard,
+	float extent = Max( Max( ( maximum - minimum ) * 0.5f, Min( 1.0f, Max( 0.0f, floorExtent ) ) )
+			/ R_ShadowMapCascadeGuardKeep( guardTexels, tileSize, stabilize ),
 		2.0f / Max( 1, tileSize ) );
 	if ( stabilize ) {
-		// Reserve half a final texel for center snapping in addition to the
-		// filter guard: e >= rawExtent + guard + e / tileSize.
-		extent = R_ShadowMapQuantizeCascadeExtent(
-			extent / ( 1.0f - 1.0f / Max( 2, tileSize ) ), tileSize );
+		extent = R_ShadowMapQuantizeCascadeExtent( extent, tileSize,
+			floorExtent > 0.0f ? SHADOWMAP_CASCADE_STABLE_EXTENT_LADDER : SHADOWMAP_CASCADE_EXTENT_LADDER );
 		center = R_ShadowMapSnapCascadeCenter( center, extent, tileSize );
 		// Translate a boundary crop back into the projection; never trim it.
 		center = idMath::ClampFloat( -1.0f + extent, 1.0f - extent, center );
@@ -644,17 +710,179 @@ static void R_ShadowMapFitCascadeAxis( float &minimum, float &maximum,
 	}
 }
 
-static float R_ShadowMapProjectedKernelGuardNDC( const viewLight_t *vLight, const int tileSize ) {
-	const float texelStep = 2.0f / Max( 1, tileSize );
+extern idCVar r_shadowMapNormalOffsetScale;
+extern idCVar r_shadowMapWideSources;
+
+// Texels of a fitted cascade that a receiver inside the slice can sample away
+// from where it stands. The filter's share matches
+// shadow_interaction.fs::ShadowAtlasGuardBand exactly: in PCSS mode the
+// blocker search / maximum penumbra, not the base PCF radius, is the bound.
+// The normal offset moves the lookup as well, by its scale in texels of the
+// coarser axis at the depth the texel was sized for. Twice that covers a crop
+// twice as fine on one axis as on the other; and an authored projector, whose
+// texel is sized at its target (w = 1), offsets a receiver nearer the lamp by
+// 1 / w times as many of the texels there.
+static float R_ShadowMapProjectedCascadeGuardTexels( const viewLight_t *vLight, const idPlane baseClipPlanes[4], const float minSampleW ) {
 	const shadowMapProjectedFilterSettings_t filterSettings = R_ShadowMapProjectedFilterSettings( vLight );
-	// Match shadow_interaction.fs::ShadowAtlasGuardBand exactly.  In PCSS mode
-	// the blocker search / maximum penumbra, not the base PCF radius, is the
-	// authoritative bound.
 	const float kernelRadius = Max( 0.5f, filterSettings.effectiveFilterRadius + 0.75f );
-	return texelStep * kernelRadius;
+	float offsetTexels = 2.0f * Max( 0.0f, r_shadowMapNormalOffsetScale.GetFloat() );
+	const bool perspective = baseClipPlanes[3].Normal().LengthSqr() > idMath::FLOAT_EPSILON;
+	const bool depthSized = vLight != NULL && vLight->lightDef != NULL
+		&& R_ShadowMapUsesDistantPointProjection( vLight->lightDef->parms );
+	if ( perspective && !depthSized && minSampleW > 0.0f ) {
+		offsetTexels *= idMath::ClampFloat( 1.0f, 8.0f, 1.0f / minSampleW );
+	}
+	return kernelRadius + offsetTexels;
 }
 
-static bool R_ShadowMapBuildCascadeBounds( const viewLight_t *vLight, const idPlane baseClipPlanes[4], const viewDef_t *viewDef, const float sliceNear, const float sliceFar, const int tileSize, shadowMapProjectedCascadeFit_t &fit, idVec3 &ndcMins, idVec3 &ndcMaxs ) {
+static const float SHADOWMAP_CASCADE_W_EPSILON = 1.0e-5f;
+
+// The smallest w (the projection's divide row) that any point of the light's
+// own volume has: a distant point light's box, an authored projector's
+// frustum. A point of the view nearer the source plane than that is outside
+// the light, receives nothing from it and needs no place in its map. An
+// orthographic map has the constant w of 1. Where the volume is unknown or
+// reaches the source plane itself, the epsilon the fit has always used.
+static float R_ShadowMapLightNearW( const viewLight_t *vLight, const idPlane baseClipPlanes[4] ) {
+	if ( vLight == NULL || vLight->lightDef == NULL ) {
+		return SHADOWMAP_CASCADE_W_EPSILON;
+	}
+	const idRenderLightLocal *lightDef = vLight->lightDef;
+	const renderLight_t &parms = lightDef->parms;
+	float nearW = idMath::INFINITY;
+	if ( parms.pointLight ) {
+		for ( int corner = 0; corner < 8; ++corner ) {
+			const idVec3 local(
+				( corner & 1 ) ? parms.lightRadius.x : -parms.lightRadius.x,
+				( corner & 2 ) ? parms.lightRadius.y : -parms.lightRadius.y,
+				( corner & 4 ) ? parms.lightRadius.z : -parms.lightRadius.z );
+			idVec4 clip;
+			R_ShadowMapTransformPointToClip( parms.origin + local * parms.axis, baseClipPlanes, clip );
+			nearW = Min( nearW, clip.w );
+		}
+	} else if ( lightDef->frustumTris != NULL && lightDef->frustumTris->verts != NULL ) {
+		for ( int i = 0; i < lightDef->frustumTris->numVerts; ++i ) {
+			idVec4 clip;
+			R_ShadowMapTransformPointToClip( lightDef->frustumTris->verts[i].xyz, baseClipPlanes, clip );
+			nearW = Min( nearW, clip.w );
+		}
+	}
+	// NaN and a volume that reaches the source plane both fail the test
+	if ( !( nearW > SHADOWMAP_CASCADE_W_EPSILON ) || nearW >= idMath::INFINITY ) {
+		return SHADOWMAP_CASCADE_W_EPSILON;
+	}
+	// a part in ten thousand nearer: the corners themselves stay inside
+	return Max( SHADOWMAP_CASCADE_W_EPSILON, nearW * ( 1.0f - 1.0e-4f ) );
+}
+
+// The twelve edges of a view slice: R_ShadowMapBuildSliceCorners lays out
+// the near quad as corners 0-3 and the far quad as 4-7, in the same order.
+static const int SHADOWMAP_SLICE_EDGES[12][2] = {
+	{ 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 0 },
+	{ 4, 5 }, { 5, 6 }, { 6, 7 }, { 7, 4 },
+	{ 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 }
+};
+
+/*
+=================
+R_ShadowMapSliceStableBox
+
+The box in the light's picture of a view slice's bounding sphere.
+
+The tight fit bounds the slice's corners in light space, and that box changes
+shape as the view turns: wide when the slice lies across the light, narrow
+when it points down it. Its two sides are quantised to the extent ladder
+separately, so in a full turn each cascade changes scale fifteen to twenty-four
+times, and every shadow edge in it is resampled each time; its texels are also
+up to twice as long one way as the other. A sphere around the slice looks the
+same from the light whichever way the view faces. Its radius depends on the
+slice's depths and the field of view alone, so the crop's scale stays put while
+the view turns and its texels are square on the ground. The price is the
+tight fit's best directions: the sphere is as wide as the slice's longest
+diagonal.
+
+The sphere is centred on the view axis, at the depth that makes it smallest.
+For a perspective map the half-width is a bound of |x - x_c| over the sphere:
+    x - x_c = ( S - x_c Q ) . d / ( w_c + Q . d ),   |d| <= R
+with S and Q the normals of the S and divide rows. Taken at the sphere's own
+centre that bound would still follow the view round, since the centre swings
+about the eye, towards the source and away: Air Defense 1's far cascade
+crossed a step of the ladder four times in a turn. So it is taken over every
+place a turn can put the centre: no point of the slice is nearer the source
+than the eye less the distance of the slice's farthest corner, and x_c lies within
+depth |S - x_eye Q| / ( w_eye - depth |Q| ) of the eye's own place in the
+picture (the same bound, for the centre's swing). |S - x Q| is convex in x, so
+its largest value over that span is at one of its ends. That is the worst
+direction's size held all the way round, and it changes only as the eye moves.
+(Bounding x_c by the whole picture instead costs a wide fan dearly: that sun's
+is 46 degrees to a side, and its cascades came out half again as coarse.)
+
+Returns false where that depth comes near the plane the light begins at, a
+lamp the view stands close under: the tight fit, cut at that plane, serves
+there.
+=================
+*/
+extern idCVar r_shadowMapCascadeStableExtent;
+
+static bool R_ShadowMapSliceStableBox( const viewDef_t *viewDef, const idVec3 corners[8],
+		const float sliceNear, const float sliceFar, const idPlane baseClipPlanes[4],
+		const float wClip, float centre[2], float extent[2] ) {
+	const float span = sliceFar - sliceNear;
+	if ( viewDef == NULL || !( span > 0.0f ) ) {
+		return false;
+	}
+	const idVec3 &origin = viewDef->renderView.vieworg;
+	const idVec3 &forward = viewDef->renderView.viewaxis[0];
+	float nearRadiusSqr = 0.0f;
+	float farRadiusSqr = 0.0f;
+	for ( int i = 0; i < 4; i++ ) {
+		nearRadiusSqr = Max( nearRadiusSqr, ( corners[i] - ( origin + forward * sliceNear ) ).LengthSqr() );
+		farRadiusSqr = Max( farRadiusSqr, ( corners[i + 4] - ( origin + forward * sliceFar ) ).LengthSqr() );
+	}
+	// equidistant from the two rims, unless that lies past the far one
+	const float depth = idMath::ClampFloat( sliceNear, sliceFar,
+		( ( sliceFar * sliceFar + farRadiusSqr ) - ( sliceNear * sliceNear + nearRadiusSqr ) ) / ( 2.0f * span ) );
+	const float radius = idMath::Sqrt( Max(
+		( depth - sliceNear ) * ( depth - sliceNear ) + nearRadiusSqr,
+		( sliceFar - depth ) * ( sliceFar - depth ) + farRadiusSqr ) );
+
+	idVec4 clip;
+	idVec4 eyeClip;
+	R_ShadowMapTransformPointToClip( origin + forward * depth, baseClipPlanes, clip );
+	R_ShadowMapTransformPointToClip( origin, baseClipPlanes, eyeClip );
+	const idVec3 divide = baseClipPlanes[3].Normal();
+	const float divideLength = divide.Length();
+	// The slice's own points are what the divide has to be bounded for, and
+	// none is farther from the eye than a corner of its far face. (The sphere
+	// reaches further, where the slice has nothing.)
+	const float cornerDistance = idMath::Sqrt( sliceFar * sliceFar + farRadiusSqr );
+	const float wMin = eyeClip.w - cornerDistance * divideLength;
+	if ( !( radius > 0.0f ) || !( clip.w > 0.0f ) || !( wMin > wClip ) || !( wMin > eyeClip.w * 0.5f ) ) {
+		return false;
+	}
+	centre[0] = clip.x / clip.w;
+	centre[1] = clip.y / clip.w;
+	const float eyeNdc[2] = { eyeClip.x / eyeClip.w, eyeClip.y / eyeClip.w };
+	// the smallest w the sphere's centre can have: wMin is positive, so this is
+	const float wCentreMin = eyeClip.w - depth * divideLength;
+	for ( int axis = 0; axis < 2; axis++ ) {
+		const idVec3 row = baseClipPlanes[axis].Normal();
+		const float swing = depth * ( row - divide * eyeNdc[axis] ).Length() / wCentreMin;
+		const float reach = Max(
+			( row - divide * ( eyeNdc[axis] - swing ) ).Length(),
+			( row - divide * ( eyeNdc[axis] + swing ) ).Length() );
+		extent[axis] = radius * reach / wMin;
+	}
+	for ( int axis = 0; axis < 2; axis++ ) {
+		if ( centre[axis] != centre[axis] || extent[axis] != extent[axis]
+				|| idMath::Fabs( centre[axis] ) > 1.0e6f || !( extent[axis] > 0.0f ) || extent[axis] > 1.0e6f ) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool R_ShadowMapBuildCascadeBounds( const viewLight_t *vLight, const idPlane baseClipPlanes[4], const viewDef_t *viewDef, const float sliceNear, const float sliceFar, const int tileSize, const bool stableExtentWanted, shadowMapProjectedCascadeFit_t &fit, idVec3 &ndcMins, idVec3 &ndcMaxs ) {
 	idVec3 samplePoints[SHADOWMAP_PROJECTED_CASCADE_SAMPLE_POINT_COUNT];
 	const int sampleCount = R_ShadowMapBuildSliceSamplePoints( viewDef, sliceNear, sliceFar, samplePoints );
 
@@ -671,11 +899,28 @@ static bool R_ShadowMapBuildCascadeBounds( const viewLight_t *vLight, const idPl
 	fit.fallbackReason = SHADOWMAP_PROJECTED_FALLBACK_NONE;
 	ndcMins.Set( 1.0e30f, 1.0e30f, 1.0e30f );
 	ndcMaxs.Set( -1.0e30f, -1.0e30f, -1.0e30f );
-	const float wEpsilon = 1.0e-5f;
+	const float wEpsilon = SHADOWMAP_CASCADE_W_EPSILON;
+	float minSampleW = idMath::INFINITY;
+	// A slice is fitted over the part of it in front of the plane where the
+	// light's volume begins. The part behind is outside the light. Until
+	// November 2026 one sample behind the source plane (a "mixed w" slice)
+	// collapsed every cascade of the light into a single map: looking up past
+	// the height of an outdoor lamp, or standing beside a spotlight, traded
+	// three fitted cascades for one map of the whole light. The slice is cut
+	// instead: its corners in front of the plane, and the points where its
+	// edges cross the plane, bound what is left of it exactly, since a convex
+	// piece of space in front of the plane projects to the hull of its corners.
+	const float wClip = R_ShadowMapLightNearW( vLight, baseClipPlanes );
+	idVec4 cornerClip[8];
+	bool cornerFinite[8] = { false, false, false, false, false, false, false, false };
 
 	for ( int i = 0; i < sampleCount; i++ ) {
 		idVec4 clip;
 		R_ShadowMapTransformPointToClip( samplePoints[i], baseClipPlanes, clip );
+		if ( i < 8 ) {
+			cornerClip[i] = clip;
+			cornerFinite[i] = clip.x == clip.x && clip.y == clip.y && clip.z == clip.z && clip.w == clip.w;
+		}
 		if ( clip.w != clip.w ) {
 			fit.nanWPoints++;
 			fit.skippedPoints++;
@@ -690,7 +935,7 @@ static bool R_ShadowMapBuildCascadeBounds( const viewLight_t *vLight, const idPl
 			fit.nearZeroWPoints++;
 		}
 
-		if ( clip.w <= wEpsilon ) {
+		if ( clip.w <= wEpsilon || clip.w < wClip ) {
 			fit.skippedPoints++;
 			continue;
 		}
@@ -702,6 +947,7 @@ static bool R_ShadowMapBuildCascadeBounds( const viewLight_t *vLight, const idPl
 			fit.skippedPoints++;
 			continue;
 		}
+		minSampleW = Min( minSampleW, clip.w );
 
 		for ( int axis = 0; axis < 3; axis++ ) {
 			ndcMins[axis] = Min( ndcMins[axis], ndc[axis] );
@@ -710,9 +956,45 @@ static bool R_ShadowMapBuildCascadeBounds( const viewLight_t *vLight, const idPl
 		fit.validPoints++;
 	}
 
+	// still recorded: the slice reached behind the source plane
 	fit.mixedWSigns = ( fit.positiveWPoints > 0 && fit.negativeWPoints > 0 );
 
-	if ( fit.validPoints < 4 ) {
+	// where an edge of the slice crosses the plane
+	int planeCrossings = 0;
+	for ( int edge = 0; edge < 12 && sampleCount >= 8; ++edge ) {
+		const int a = SHADOWMAP_SLICE_EDGES[edge][0];
+		const int b = SHADOWMAP_SLICE_EDGES[edge][1];
+		if ( !cornerFinite[a] || !cornerFinite[b] ) {
+			continue;
+		}
+		const float wa = cornerClip[a].w;
+		const float wb = cornerClip[b].w;
+		if ( ( wa >= wClip ) == ( wb >= wClip ) ) {
+			continue;
+		}
+		const float t = idMath::ClampFloat( 0.0f, 1.0f, ( wClip - wa ) / ( wb - wa ) );
+		const idVec4 crossing = cornerClip[a] + ( cornerClip[b] - cornerClip[a] ) * t;
+		// Far outside the projection is all a bound needs to know: the fit
+		// clamps to the light's own edge, and an unbounded quotient must not
+		// reach its arithmetic.
+		const idVec3 ndc(
+			idMath::ClampFloat( -1.0e6f, 1.0e6f, crossing.x / wClip ),
+			idMath::ClampFloat( -1.0e6f, 1.0e6f, crossing.y / wClip ),
+			crossing.z );
+		if ( ndc.x != ndc.x || ndc.y != ndc.y || ndc.z != ndc.z ) {
+			continue;
+		}
+		for ( int axis = 0; axis < 3; axis++ ) {
+			ndcMins[axis] = Min( ndcMins[axis], ndc[axis] );
+			ndcMaxs[axis] = Max( ndcMaxs[axis], ndc[axis] );
+		}
+		minSampleW = Min( minSampleW, wClip );
+		planeCrossings++;
+	}
+
+	// A slice wholly behind the plane has nothing to fit. (One touching it at
+	// a point or along an edge, too: fewer than four bounding points.)
+	if ( fit.validPoints + planeCrossings < 4 ) {
 		fit.fallbackReason = SHADOWMAP_PROJECTED_FALLBACK_INSUFFICIENT_VALID_SAMPLES;
 		return false;
 	}
@@ -720,12 +1002,25 @@ static bool R_ShadowMapBuildCascadeBounds( const viewLight_t *vLight, const idPl
 	// the authored projection pad is already baked into the base clip planes
 	// (R_ShadowMapBuildClipPlanes scales S/T by projectionScale); re-applying
 	// it to fitted extents compounded to ~30% wasted crop resolution at the
-	// default pad. Cascades only add the filter kernel guard.
-	const float filterGuard = R_ShadowMapProjectedKernelGuardNDC( vLight, tileSize );
-	R_ShadowMapFitCascadeAxis( ndcMins.x, ndcMaxs.x, filterGuard,
-		tileSize, r_shadowMapCascadeStabilize.GetBool() );
-	R_ShadowMapFitCascadeAxis( ndcMins.y, ndcMaxs.y, filterGuard,
-		tileSize, r_shadowMapCascadeStabilize.GetBool() );
+	// default pad. Cascades only add the guard their receivers sample into.
+	const float guardTexels = R_ShadowMapProjectedCascadeGuardTexels( vLight, baseClipPlanes, minSampleW );
+	const bool stabilize = r_shadowMapCascadeStabilize.GetBool();
+	float stableExtent[2] = { 0.0f, 0.0f };
+	float stableCentre[2];
+	if ( stabilize && stableExtentWanted && sampleCount >= 8
+			&& R_ShadowMapSliceStableBox( viewDef, samplePoints, sliceNear, sliceFar,
+				baseClipPlanes, wClip, stableCentre, stableExtent ) ) {
+		// the sphere holds the slice, so this is the sphere's box; the slice's
+		// own points are kept in any case
+		ndcMins.x = Min( ndcMins.x, stableCentre[0] - stableExtent[0] );
+		ndcMaxs.x = Max( ndcMaxs.x, stableCentre[0] + stableExtent[0] );
+		ndcMins.y = Min( ndcMins.y, stableCentre[1] - stableExtent[1] );
+		ndcMaxs.y = Max( ndcMaxs.y, stableCentre[1] + stableExtent[1] );
+	}
+	R_ShadowMapFitCascadeAxis( ndcMins.x, ndcMaxs.x, guardTexels,
+		tileSize, stabilize, stableExtent[0] );
+	R_ShadowMapFitCascadeAxis( ndcMins.y, ndcMaxs.y, guardTexels,
+		tileSize, stabilize, stableExtent[1] );
 	const float centerZ = ( ndcMins.z + ndcMaxs.z ) * 0.5f;
 	const float extentZ = Max( ( ndcMaxs.z - ndcMins.z ) * 0.5f, 0.001f );
 	ndcMins.z = idMath::ClampFloat( 0.0f, 1.0f, centerZ - extentZ );
@@ -872,23 +1167,48 @@ bool R_ShadowMapCascadeStabilitySelfTest( void ) {
 	const int sizes[] = { 128, 512, 1024, 4096 };
 	for ( int sizeIndex = 0; sizeIndex < 4; ++sizeIndex ) {
 		const int size = sizes[sizeIndex];
-		const float guard = 3.0f / size;
+		// texels of the fitted crop: the guard a receiver's taps are clamped by
+		const float guardTexels = 3.55f;
+		const float keep = R_ShadowMapCascadeGuardKeep( guardTexels, size, true );
 		for ( int position = -120; position <= 100; ++position ) {
 			const float rawMin = position * 0.01f;
 			const float rawMax = rawMin + 0.371f;
 			const float clippedMin = idMath::ClampFloat( -1.0f, 1.0f, rawMin );
 			const float clippedMax = idMath::ClampFloat( -1.0f, 1.0f, rawMax );
 			float minimum = rawMin, maximum = rawMax;
-			R_ShadowMapFitCascadeAxis( minimum, maximum, guard, size, true );
+			R_ShadowMapFitCascadeAxis( minimum, maximum, guardTexels, size, true );
 			const float expectedExtent = R_ShadowMapQuantizeCascadeExtent(
-				Max( ( clippedMax - clippedMin ) * 0.5f + guard, 2.0f / size )
-					/ ( 1.0f - 1.0f / size ), size );
+				Max( ( clippedMax - clippedMin ) * 0.5f / keep, 2.0f / size ), size );
 			if ( minimum > clippedMin + 1.0e-6f || maximum < clippedMax - 1.0e-6f
 					|| minimum < -1.000001f || maximum > 1.000001f
 					|| idMath::Fabs( maximum - minimum - 2.0f * expectedExtent ) > 1.0e-6f ) {
 				common->Printf( "ShadowMap cascade stability self-test failed: boundary fit %d/%d\n", size, position );
 				return false;
 			}
+			// The slice keeps guardTexels of the fitted crop's own texels clear
+			// of both edges, after the centre has snapped by up to half a texel,
+			// unless the crop was moved back inside the projection: the edge it
+			// then lies against is the light's own.
+			const float extent = ( maximum - minimum ) * 0.5f;
+			const float margin = guardTexels * ( 2.0f * extent / size );
+			const bool atBoundary = minimum <= -1.0f + 1.0e-6f || maximum >= 1.0f - 1.0e-6f;
+			if ( !atBoundary
+					&& ( clippedMin - minimum < margin - 1.0e-6f || maximum - clippedMax < margin - 1.0e-6f ) ) {
+				common->Printf( "ShadowMap cascade stability self-test failed: guard %d/%d holds %f of %f\n",
+					size, position, Min( clippedMin - minimum, maximum - clippedMax ), margin );
+				return false;
+			}
+		}
+		// The guard is a share of the crop: a slice a tenth as wide gets a crop
+		// a tenth as wide, to within a step of the ladder either way.
+		float wideMin = -0.4f, wideMax = 0.4f, narrowMin = -0.04f, narrowMax = 0.04f;
+		R_ShadowMapFitCascadeAxis( wideMin, wideMax, guardTexels, size, true );
+		R_ShadowMapFitCascadeAxis( narrowMin, narrowMax, guardTexels, size, true );
+		const float widthRatio = ( wideMax - wideMin ) / Max( narrowMax - narrowMin, 1.0e-6f );
+		if ( widthRatio < 10.0f / SHADOWMAP_CASCADE_EXTENT_LADDER - 1.0e-3f
+				|| widthRatio > 10.0f * SHADOWMAP_CASCADE_EXTENT_LADDER + 1.0e-3f ) {
+			common->Printf( "ShadowMap cascade stability self-test failed: guard does not scale with the crop (%d: %f)\n", size, widthRatio );
+			return false;
 		}
 	}
 
@@ -940,10 +1260,16 @@ static bool R_ShadowMapCascadeWholeLightCase( const bool wholeLight, const int c
 		restoreFar( r_shadowMapCascadeFarMap ), restoreDistance( r_shadowMapCascadeDistance ),
 		restoreLambda( r_shadowMapCascadeLambda ), restoreBlend( r_shadowMapCascadeBlend ),
 		restoreStabilize( r_shadowMapCascadeStabilize ), restorePoint( r_shadowMapPointLights ),
-		restoreZNear( r_znear ), restorePad( r_shadowMapProjectionPad );
+		restoreZNear( r_znear ), restorePad( r_shadowMapProjectionPad ),
+		restoreStable( r_shadowMapCascadeStableExtent );
 	r_shadowMapCSM.SetBool( true );
 	r_shadowMapCascadeCount.SetInteger( cascades );
 	r_shadowMapCascadeFarMap.SetBool( wholeLight );
+	// The gap this shows, receivers past the reach falling outside the last
+	// fitted crop, is the tight fit's: a crop sized by the slice's sphere
+	// reaches further and happens to hold these three. The sphere fit has its
+	// own test (R_ShadowMapCascadeTurnSelfTest).
+	r_shadowMapCascadeStableExtent.SetInteger( 0 );
 	r_shadowMapCascadeDistance.SetFloat( 1536.0f );
 	r_shadowMapCascadeLambda.SetFloat( 0.75f );
 	r_shadowMapCascadeBlend.SetFloat( 0.15f );
@@ -1004,7 +1330,7 @@ static bool R_ShadowMapCascadeWholeLightCase( const bool wholeLight, const int c
 				return false;
 			}
 		}
-		if ( state.splitDepths[fitted - 1] != 1536.0f || state.biasScale[expectedWhole] != 1.0f
+		if ( state.splitDepths[fitted - 1] != 1536.0f || state.biasScale[expectedWhole] != state.receiverBiasScale
 				|| !( state.worldTexelSize[expectedWhole] > state.worldTexelSize[fitted - 1] ) ) {
 			common->Printf( "ShadowMap whole-light cascade self-test failed: reach split %.2f bias %.3f texel %.3f/%.3f\n",
 				state.splitDepths[fitted - 1], state.biasScale[expectedWhole],
@@ -1072,6 +1398,284 @@ bool R_ShadowMapCascadeWholeLightSelfTest( void ) {
 		return false;
 	}
 	common->Printf( "ShadowMap whole-light cascade self-test passed: 3 layouts, receivers past the reach covered\n" );
+	return true;
+}
+
+// A view slice that reaches behind the plane where the light begins, on
+// mcc_landing's outdoor_Main: a point light whose source stands 280 units
+// above its box and looks down, cascaded on Quality and Ultra. Looking up from
+// the ground, the far slices rise past the top of the box and then past the
+// source itself. Pins that the light keeps every cascade there (it used to
+// fall to one map of the whole light as soon as one sample had a negative w),
+// that every point of a slice inside the light's box lands inside that
+// slice's crop, and that the nearest cascade stays finer than the whole map.
+static bool R_ShadowMapCascadeSourcePlaneCase( const float eyeZ, const float pitch, const float yaw,
+		int &receivers, int &cutSlices, int &mixedSlices ) {
+	idRenderLightLocal lightDef;
+	memset( &lightDef.parms, 0, sizeof( lightDef.parms ) );
+	renderLight_t &parms = lightDef.parms;
+	parms.pointLight = true;
+	parms.axis.Identity();
+	parms.origin.Set( 6464.0f, 2816.0f, 896.0f );
+	parms.lightRadius.Set( 2176.0f, 3128.0f, 1024.0f );
+	parms.lightCenter.Set( -64.0f, 1160.0f, 1304.0f );
+	viewLight_t light;
+	memset( &light, 0, sizeof( light ) );
+	light.lightDef = &lightDef;
+	light.pointLight = true;
+	light.lightRadius = parms.lightRadius;
+	light.globalLightOrigin = parms.origin + parms.lightCenter * parms.axis;
+
+	viewDef_t view;
+	memset( &view, 0, sizeof( view ) );
+	view.renderView.vieworg.Set( 6464.0f, 2816.0f, eyeZ );
+	view.renderView.viewaxis = idAngles( pitch, yaw, 0.0f ).ToMat3();
+	view.renderView.fov_x = 90.0f;
+	view.renderView.fov_y = 59.0f;
+
+	const int cascades = 4;
+	shadowMapProjectedLightState_t state;
+	R_BuildShadowMapProjectedLightState( &light, &view, 1024, state );
+	if ( !state.valid || state.cascadeFallback || state.cascadeCount != cascades
+			|| state.wholeLightCascade != cascades - 1 ) {
+		common->Printf( "ShadowMap source-plane cascade self-test failed: eye %.0f pitch %.0f yaw %.0f valid=%d fallback=%d/%s count=%d whole=%d\n",
+			eyeZ, pitch, yaw, state.valid ? 1 : 0, state.cascadeFallback ? 1 : 0,
+			R_ShadowMapProjectedFallbackReasonName( state.fallbackReason ), state.cascadeCount, state.wholeLightCascade );
+		return false;
+	}
+	if ( !( state.worldTexelSize[0] < state.worldTexelSize[cascades - 1] * 0.25f ) ) {
+		common->Printf( "ShadowMap source-plane cascade self-test failed: eye %.0f pitch %.0f nearest cascade %.2f a texel against the whole map's %.2f\n",
+			eyeZ, pitch, state.worldTexelSize[0], state.worldTexelSize[cascades - 1] );
+		return false;
+	}
+	for ( int cascade = 0; cascade < cascades - 1; ++cascade ) {
+		const shadowMapProjectedCascadeFit_t &fit = state.cascadeFit[cascade];
+		if ( !fit.attempted || !fit.valid || fit.validPoints + fit.skippedPoints != fit.sampleCount ) {
+			common->Printf( "ShadowMap source-plane cascade self-test failed: cascade %d fit attempted=%d valid=%d\n",
+				cascade, fit.attempted ? 1 : 0, fit.valid ? 1 : 0 );
+			return false;
+		}
+		cutSlices += fit.skippedPoints > 0 ? 1 : 0;
+		mixedSlices += fit.mixedWSigns ? 1 : 0;
+
+		// points throughout the slice, the blend band in front of it included
+		idVec3 corners[8];
+		R_ShadowMapBuildSliceCorners( &view, state.sliceNear[cascade], state.sliceFar[cascade], corners );
+		for ( int d = 0; d <= 4; ++d ) {
+			for ( int v = 0; v <= 4; ++v ) {
+				for ( int u = 0; u <= 4; ++u ) {
+					const float fu = u * 0.25f, fv = v * 0.25f, fd = d * 0.25f;
+					const idVec3 nearPoint = ( corners[0] * ( 1.0f - fu ) + corners[1] * fu ) * ( 1.0f - fv )
+						+ ( corners[3] * ( 1.0f - fu ) + corners[2] * fu ) * fv;
+					const idVec3 farPoint = ( corners[4] * ( 1.0f - fu ) + corners[5] * fu ) * ( 1.0f - fv )
+						+ ( corners[7] * ( 1.0f - fu ) + corners[6] * fu ) * fv;
+					const idVec3 receiver = nearPoint + ( farPoint - nearPoint ) * fd;
+					// only what the light reaches needs its map
+					const idVec3 local = ( receiver - parms.origin ) * parms.axis.Transpose();
+					if ( idMath::Fabs( local.x ) > parms.lightRadius.x || idMath::Fabs( local.y ) > parms.lightRadius.y
+							|| idMath::Fabs( local.z ) > parms.lightRadius.z ) {
+						continue;
+					}
+					idVec4 clip;
+					R_ShadowMapTransformPointToClip( receiver, state.clipPlanes[cascade], clip );
+					if ( !( clip.w > 0.0f ) || idMath::Fabs( clip.x / clip.w ) > 1.0f || idMath::Fabs( clip.y / clip.w ) > 1.0f
+							|| clip.z < 0.0f || clip.z > 1.0f ) {
+						common->Printf( "ShadowMap source-plane cascade self-test failed: eye %.0f pitch %.0f yaw %.0f cascade %d receiver (%.0f %.0f %.0f) at %.3f %.3f w %.3f\n",
+							eyeZ, pitch, yaw, cascade, receiver.x, receiver.y, receiver.z,
+							clip.w > 0.0f ? clip.x / clip.w : 0.0f, clip.w > 0.0f ? clip.y / clip.w : 0.0f, clip.w );
+						return false;
+					}
+					receivers++;
+				}
+			}
+		}
+	}
+	return true;
+}
+
+bool R_ShadowMapCascadeSourcePlaneSelfTest( void ) {
+	struct cvarRestore_t {
+		idCVar &cvar;
+		idStr value;
+		cvarRestore_t( idCVar &c ) : cvar( c ), value( c.GetString() ) {}
+		~cvarRestore_t() { cvar.SetString( value.c_str() ); }
+	};
+	cvarRestore_t restoreCSM( r_shadowMapCSM ), restoreCount( r_shadowMapCascadeCount ),
+		restoreFar( r_shadowMapCascadeFarMap ), restoreDistance( r_shadowMapCascadeDistance ),
+		restoreLambda( r_shadowMapCascadeLambda ), restoreBlend( r_shadowMapCascadeBlend ),
+		restoreStabilize( r_shadowMapCascadeStabilize ), restorePoint( r_shadowMapPointLights ),
+		restoreZNear( r_znear ), restorePad( r_shadowMapProjectionPad ), restoreWide( r_shadowMapWideSources );
+	r_shadowMapCSM.SetBool( true );
+	r_shadowMapCascadeCount.SetInteger( 4 );
+	r_shadowMapCascadeFarMap.SetBool( true );
+	r_shadowMapCascadeDistance.SetFloat( 1536.0f );
+	r_shadowMapCascadeLambda.SetFloat( 0.75f );
+	r_shadowMapCascadeBlend.SetFloat( 0.15f );
+	r_shadowMapCascadeStabilize.SetBool( true );
+	r_shadowMapPointLights.SetBool( true );
+	r_znear.SetFloat( 3.0f );
+	r_shadowMapProjectionPad.SetFloat( 0.15f );
+	r_shadowMapWideSources.SetBool( true );
+
+	// level, then up past the top of the box (z 1920) and past the source (2200)
+	const float pitches[] = { 0.0f, -35.0f, -50.0f, -70.0f, -85.0f };
+	const float yaws[] = { 0.0f, 58.0f, 190.0f };
+	const float eyes[] = { 120.0f, 500.0f, 900.0f };
+	int receivers = 0, cutSlices = 0, mixedSlices = 0, views = 0;
+	for ( int e = 0; e < 3; ++e ) {
+		for ( int p = 0; p < 5; ++p ) {
+			for ( int y = 0; y < 3; ++y ) {
+				if ( !R_ShadowMapCascadeSourcePlaneCase( eyes[e], pitches[p], yaws[y], receivers, cutSlices, mixedSlices ) ) {
+					return false;
+				}
+				views++;
+			}
+		}
+	}
+	// the views have to reach what they are here for
+	if ( receivers < 1000 || cutSlices < 4 || mixedSlices < 2 ) {
+		common->Printf( "ShadowMap source-plane cascade self-test failed: fixture reached %d receivers, %d cut slices, %d behind the source\n",
+			receivers, cutSlices, mixedSlices );
+		return false;
+	}
+	common->Printf( "ShadowMap source-plane cascade self-test passed: %d views, %d receivers, %d slices cut at the light's near plane, %d of them behind the source\n",
+		views, receivers, cutSlices, mixedSlices );
+	return true;
+}
+
+// A full turn of the view at Air Defense 1's opening, under its sun. With the
+// tight fit each cascade's crop changes size many times on the way round, and
+// every change resamples the cascade's shadow edges. Sized by the slice's
+// bounding sphere it must not change at all for the turn itself; the sun is
+// a perspective source, so a step of the ladder may still be crossed as the
+// sphere's centre swings nearer the source and away. Every point of a slice
+// inside the light must stay inside its crop the whole way round.
+static bool R_ShadowMapCascadeTurnCase( const bool stableExtent, int changes[3], float coarsest[3], int &receivers ) {
+	r_shadowMapCascadeStableExtent.SetInteger( stableExtent ? SHADOWMAP_PROJECTED_MAX_CASCADES : 0 );
+
+	idRenderLightLocal lightDef;
+	memset( &lightDef.parms, 0, sizeof( lightDef.parms ) );
+	renderLight_t &parms = lightDef.parms;
+	parms.pointLight = true;
+	parms.origin.Set( 9424.0f, -12256.0f, 1352.0f );
+	parms.lightRadius.Set( 7392.0f, 6944.0f, 3184.0f );
+	parms.lightCenter.Set( -8096.0f, -9096.0f, 7384.0f );
+	parms.axis.Identity();
+	viewLight_t light;
+	memset( &light, 0, sizeof( light ) );
+	light.lightDef = &lightDef;
+	light.pointLight = true;
+	light.lightRadius = parms.lightRadius;
+	light.globalLightOrigin = parms.origin + parms.lightCenter * parms.axis;
+
+	const int cascades = 4;
+	float previous[3][2];
+	for ( int c = 0; c < 3; ++c ) {
+		changes[c] = 0;
+		coarsest[c] = 0.0f;
+		previous[c][0] = previous[c][1] = 0.0f;
+	}
+	for ( int yaw = 0; yaw < 360; ++yaw ) {
+		viewDef_t view;
+		memset( &view, 0, sizeof( view ) );
+		view.renderView.vieworg.Set( 10200.0f, -6800.0f, 40.0f );
+		view.renderView.viewaxis = idAngles( 10.0f, static_cast<float>( yaw ), 0.0f ).ToMat3();
+		view.renderView.fov_x = 90.0f;
+		view.renderView.fov_y = 59.0f;
+
+		shadowMapProjectedLightState_t state;
+		R_BuildShadowMapProjectedLightState( &light, &view, 1024, state );
+		if ( !state.valid || state.cascadeFallback || state.cascadeCount != cascades ) {
+			common->Printf( "ShadowMap cascade turn self-test failed: yaw %d valid=%d fallback=%d count=%d (stable=%d)\n",
+				yaw, state.valid ? 1 : 0, state.cascadeFallback ? 1 : 0, state.cascadeCount, stableExtent ? 1 : 0 );
+			return false;
+		}
+		for ( int cascade = 0; cascade < cascades - 1; ++cascade ) {
+			// the crop's scale: how much of the base projection one unit of it spans
+			const float scale[2] = {
+				state.clipPlanes[cascade][0].Normal().Length() / Max( state.baseClipPlanes[0].Normal().Length(), 1.0e-12f ),
+				state.clipPlanes[cascade][1].Normal().Length() / Max( state.baseClipPlanes[1].Normal().Length(), 1.0e-12f ) };
+			if ( yaw > 0 && ( idMath::Fabs( scale[0] - previous[cascade][0] ) > previous[cascade][0] * 1.0e-3f
+					|| idMath::Fabs( scale[1] - previous[cascade][1] ) > previous[cascade][1] * 1.0e-3f ) ) {
+				changes[cascade]++;
+			}
+			previous[cascade][0] = scale[0];
+			previous[cascade][1] = scale[1];
+			coarsest[cascade] = Max( coarsest[cascade], state.worldTexelSize[cascade] );
+
+			idVec3 corners[8];
+			R_ShadowMapBuildSliceCorners( &view, state.sliceNear[cascade], state.sliceFar[cascade], corners );
+			for ( int d = 0; d <= 2; ++d ) {
+				for ( int v = 0; v <= 2; ++v ) {
+					for ( int u = 0; u <= 2; ++u ) {
+						const float fu = u * 0.5f, fv = v * 0.5f, fd = d * 0.5f;
+						const idVec3 nearPoint = ( corners[0] * ( 1.0f - fu ) + corners[1] * fu ) * ( 1.0f - fv )
+							+ ( corners[3] * ( 1.0f - fu ) + corners[2] * fu ) * fv;
+						const idVec3 farPoint = ( corners[4] * ( 1.0f - fu ) + corners[5] * fu ) * ( 1.0f - fv )
+							+ ( corners[7] * ( 1.0f - fu ) + corners[6] * fu ) * fv;
+						const idVec3 receiver = nearPoint + ( farPoint - nearPoint ) * fd;
+						const idVec3 local = receiver - parms.origin;
+						if ( idMath::Fabs( local.x ) > parms.lightRadius.x || idMath::Fabs( local.y ) > parms.lightRadius.y
+								|| idMath::Fabs( local.z ) > parms.lightRadius.z ) {
+							continue;
+						}
+						idVec4 clip;
+						R_ShadowMapTransformPointToClip( receiver, state.clipPlanes[cascade], clip );
+						if ( !( clip.w > 0.0f ) || idMath::Fabs( clip.x / clip.w ) > 1.0f || idMath::Fabs( clip.y / clip.w ) > 1.0f ) {
+							common->Printf( "ShadowMap cascade turn self-test failed: yaw %d cascade %d receiver outside its crop (stable=%d)\n",
+								yaw, cascade, stableExtent ? 1 : 0 );
+							return false;
+						}
+						receivers++;
+					}
+				}
+			}
+		}
+	}
+	return true;
+}
+
+bool R_ShadowMapCascadeTurnSelfTest( void ) {
+	struct cvarRestore_t {
+		idCVar &cvar;
+		idStr value;
+		cvarRestore_t( idCVar &c ) : cvar( c ), value( c.GetString() ) {}
+		~cvarRestore_t() { cvar.SetString( value.c_str() ); }
+	};
+	cvarRestore_t restoreCSM( r_shadowMapCSM ), restoreCount( r_shadowMapCascadeCount ),
+		restoreFar( r_shadowMapCascadeFarMap ), restoreDistance( r_shadowMapCascadeDistance ),
+		restoreLambda( r_shadowMapCascadeLambda ), restoreBlend( r_shadowMapCascadeBlend ),
+		restoreStabilize( r_shadowMapCascadeStabilize ), restorePoint( r_shadowMapPointLights ),
+		restoreZNear( r_znear ), restorePad( r_shadowMapProjectionPad ), restoreStable( r_shadowMapCascadeStableExtent );
+	r_shadowMapCSM.SetBool( true );
+	r_shadowMapCascadeCount.SetInteger( 4 );
+	r_shadowMapCascadeFarMap.SetBool( true );
+	r_shadowMapCascadeDistance.SetFloat( 1536.0f );
+	r_shadowMapCascadeLambda.SetFloat( 0.75f );
+	r_shadowMapCascadeBlend.SetFloat( 0.15f );
+	r_shadowMapCascadeStabilize.SetBool( true );
+	r_shadowMapPointLights.SetBool( true );
+	r_znear.SetFloat( 3.0f );
+	r_shadowMapProjectionPad.SetFloat( 0.15f );
+
+	int tightChanges[3], stableChanges[3];
+	float tightCoarsest[3], stableCoarsest[3];
+	int receivers = 0;
+	if ( !R_ShadowMapCascadeTurnCase( false, tightChanges, tightCoarsest, receivers )
+			|| !R_ShadowMapCascadeTurnCase( true, stableChanges, stableCoarsest, receivers ) ) {
+		return false;
+	}
+	const int tightTotal = tightChanges[0] + tightChanges[1] + tightChanges[2];
+	const int stableTotal = stableChanges[0] + stableChanges[1] + stableChanges[2];
+	if ( stableTotal != 0 || tightTotal < 12 ) {
+		common->Printf( "ShadowMap cascade turn self-test failed: sphere extents changed %d/%d/%d times in a turn, the tight box %d/%d/%d\n",
+			stableChanges[0], stableChanges[1], stableChanges[2], tightChanges[0], tightChanges[1], tightChanges[2] );
+		return false;
+	}
+	common->Printf( "ShadowMap cascade turn self-test passed: crop scale changes in a full turn %d/%d/%d by sphere against %d/%d/%d by tight box; coarsest texel %.2f/%.2f/%.2f against %.2f/%.2f/%.2f; %d receivers covered\n",
+		stableChanges[0], stableChanges[1], stableChanges[2], tightChanges[0], tightChanges[1], tightChanges[2],
+		stableCoarsest[0], stableCoarsest[1], stableCoarsest[2], tightCoarsest[0], tightCoarsest[1], tightCoarsest[2],
+		receivers );
 	return true;
 }
 
@@ -1294,6 +1898,8 @@ bool R_ShadowMapDistantNormalOffsetSelfTest( void ) {
 		r_shadowMapCSM.SetBool( cascaded );
 		shadowMapProjectedLightState_t state;
 		R_BuildShadowMapProjectedLightState( &light, cascaded ? &view : NULL, cascaded ? 1024 : 2048, state );
+		// the offset itself; a far-shell light keeps a share of it
+		state.receiverBiasScale = 1.0f;
 		if ( !state.valid || state.cascadeCount != ( cascaded ? 4 : 1 ) || state.cascadeFallback ) {
 			common->Printf( "ShadowMap distant normal offset self-test failed: layout %d valid=%d cascades=%d fallback=%d\n",
 				layout, state.valid ? 1 : 0, state.cascadeCount, state.cascadeFallback ? 1 : 0 );
@@ -1349,6 +1955,7 @@ bool R_ShadowMapDistantNormalOffsetSelfTest( void ) {
 	r_shadowMapCSM.SetBool( false );
 	shadowMapProjectedLightState_t parallelState;
 	R_BuildShadowMapProjectedLightState( &light, NULL, 2048, parallelState );
+	parallelState.receiverBiasScale = 1.0f;
 	if ( !parallelState.valid || parallelState.texelPerDepth[0] != 0.0f
 			|| R_ShadowMapProjectedNormalOffsetWorld( parallelState, 0, 1.0f, true ) != parallelState.worldTexelSize[0] ) {
 		common->Printf( "ShadowMap distant normal offset self-test failed: a parallel light's offset follows depth\n" );
@@ -1418,9 +2025,11 @@ bool R_ShadowMapCasterFacesSelfTest( void ) {
 		projections += 2;
 	}
 
-	// the face table, for a light well outside the caster
+	// the face table, for a light well outside the caster, whose source lies
+	// at its centre (a light with a distant source stores the far shell)
 	parms.parallel = false;
 	light.parallel = false;
+	parms.lightCenter.Zero();
 	light.globalLightOrigin.Set( 0.0f, 0.0f, 4096.0f );
 	float identity[16];
 	memset( identity, 0, sizeof( identity ) );
@@ -1444,6 +2053,10 @@ bool R_ShadowMapCasterFacesSelfTest( void ) {
 		{ 1, false, false, identity, false, CT_FRONT_SIDED, SHADOWMAP_CASTER_FACES_NEAR },
 		{ 1, false, false, identity, false, CT_BACK_SIDED, SHADOWMAP_CASTER_FACES_FAR },
 		{ 1, true, false, identity, false, CT_FRONT_SIDED, SHADOWMAP_CASTER_FACES_FAR },
+		// a reflected model is wound the other way round on screen
+		{ 1, false, false, mirror, false, CT_FRONT_SIDED, SHADOWMAP_CASTER_FACES_FAR },
+		{ 1, true, false, mirror, false, CT_FRONT_SIDED, SHADOWMAP_CASTER_FACES_NEAR },
+		{ 1, false, false, mirror, false, CT_TWO_SIDED, SHADOWMAP_CASTER_FACES_BOTH },
 		// a sealed hull keeps its near shell, on either kind of projection
 		{ 2, false, true, identity, false, CT_FRONT_SIDED, SHADOWMAP_CASTER_FACES_NEAR },
 		{ 2, true, true, identity, false, CT_FRONT_SIDED, SHADOWMAP_CASTER_FACES_FAR },
@@ -1475,6 +2088,20 @@ bool R_ShadowMapCasterFacesSelfTest( void ) {
 			return false;
 		}
 	}
+	// a parallel or distant point light stores sealed hulls by the stencil
+	// rule too, while r_shadowMapDistantFarShell is on
+	parms.parallel = true;
+	light.parallel = true;
+	const bool farShell = R_ShadowMapLightStoresFarShell( &light );
+	if ( R_ShadowMapCasterFaces( 2, &light, false, true, true, identity, mins, maxs, CT_FRONT_SIDED )
+			!= ( farShell ? SHADOWMAP_CASTER_FACES_FAR : SHADOWMAP_CASTER_FACES_NEAR )
+			|| R_ShadowMapCasterFaces( 2, &light, false, true, false, identity, mins, maxs, CT_FRONT_SIDED )
+			!= SHADOWMAP_CASTER_FACES_FAR ) {
+		common->Printf( "Caster face self-test FAILED: far-shell light\n" );
+		return false;
+	}
+	parms.parallel = false;
+	light.parallel = false;
 	// no geometry to judge: both sides, except under the forced near shell
 	if ( R_ShadowMapCasterFaces( 2, &light, false, false, false, NULL, NULL, NULL, CT_FRONT_SIDED )
 				!= SHADOWMAP_CASTER_FACES_BOTH
@@ -1525,6 +2152,19 @@ static void R_BuildShadowMapProjectedLightStateFit( const viewLight_t *vLight, c
 
 void R_BuildShadowMapProjectedLightState( const viewLight_t *vLight, const viewDef_t *viewDef, const int tileSize, shadowMapProjectedLightState_t &state ) {
 	R_BuildShadowMapProjectedLightStateFit( vLight, viewDef, tileSize, state );
+	// A map of far faces only (R_ShadowMapLightStoresFarShell) needs no bias
+	// to keep a receiver that faces the light off its own depth, and every
+	// unit of it lights a receiver that stands that close behind a caster:
+	// tens of units under a coarse distant map (shadowmapping-audit-2026-11-09.md,
+	// "A far shell leaks behind itself").
+	if ( state.valid && R_ShadowMapLightStoresFarShell( vLight ) ) {
+		const float scale = idMath::ClampFloat( 0.0f, 1.0f, r_shadowMapDistantFarShellBias.GetFloat() );
+		state.receiverBiasScale = scale;
+		for ( int cascadeIndex = 0; cascadeIndex < SHADOWMAP_PROJECTED_MAX_CASCADES; cascadeIndex++ ) {
+			state.biasScale[cascadeIndex] *= scale;
+			state.texelDepthBias[cascadeIndex] *= scale;
+		}
+	}
 	// A distant point light's map is a perspective view from a source far
 	// outside its volume, so its texel grows with distance from the source:
 	// Air Defense 1's sun spans 25 world units a texel at the far corner and
@@ -1608,13 +2248,12 @@ static void R_BuildShadowMapProjectedLightStateFit( const viewLight_t *vLight, c
 		fit.attempted = true;
 		fit.sliceNear = sliceNear;
 		fit.sliceFar = sliceFar;
-		fit.valid = R_ShadowMapBuildCascadeBounds( vLight, baseClipPlanes, viewDef, fitSliceNear, sliceFar, tileSize, fit, ndcMins, ndcMaxs );
+		// the nearest cascades first: their shadows are the ones looked at
+		const bool stableExtent = cascadeIndex < r_shadowMapCascadeStableExtent.GetInteger();
+		fit.valid = R_ShadowMapBuildCascadeBounds( vLight, baseClipPlanes, viewDef, fitSliceNear, sliceFar, tileSize, stableExtent, fit, ndcMins, ndcMaxs );
 		if ( fit.valid ) {
-			if ( fit.mixedWSigns ) {
-				fit.fallbackReason = SHADOWMAP_PROJECTED_FALLBACK_MIXED_W_SIGNS;
-				R_ShadowMapCollapseProjectedStateToSingleCascade( state, vLight, baseClipPlanes, tileSize, zNear, maxDistance, cascadeIndex, SHADOWMAP_PROJECTED_FALLBACK_MIXED_W_SIGNS );
-				return;
-			}
+			// a slice that reaches behind the source plane was cut at the
+			// light's near plane by the fit (fit.mixedWSigns records it)
 			R_ShadowMapBuildCascadeClipPlanes( baseClipPlanes, ndcMins, ndcMaxs, state.clipPlanes[cascadeIndex] );
 			state.biasScale[cascadeIndex] = R_ShadowMapCascadeBiasScale( ndcMins, ndcMaxs );
 			state.clipZExtent[cascadeIndex] = ndcMaxs.z - ndcMins.z;

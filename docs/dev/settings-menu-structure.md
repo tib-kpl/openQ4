@@ -31,12 +31,18 @@ With `ui_retained 1` (the default) the Settings screen opens the retained SETTIN
 | Game Options | Accessibility | Motion: View Kick, Screen Shake, Cinematic Shake | Visibility: Reduced Flashing, Opaque Menu Backing |
 | Game Options | Virtual Reality | VR Mode to Walk Direction | Room Scale to Your Body. Stereoscopic 3D: Stereoscopic 3D, Stereo Depth, Stereo Convergence, Swap Eyes |
 | Display | Graphics | Performance Preset, Auto-Detect, Rendering Backend and Device, Renderer Fallback, Restart Renderer | Interface: UI Scale, Text Size, UI Aspect, Reset UI Sizes |
-| Display | Screen | Display: Display Device, Expand Across Displays, Fullscreen, Borderless, Fullscreen Policy, V-Sync, Frame Rate Cap | Display Sizing: window size, Display Resolution, custom fullscreen size, Refresh Rate |
+| Display | Screen | Display: Display Device, Expand Across Displays, Window Mode, V-Sync, Frame Rate Cap | Display Sizing: window size, Display Resolution, custom fullscreen size, Refresh Rate |
 | Display | Image Quality | Brightness, Resolution Scale, MSAA, Post AA Mode, Anisotropic Filtering | Rendering: Specular, Bump Mapping, Sky, Ambient Light, Ambient Brightness |
-| Display | Effects | Lighting: Shadows, Shadow Maps, Character Self-Shadows, Irradiance Volumes, Preload Light Grids | Post-Processing: Bloom, Ambient Occlusion, Tone Mapping, Motion Blur, CRT Filter |
+| Display | Effects | Lighting: Shadows, Character Self-Shadows, Irradiance Volumes, Preload Light Grids | Post-Processing: Bloom, Ambient Occlusion, Tone Mapping, Motion Blur, CRT Filter |
 | Audio | (one page) | Levels, Devices | Effects: EAX, Surround Speakers, Headphone HRTF. Subtitles: the five subtitle rows |
 
-The retained pages also offer rows the classic page lacks: Frame Rate Cap (`com_maxfps`: 30, 60, 75, 90, 120, 144, 165, 240, 360 or Unlimited), Anisotropic Filtering (`image_anisotropy`: Off, 2x, 4x, 8x, 16x), Shadow Maps (`r_useShadowMap`, available while Shadows is on) and Motion Blur (`r_motionBlur`), all of which the performance presets set; Character Self-Shadows needs Shadow Maps. VR Mode, Room Scale, Two-Handed Grip and Physical Crouch are toggles there. The rest of this document describes the classic pages (`ui_retained 0`), whose layout is unchanged.
+The retained pages also offer rows the classic page lacks: Frame Rate Cap (`com_maxfps`: 30, 60, 75, 90, 120, 144, 165, 240, 360 or Unlimited), Anisotropic Filtering (`image_anisotropy`: Off, 2x, 4x, 8x, 16x), Shadows as one list over the presets' shadow ladder (Off, Original and four shadow-map levels; see below) and Motion Blur (`r_motionBlur`), all of which the performance presets set; Character Self-Shadows needs a shadow-map level. VR Mode, Room Scale, Two-Handed Grip and Physical Crouch are toggles there. The rest of this document describes the classic pages (`ui_retained 0`), whose layout is unchanged.
+
+### Shadows and the presets
+
+The retained Display page's **Shadows** row replaces the classic page's Enable Shadows row and the retained Shadow Maps switch. It is one list over the shadow ladder in `src/framework/PerformancePreset.h` (`ShadowQuality`): Off, Original, Soft (Low), Soft (Medium), Soft (High) and Soft (Ultra). A level is a whole recipe: `edit.shadow-quality` writes `r_shadows`, `r_useShadowMap`, `r_shadowMapPointLights`, the map and cube sizes, both filter tap counts and modes, the atlas size and both cascade switches in one draft patch, with `r_shadowMapMaxUpdatesPerView 0`, `r_shadowMapCascadeCount 4` and `r_shadowMapCascadeStabilize 1`. The presets take their shadow values from the same table (`PerformancePreset::shadowQuality`), so a preset's shadows are always one of the six levels. The row reads its level back from the draft as `ShadowQualityFor` does: Off and Original by their two switches alone, a shadow-map level by every value, and **Custom** (an entry that cannot be chosen) for a mix no level names. No catalog change.
+
+A row that a preset fills (MSAA, Post AA Mode, Anisotropic Filtering, Shadows, Bloom, Ambient Occlusion, Tone Mapping, Motion Blur, Depth of Field, CRT Filter, Irradiance Volumes, Specular, Bump Mapping, Sky) carries a **reset mark**: while its draft differs from what `com_performancePreset` would write, a small return arrow stands before its label. It is a button (`reset.<row>`, a `settings.system.edit` of the preset's values for that row) that follows its row in the reading order. While any row is marked, Performance Preset reads **Custom**, an entry that cannot be chosen; the draft keeps the preset's name, and the preset row's own mark resets every row. The generator reads the preset values from `PerformancePreset.cpp`. Frame Rate Cap carries no mark: Auto-Detect sets it to the display's refresh rate.
 
 ### Dependent rows
 
@@ -44,12 +50,13 @@ On the retained pages a row that another setting has turned off is dimmed and di
 
 | Page | Row | Enabled while | Why |
 |---|---|---|---|
-| Display | Borderless Window | Fullscreen is off | `r_borderless` only shapes a window. |
-| Display | Fullscreen Policy | Fullscreen is on | `r_fullscreenDesktop` is read only for fullscreen. |
-| Display | Window Width, Window Height | Fullscreen is off | A window's size (unchanged). |
-| Display | Display Resolution, Custom FS Width/Height, Refresh Rate | Fullscreen is on and the policy is exclusive | Desktop fullscreen uses the desktop's mode, a window its window size. |
-| Display | Shadow Maps | Enable Shadows is on | Unchanged. |
-| Display | Character Self-Shadows | Shadows and Shadow Maps are on | Unchanged. |
+| Display | Window Width, Window Height | Window Mode is Windowed | Only a bordered window takes the window size; Borderless covers the display (#265). |
+| Display | Display Resolution, Custom FS Width/Height, Refresh Rate | Window Mode is Exclusive Fullscreen | Fullscreen uses the desktop's mode, a window its window size. |
+| Display | Window Mode's Exclusive Fullscreen option | Expand Across Displays is No | Exclusive fullscreen switches one display's mode; `BuildDisplayRequest` refuses it with `r_multiScreen 1`. |
+
+The retained Display page's **Window Mode** (#264) replaces the classic page's Fullscreen, Borderless Window and Fullscreen Policy rows. Windowed is `r_fullscreen 0`, `r_borderless 0`; Borderless is `r_fullscreen 0`, `r_borderless 1`; Fullscreen is `r_fullscreen 1`, `r_fullscreenDesktop 1`; Exclusive Fullscreen is `r_fullscreen 1`, `r_fullscreenDesktop 0`. One choice edits the three settings in one draft patch; a windowed mode keeps `r_fullscreenDesktop` and a fullscreen mode keeps `r_borderless`, which neither reads. The classic page keeps its three rows.
+| Display | Character Self-Shadows | Shadows is at a shadow-map level (`r_shadows 1`, `r_useShadowMap 1`) | It acts only under shadow-mapped lights. |
+| Display | A row's reset mark | The row no longer holds its preset's value | The mark is hidden otherwise, and Up and Down pass over it. |
 | Display | MSAA, Rendering Device, Renderer, Auto-Detect | The renderer or device reports it can | Unchanged capability gates. |
 | Controls | Accel Offset, Accel Curve, Sensitivity Cap | Mouse Accel is not 0 | Read only inside the acceleration branch. |
 | Controls | Every Controller and Aim tab row except those listed below | Controller Input is on | Controller input off closes the controllers. Toggle Crouch, Always Run, Wheel Sensitivity and Wheel Offset (also keyboard and VR), the two reset buttons and Touchscreen stay enabled. |
@@ -317,7 +324,7 @@ The Game Options pane is `p_settings_game` and is included from `content/baseoq4
 | Weapon Z Offset | `sliderDef` + `editDef` | `set_game_cl_gun_z_slider_bar`, `set_game_cl_gun_z_value` | `cl_gun_z` | `-5..5`, step `0.05` | Additive client-side up offset. |
 | Weapon Kick | `choiceDef` | `set_game_weaponkick_value` | `g_weaponMuzzleKick` | `No;Yes` | View model kicks back and tilts when the weapon fires. Presentation only: it never moves aim or the shot origin. Multiplayer weapon defs zero the stock kick values, so the game restores each weapon's single-player kick when this is on. |
 | Virtual Reality | `windowDef` label | `set_game_vr` | N/A | N/A | Section label. |
-| VR Mode | `choiceDef` | `set_game_vr_enable_value` | `vr_enable` | `Disabled;Enabled` | Starts or ends the OpenXR session at once (OpenGL renderer). |
+| VR Mode | `choiceDef` | `set_game_vr_enable_value` | `vr_enable` | `Off;On;Automatic` | Off asks no runtime; On starts or ends the OpenXR session at once; Automatic plays in VR when a headset answers at launch and offers one that connects later (VR-08). In the retained page, Comfort Setup (VR SETUP) and Look for Headset (`vr_detect`) follow it, and in VR the page opens on Virtual Reality with the flat gun's place and field of view and stereoscopic 3D hidden (VR-09). |
 | Aim With | `choiceDef` | `set_game_vr_aimmode_value` | `vr_aimMode` | `1 Controller`, `0 Head` | Controller aim hides the screen crosshair; the laser sight marks shots. |
 | Weapon Hand | `choiceDef` | `set_game_vr_lefthanded_value` | `vr_leftHanded` | `0 Right`, `1 Left` | Swaps the triggers, grips and sticks with the weapon. |
 | Turning | `choiceDef` | `set_game_vr_turnmode_value` | `vr_turnMode` | `0 Snap`, `1 Smooth` | Weapon-hand stick left and right. |

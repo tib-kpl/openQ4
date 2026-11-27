@@ -200,6 +200,8 @@ typedef enum {
 	SHADOWMAP_CASTER_REJECT_AREA_DISCONNECTED,
 	SHADOWMAP_CASTER_REJECT_SPECTRUM_MISMATCH,
 	SHADOWMAP_CASTER_REJECT_LOD,
+	// an animating caster whose shadow from this light misses the view
+	SHADOWMAP_CASTER_REJECT_OFFSCREEN_LIVE,
 	SHADOWMAP_CASTER_REJECT_COUNT
 } shadowMapCasterRejectReason_t;
 
@@ -308,9 +310,15 @@ typedef struct viewLight_s {
 	int						shadowMapPrelightStencilReadyMask;
 	const struct drawSurf_s	*translucentInteractions;	// get shadows from everything
 	// Front end only (Vulkan): the receiver scan of R_ShadowMapLightWillUseShadowMaps
-	// for this view, kept until one of the light's interactions changes state.
+	// for this view. An interaction of the light that changes state corrects it
+	// in place (R_ShadowMapReceiverScanChanged); the blocker is the interaction
+	// the scan stopped at when its verdict keeps the light on stencil.
 	bool					shadowMapReceiverScanValid;
 	bool					shadowMapReceiverScanAllowsMaps;
+	// r_shadowMapReceiverScanIncremental 2: the verdict a whole scan after every change gives
+	bool					shadowMapReceiverScanReferenceValid;
+	bool					shadowMapReceiverScanReferenceAllowsMaps;
+	const class idInteraction *shadowMapReceiverScanBlocker;
 	// The edge of this light's projected atlas tile in this view, set once the
 	// view's lights are final (R_ShadowMapAssignAtlasTiles) so every atlas light
 	// of the view fits. 0 for a point cube light or one that was not assigned;
@@ -947,7 +955,14 @@ typedef struct {
 	// our OpenGL state deltas
 	glstate_t			glState;
 
+	// whole-view copies since r_debugRenderToTexture 1 last reported them
 	int					c_copyFrameBuffer;
+	int					c_copyDepthBuffer;
+	// A copy reads backEnd.renderTexture. A caller that points that at a source
+	// it has not bound, for the length of one copy, names the target that stays
+	// bound here: it is what the copy puts back (idImage::CopyDepthbuffer).
+	bool				copyKeepsBoundTarget;
+	idRenderTexture *	copyBoundTarget;
 } backEndState_t;
 
 
@@ -1127,6 +1142,8 @@ public:
 	int						frameCount;		// incremented every frame
 	int						viewCount;		// incremented every view (twice a scene if subviewed)
 											// and every R_MarkFragments call
+	int						areaRefCount;	// incremented for every entity or light whose area
+											// references are built (portalArea_t::refCount)
 	int						videoRestartCount; // incremented after successful vid_restart operations
 	int						glContextGeneration; // incremented only when the GL context is destroyed and recreated
 												 // (full restart); partial restarts keep the context and its
@@ -1600,6 +1617,9 @@ extern idCVar r_rendererModernLightingParity;	// diagnostic override forcing lig
 extern idCVar r_rendererModernClassicShapes;	// REN-02 rollback mask for corridor-owned classic shapes
 const int MODERN_CLASSIC_SHAPE_STAGES = 1;	// stage transforms on cutouts and baked-light receivers
 const int MODERN_CLASSIC_SHAPE_STENCIL_SHADOWS = 2;	// stencil-shadowed lights
+const int MODERN_CLASSIC_SHAPE_OVERLAYS = 4;	// additive ambient overlay stages, drawn by ARB2 over the composed frame
+const int MODERN_CLASSIC_SHAPE_CPU_SKINNED = 8;	// CPU-skinned and other front-end-deformed receivers
+const int MODERN_CLASSIC_SHAPE_ALL = 15;
 extern idCVar r_rendererOwnershipCompose;	// REN-02 step 5: compose the aggregate executor with the shared world domains
 extern idCVar r_rendererModernAutoPromote;	// allow gated default modern-visible promotion
 extern idCVar r_rendererPromotionEvidence;	// Phase 8 evidence token required before auto-promotion
@@ -1668,6 +1688,7 @@ extern idCVar r_shadowMapTranslucentReceivers;	// translucent surfaces sample th
 extern idCVar r_shadowMapSubviewPolicy;	// 0 = full renders in subviews, 1 = reuse-or-stencil, 2 = always stencil
 extern idCVar r_shadowMapReportInterval;	// frames between shadow-map diagnostic reports
 extern idCVar r_shadowMapPrelightCasters;	// 0 = world surfaces whole, 1 = prelight front caps for lights whose source lies outside their box, 2 = for every prelit light
+extern idCVar r_shadowMapCullOffscreenLiveCasters;	// 1 = leave an animating caster out of a map its shadow cannot reach the view through
 extern idCVar r_shadowMapConservativeCasters;	// 1 = keep shadow-map caster submission independent from visible receiver scissors
 extern idCVar r_shadowMapProjectedCSM;	// 1 = allow ordinary projected lights to use CSM when r_shadowMapCSM is enabled
 extern idCVar r_shadowMapDepthCompare;	// 1 = use sampler2DShadow compare mode for projected depth maps
@@ -1697,10 +1718,19 @@ extern idCVar r_shadowMapSkipStencilShadows;	// 1 = skip stencil volume generati
 bool R_ShadowMapLightWillUseShadowMaps( const idRenderLightLocal *lightDef, const bool applySubviewPolicy = true );
 // remembers, for the Vulkan receiver scan, whether the model an entity's interactions are built from has a surface only stencil can shadow
 void R_ShadowMapNoteEntityModel( idRenderEntityLocal *def, const idRenderModel *model );
+// an interaction of the light changed state, or (leavingList) is about to leave the light's list:
+// keeps the Vulkan receiver scan's verdict for the view current (tr_light.cpp)
+void R_ShadowMapReceiverScanChanged( const idRenderLightLocal *lightDef, const class idInteraction *inter, const bool leavingList );
+// rendererVulkanMemoryInfo: how the receiver scan's verdicts were reached since the last reset
+void R_ShadowMapReceiverScanPrintInfo( const bool reset );
 // sizes the projected atlas tiles of a finished view so its lights all fit (tr_light.cpp)
 void R_ShadowMapAssignAtlasTiles( viewDef_t *viewDef );
 // backend-published: shadow-map resources were successfully prepared this video generation (draw_arb2.cpp)
 bool RB_ShadowMapResourcesKnownGood( bool pointLight );
+// Whether every point pass of the next view is sure of a cube to render into.
+// False on a back end whose cube pool is bounded and nearly full: the front
+// end then keeps point lights' stencil volumes (R_ShadowMapLightWillUseShadowMaps).
+bool RB_ShadowMapPointPoolHasRoom( void );
 extern idCVar r_shadowMapStaticCache;		// 1 = reuse resident static-only shadow-map passes
 extern idCVar r_shadowMapStaticHysteresisFrames;	// frames after dynamic casters before static reuse
 extern idCVar r_shadowMapResidentFrames;	// frames a resident static shadow map may remain unused
@@ -1710,7 +1740,7 @@ extern idCVar r_shadowMapCacheMovingLights;	// 1 = moving lights go through the 
 extern idCVar r_shadowMapStencilFallbackViews;	// views without a failure before a light leaves the stencil fallback
 extern idCVar r_shadowMapPointCacheMegs;	// memory bound on those slots, MiB
 extern idCVar r_shadowMapPointCompose;	// 1 = compose live casters over a cached static cube
-extern idCVar r_shadowMapPointLayered;	// 1 = draw a point shadow cube as one layered target (OpenGL)
+extern idCVar r_shadowMapPointLayered;	// 1 = draw a point shadow cube as one layered target
 extern idCVar r_shadowMapStaticCutouts;	// 1 = cutout casters with unchanging coverage are cached as static
 extern idCVar r_shadowMapCacheCSM;		// 1 = allow CSM/static cache reuse
 extern idCVar r_shadowMapTranslucentFilterRadius;	// translucent moment filter radius, -1 = inherit opaque radius
@@ -1927,6 +1957,7 @@ typedef enum {
 	SHADOWMAP_DEBUGMODE_COUNT
 } shadowMapDebugMode_t;
 extern idCVar r_shadowMapDebugMode;		// projected shadow-map visualization mode
+extern idCVar r_shadowMapCascadeStableExtent;	// how many nearest cascades are sized by their slice's bounding sphere, so turning the view leaves their scale alone
 extern idCVar r_shadowMapCascadeStabilize;	// snap projected-light cascade bounds to texels
 extern idCVar r_shadowMapCascadeFarMap;		// last cascade holds the whole light past the fitted reach
 extern idCVar r_shadowMapCascadeFarCache;	// GL: cache that cascade's still scenery between frames
@@ -2133,7 +2164,16 @@ bool R_StaticIndexCacheAllowed( const idRenderEntityLocal *def );
 // of its prelight volume (tr_light.cpp). NULL when the light has none to give.
 bool R_ShadowMapLightSourceOutsideVolume( const renderLight_t &parms );
 srfTriangles_t *R_ShadowMapPrelightCaster( idRenderLightLocal *light );
-srfTriangles_t *R_ShadowMapBuildPrelightCaster( const srfTriangles_t *shadowTri );
+// a perforated world triangle a folded prelight volume casts from (R_ShadowMapBuildPrelightCaster)
+typedef struct shadowMapPrelightCutout_s {
+	idVec3					v[3];
+	idPlane					plane;
+	idBounds				bounds;
+} shadowMapPrelightCutout_t;
+bool R_ShadowMapPrelightVolumeFoldsCaps( const srfTriangles_t *shadowTri );
+bool R_ShadowMapPrelightKeepsCutout( const idRenderLightLocal *light, const idMaterial *shader, const srfTriangles_t *geo );
+srfTriangles_t *R_ShadowMapBuildPrelightCaster( const srfTriangles_t *shadowTri,
+	const idList<shadowMapPrelightCutout_t> *cutouts = NULL );
 bool R_ShadowMapPrelightCasterSelfTest( void );
 // links it into the view light's caster chain (Interaction.cpp)
 void R_ShadowMapLinkPrelightCaster( viewLight_t *vLight );

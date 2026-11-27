@@ -20,7 +20,7 @@ the real-hardware checklist is [controller qualification](controller-qualificati
 | Stick and gyro look in the usercmd and the late look | `src/framework/UsercmdGen.cpp` | `presentation_hf_contract.py`, `sp_turbo_weapon_wheel.py` |
 | Context actions, layouts, separate resets | `src/framework/KeyInput.cpp` | `controller_runtime.py --scenario layout` |
 | Rumble mix, trigger pulses, side-biased hits | `src/sys/sys_local.cpp` | `controller_runtime.py --scenario feedback` |
-| Aim assistance targets, controller light and trigger feel | `src/game/Player.cpp`, `src/mpgame/Player.cpp` | `controller_runtime.py --scenario assist` |
+| Aim assistance targets, controller light and trigger feel | `src/game/Player.cpp` | `controller_runtime.py --scenario assist` |
 | The on-screen keyboard's layouts | `src/framework/OnScreenKeyboard.h` | `openq4-on-screen-keyboard` |
 | The on-screen keyboard: its document, when it shows, what its keys type | `tools/ui/retained_keyboard.py`, `Session_menu.cpp` (`UpdateOnScreenKeyboard`), `UI_RetainedFieldInput` | `openq4-ui-on-screen-keyboard`, `controller_runtime.py --scenario keyboard` |
 | The test panel, rumble test and first-connection notices | `tools/ui/retained_controller_test.py`, `Session_menu.cpp` (`UpdateControllerTestPanel`), `Sys_GetControllerTestState` | `openq4-ui-retained-controls`, `controller_runtime.py --scenario testpanel` |
@@ -71,8 +71,9 @@ Two things a virtual pad cannot do have seams of their own:
   input, while the state a page shows still comes from the virtual pad.
 
 `tools/tests/controller_runtime.py --retail <Quake 4>` launches the staged
-client hidden on a single-player map and runs twelve scenarios: `handover`,
-`pause`, `battery`, `turnrate`, `gyro`, `feedback`, `layout`, `assist`, `menu`,
+client hidden on a single-player map and runs thirteen scenarios: `handover`,
+`twins` (two virtual pads moving together, one through a flatter curve: no
+handover and the turn rate of the pad alone), `pause`, `battery`, `turnrate`, `gyro`, `feedback`, `layout`, `assist`, `menu`,
 `testpanel`, `keyboard` and a `baseline` exit check. It needs an installed Quake 4, so it is compiled in CI
 but not run there.
 
@@ -89,6 +90,21 @@ decides the active one:
   serial number where the device reports one): only it can be active while it
   is connected. While it is away the others work as Automatic, and it takes
   charge back when it returns.
+- **Put down first.** Use moves charge only from a controller that has been
+  put down: it holds nothing (no button, no stick or trigger past its dead
+  zone, no hat off centre) and has not been used for one second
+  (`CONTROLLER_HANDOVER_REST_MSEC`). One pair of hands often shows up as two
+  devices, a remapper's virtual pad (DS4Windows, reWASD, x360ce, Steam Input)
+  beside the physical one. Both report every movement, and before this rule
+  each event moved charge to the other: held buttons released over and over
+  and the stick switched between two differently shaped signals, so turning
+  speed jumped about (a player report against 0.15.0, 24 November 2026).
+- **Twins.** When the controller that just lost charge is used again within
+  250 ms, it is the same hands on a second device. The log says so
+  (`controller: '<a>' moves with '<b>': one controller seen as two devices`),
+  and the twin takes charge back only after the active controller has rested
+  for five seconds, so the race at the start of each movement after a pause
+  does not move charge back and forth. A false pairing therefore never lasts.
 - When the active controller goes away another connected one takes over (the
   chosen device, else a gamepad, else a joystick).
 

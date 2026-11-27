@@ -1308,8 +1308,11 @@ def validate_shadow_depth_format_selection() -> None:
         (
             "vkCtx.shadowDepthFormat = VK_FORMAT_UNDEFINED;",
             "VK_FORMAT_D24_UNORM_S8_UINT,",
-            "VK_FORMAT_D32_SFLOAT_S8_UINT,",
+            # No shadow consumer reads stencil, so a device without packed
+            # 24-bit depth (AMD, Apple) takes four-byte float depth before the
+            # eight-byte stencil-carrying form: same depth, half the memory.
             "VK_FORMAT_D32_SFLOAT,",
+            "VK_FORMAT_D32_SFLOAT_S8_UINT,",
             "VK_FORMAT_X8_D24_UNORM_PACK32,",
             "VK_FORMAT_D16_UNORM,",
             "VK_FORMAT_FEATURE_2_DEPTH_STENCIL_ATTACHMENT_BIT",
@@ -1383,7 +1386,7 @@ def validate_shadow_depth_format_selection() -> None:
     require_compact(stencil_attachment,
         "return vkCtx.shadowDepthHasStencil && r_vkShadowStencilAttachmentReference.GetBool();",
         "reference attachment gated by actual format")
-    for pipeline in ("casterPipeline", "pointCasterPipeline"):
+    for pipeline in ("casterPipeline", "pointCasterPipeline", "pointCasterLayeredPipeline"):
         if executor.count(f"for ( VkPipeline &pipeline : vkExec.{pipeline} )") != 2:
             raise AssertionError("Both caster variants must retire on shutdown and format reconfiguration")
     aspect_mask = braced_body(
@@ -1675,11 +1678,24 @@ def validate_csm_atlas_and_receiver_contract() -> None:
         "layout(location = 14) out float vViewDepth;",
         "projected receiver view depth",
     )
+    # Unclamped on both renderers: a vertex behind the eye clamped to zero bends
+    # the depth interpolated across its triangle, and pixels at the player's
+    # feet selected the next cascade.
     require_compact(
         vertex_main,
-        "vViewDepth = max(dot(position, shadow.viewDepthRow), 0.0);",
+        "vViewDepth = dot(position, shadow.viewDepthRow);",
         "projected receiver view depth",
     )
+    if "vViewDepth = max(" in vertex_main:
+        raise AssertionError("projected receiver view depth is clamped per vertex")
+    gl_vertex_shader = read("content/baseoq4/pak0/glprogs/shadow_interaction.vs")
+    require_compact(
+        gl_vertex_shader,
+        "vViewDepth = -viewPosition.z;",
+        "OpenGL projected receiver view depth",
+    )
+    if "vViewDepth = max(" in gl_vertex_shader:
+        raise AssertionError("OpenGL projected receiver view depth is clamped per vertex")
 
     fragment_shader = read("src/renderer/Vulkan/shaders/interaction_shadow.frag")
     coord_select = braced_body(
@@ -1949,11 +1965,18 @@ def validate_shadow_descriptor_abi() -> None:
         )
 
 
-def validate_exact_filter_tiers(sample_body: str, sample_call: str, context: str) -> None:
-    tier_start = sample_body.find("float result = " + sample_call)
+def validate_exact_filter_tiers(
+    sample_body: str, sample_call: str, context: str, center: str | None = None
+) -> None:
+    # `center` names a centre verdict taken before the tiers start (the
+    # projected receiver's, which the PCSS search may already have read); the
+    # tiers then issue the twelve off-centre samples only.
+    center_start = "float result = " + (center if center is not None else sample_call)
+    tier_start = sample_body.find(center_start)
     if tier_start == -1:
         raise AssertionError(f"{context} is missing the center sample that starts its tiered kernel")
-    if sample_body[tier_start:].count(sample_call) != 13:
+    expected_samples = 12 if center is not None else 13
+    if sample_body[tier_start:].count(sample_call) != expected_samples:
         raise AssertionError(f"{context} must issue exactly 13 samples at its maximum tier")
     if sample_body.count("rotation * vec2(") != 12:
         raise AssertionError(
@@ -1977,7 +2000,7 @@ def validate_exact_filter_tiers(sample_body: str, sample_call: str, context: str
     require_order(
         sample_body,
         (
-            "float result = " + sample_call,
+            center_start,
             "if (shadow.filterParams.y <= 1.0)",
             "return result;",
             "if (shadow.filterParams.y <= 5.0)",
@@ -2067,7 +2090,10 @@ def validate_shadow_filtering_contract() -> None:
             "block.filterParams[ 0 ] = filterSettings.filterRadius;",
             "block.filterParams[ 1 ] = (float)filterSettings.filterTaps;",
             "block.filterParams[ 2 ] = (float)filterSettings.filterMode;",
-            "r_shadowMapDepthCompare.GetBool() && filterSettings.filterMode != 2",
+            # PCSS-lite never takes the comparison sampler; it compares raw
+            # depths, bilinearly unless r_vkShadowBilinearPCSS is off
+            "block.filterParams[ 3 ] = VK_Inter_ProjectedTapCompare(",
+            "r_shadowMapDepthCompare.GetBool(), filterSettings.filterMode );",
             "block.pcssParams[ 0 ] = filterSettings.pcssLightRadius;",
             "block.pcssParams[ 1 ] = filterSettings.pcssMaxRadius;",
             "block.pcssParams[ 2 ] = filterSettings.effectiveFilterRadius;",
@@ -2086,12 +2112,59 @@ def validate_shadow_filtering_contract() -> None:
         projected_compare,
         (
             "float compareDepth = depth - ShadowReceiverBias(cascadeIndex) - tapBias;",
+            "if (shadow.filterParams.w > 1.5)",
+            "return BilinearShadowCompare(uv, compareDepth);",
             "if (shadow.filterParams.w > 0.5)",
             "texture(shadowCompareMap, vec3(uv, compareDepth))",
             "RawShadowDepth(uv)",
             "compareDepth <= storedDepth ? 1.0 : 0.0",
         ),
         "projected runtime compare/raw selection",
+    )
+
+    # Each PCSS-lite tap weighs the four texels around it, as the comparison
+    # sampler would: one texel a tap gave nine taps ten grey levels. Under the
+    # ownership union a texel's depth is the nearer of two tiles, taken before
+    # the compare, which is why the shader does it and no sampler can.
+    interactions = read("src/renderer/Vulkan/vk_Interactions.cpp")
+    tap_mode = braced_body(
+        interactions,
+        "static float VK_Inter_ProjectedTapCompare(",
+        "projected tap compare mode",
+    )
+    require_order(
+        tap_mode,
+        (
+            "if ( filterMode == 2 ) {",
+            "return r_vkShadowBilinearPCSS.GetBool() ? 2.0f : 0.0f;",
+            "return hardwareCompare ? 1.0f : 0.0f;",
+        ),
+        "PCSS-lite compares raw depths, bilinearly by default",
+    )
+    require(
+        interactions,
+        "mapPass.projected.depthCompare, mapPass.projected.filter.filterMode );",
+        "the shared stream's block takes the same tap mode",
+    )
+    bilinear = braced_body(
+        projected,
+        "float BilinearShadowCompare(",
+        "bilinear raw-depth compare",
+    )
+    require_order(
+        bilinear,
+        (
+            "vec2 texel = uv * vec2(textureSize(shadowRawMap, 0)) - vec2(0.5);",
+            "vec2 f = fract(texel);",
+            "vec4 depths = textureGather(shadowRawMap, uv, 0);",
+            "if (any(notEqual(shadow.debugParams.zw, vec2(0.0)))) {",
+            "depths = min(depths, textureGather(shadowRawMap, uv + shadow.debugParams.zw, 0));",
+            "vec4 lit = step(vec4(compareDepth), depths);",
+            "vec4 weights = vec4((1.0 - f.x) * f.y, f.x * f.y,",
+            "f.x * (1.0 - f.y), (1.0 - f.x) * (1.0 - f.y));",
+            "return dot(lit, weights);",
+        ),
+        "four texels, the union's minimum first, in textureGather's order",
     )
 
     projected_rotation = braced_body(
@@ -2173,7 +2246,7 @@ def validate_shadow_filtering_contract() -> None:
         (
             """ShadowDebugModeIs(kShadowDebugPCFOff)
                 || shadow.filterParams.z < 1.5
-                || shadow.filterParams.w > 0.5""",
+                || (shadow.filterParams.w > 0.5 && shadow.filterParams.w < 1.5)""",
             "float compareDepth = depth - ShadowReceiverBias(cascadeIndex);",
             "float blockerDepth = 0.0;",
             "float blockerCount = 0.0;",
@@ -2210,6 +2283,32 @@ def validate_shadow_filtering_contract() -> None:
         projected_samples,
         "SampleShadowCompare(",
         "projected Poisson shadow filter",
+        center="centreLit;",
+    )
+    # The search's first probe is the texel the centre tap compares, against
+    # the same biased depth: the filter takes that verdict and reads the map
+    # for the centre only when no search ran.
+    require_order(
+        blocker_search,
+        (
+            "centreLit = -1.0;",
+            "float d0 = RawShadowDepth(uv);",
+            "centreLit = compareDepth <= d0 ? 1.0 : 0.0;",
+        ),
+        "projected PCSS search hands its centre verdict to the filter",
+    )
+    require_order(
+        projected_samples,
+        (
+            "float centreLit;",
+            "float filterRadius = ProjectedPCSSRadius(uv, depth, cascadeIndex, clampMin, clampMax, texelStep, rotation, centreLit);",
+            "if (centreLit < 0.0) {",
+            "centreLit = SampleShadowCompare(uv, depth, cascadeIndex, 0.0);",
+            "if (filterRadius <= 0.0) {",
+            "return centreLit;",
+            "float result = centreLit;",
+        ),
+        "projected filter reuses the search's centre texel",
     )
     if projected_samples.count("ShadowOffsetRotation(") != 1:
         raise AssertionError("Projected blocker search and PCF taps must share one stable rotation")
@@ -2335,9 +2434,24 @@ def validate_shadow_filtering_contract() -> None:
         "vec4 SampleShadowCascade(",
         "OpenGL projected Poisson shadow filter",
     )
-    gl_projected_tier_start = gl_projected_samples.find("float shadow = 0.0;")
-    if gl_projected_tier_start == -1 or gl_projected_samples[gl_projected_tier_start:].count("SampleShadowCompare(") != 13:
+    # The centre verdict is taken before the tiers start: from the PCSS
+    # search when it ran (its first probe is that texel, compared against the
+    # same biased depth), from one compare otherwise. The tiers then issue the
+    # twelve off-centre samples.
+    gl_projected_tier_start = gl_projected_samples.find("float shadow = centreLit;")
+    if gl_projected_tier_start == -1 or gl_projected_samples[gl_projected_tier_start:].count("SampleShadowCompare(") != 12:
         raise AssertionError("OpenGL projected PCF must issue exactly 13 samples at its maximum tier")
+    if gl_projected_samples.count("SampleShadowCompare( uv, depth, cascadeIndex, 0.0 )") != 1:
+        raise AssertionError("OpenGL projected PCF must compare its centre texel once")
+    require_order(
+        gl_blocker_search,
+        (
+            "centreLit = -1.0;",
+            "float d0 = RawShadowDepth( uv );",
+            "centreLit = ( compareDepth <= d0 ) ? 1.0 : 0.0;",
+        ),
+        "OpenGL PCSS search hands its centre verdict to the filter",
+    )
     if gl_projected_samples.count("rotation * vec2(") != 12:
         raise AssertionError("OpenGL projected PCF must transform twelve off-center taps")
     if gl_projected_samples.count("ShadowOffsetRotation(") != 1:
@@ -2346,8 +2460,10 @@ def validate_shadow_filtering_contract() -> None:
         gl_projected_samples,
         (
             "mat2 rotation = ShadowOffsetRotation( tileTexel, depth );",
-            "ProjectedPCSSRadius( uv, depth, cascadeIndex, clampMin, clampMax, rotation )",
-            "shadow += SampleShadowCompare( uv, depth, cascadeIndex, 0.0 );",
+            "ProjectedPCSSRadius( uv, depth, cascadeIndex, clampMin, clampMax, rotation, centreLit )",
+            "if ( centreLit < 0.0 ) {",
+            "centreLit = SampleShadowCompare( uv, depth, cascadeIndex, 0.0 );",
+            "float shadow = centreLit;",
             "if ( uShadowFilterTaps <= 1.0 )",
             "if ( uShadowFilterTaps <= 5.0 )",
             "if ( uShadowFilterTaps <= 9.0 )",
@@ -2465,7 +2581,8 @@ def validate_projected_footprint_bias_contract() -> None:
         "float tapBias = ShadowFootprintBias( cascadeIndex ) * filterRadius;",
         "OpenGL projected Poisson shadow filter",
     )
-    if gl_samples.count("SampleShadowCompare( uv, depth, cascadeIndex, 0.0 )") != 2:
+    # one centre compare, shared by the unfiltered return and the tiers
+    if gl_samples.count("SampleShadowCompare( uv, depth, cascadeIndex, 0.0 )") != 1:
         raise AssertionError("OpenGL projected centre samples must keep the plain receiver bias")
     for tap_index in range(1, 13):
         require(
@@ -2509,7 +2626,7 @@ def validate_projected_footprint_bias_contract() -> None:
         "float tapBias = ShadowFootprintBias(cascadeIndex) * filterRadius;",
         "Vulkan projected Poisson shadow filter",
     )
-    if vulkan_samples.count("SampleShadowCompare(uv, depth, cascadeIndex, 0.0)") != 2:
+    if vulkan_samples.count("SampleShadowCompare(uv, depth, cascadeIndex, 0.0)") != 1:
         raise AssertionError("Vulkan projected centre samples must keep the plain receiver bias")
     for tap_index in range(1, 13):
         require(
@@ -3256,7 +3373,7 @@ def validate_shadow_contact_and_gl_robustness_contract() -> None:
             "if ( !haveGeometry )",
             "R_ShadowMapCasterTransformWinding( modelMatrix )",
             "if ( winding == 0 )",
-            "( mode == 2 || mode == 4 ) && perfectHull",
+            "( mode == 4 || ( mode == 2 && !R_ShadowMapLightStoresFarShell( vLight ) ) ) && perfectHull",
             "winding < 0 || R_ShadowMapLightOriginInsideCasterBounds( vLight,",
             "return nearShell;",
             "if ( mode == 4 )",
@@ -3309,9 +3426,10 @@ def validate_shadow_contact_and_gl_robustness_contract() -> None:
             "R_ClassifyShadowMapLight( vLight ).pointLight",
             "return false;",
             "R_ShadowMapBuildBaseClipPlanesForLight( vLight, clipPlanes );",
-            "return R_ShadowMapClipPlanesMirrorWinding( clipPlanes );",
+            "const bool mirrored = R_ShadowMapClipPlanesMirrorWinding( clipPlanes );",
+            "return R_ShadowMapLightStoresFarShell( vLight ) ? !mirrored : mirrored;",
         ),
-        "cube faces are cameras; projected maps answer from their own planes",
+        "cube faces are cameras; projected maps answer from their own planes, the synthesized ones as measured",
     )
     faces_selftest = braced_body(
         projected_cpp,
@@ -4962,7 +5080,9 @@ def validate_exact_static_cache_and_admission_contract() -> None:
             "VK_ShadowMap_MapNameHash( viewDef )",
             "VK_ShadowMap_ProjectedCacheSlotLimit()",
             "VK_ShadowMap_PointCacheSlotLimit()",
-            "r_shadowMapResidentFrames.GetInteger()",
+            # the setting counted at 60 frames a second, scaled to the display
+            # rate: two seconds at the default whatever the frame rate
+            "const int residentFrames = R_ShadowMapResidentFrames();",
             "vkShadow.cacheRenderWorld != renderWorld",
             "vkShadow.cacheMapFileCRC != mapFileCRC",
             "vkShadow.cacheMapNameHash != mapNameHash",
@@ -6129,8 +6249,10 @@ def validate_fail_closed_target_and_stencil_behavior() -> None:
             """if ( pointLightPath ) {
                 if ( !r_shadowMapPointLights.GetBool() || !glConfig.cubeMapAvailable ) {
                     return false;
-                }
-            } else if ( !R_ShadowMapAtlasHoldsView() ) {""",
+                }""",
+            # a point light's cube pool has its own gate (validate_point_pool_pressure_contract)
+            "if ( !RB_ShadowMapPointPoolHasRoom() ) {",
+            "} else if ( !R_ShadowMapAtlasHoldsView() ) {",
             "return false;",
             "if ( !RB_ShadowMapResourcesKnownGood( pointLightPath ) ) { return false; }",
         ),
@@ -7135,11 +7257,18 @@ def validate_shadow_gpu_timing_contract() -> None:
         }""",
         "spans recorded this frame are never resolved",
     )
+    # A span is read only once its frame slot has come back around. Until its
+    # command buffer runs, the reset it recorded has not happened and the two
+    # queries still report the slot's previous result as available: polled
+    # earlier, that old result was taken for this span's.
     require_compact(
         begin_view,
-        """VK_ShadowGpuTiming_ResolveSpan( span, i,
-            synchronized && age > VK_FRAMES_IN_FLIGHT );""",
-        "the synchronized wait is gated on a retired frame slot",
+        """if ( age <= VK_FRAMES_IN_FLIGHT ) {
+            vkShadowTimingReport.pending++;
+            continue;
+        }
+        VK_ShadowGpuTiming_ResolveSpan( span, i, synchronized );""",
+        "a span is read only after its frame slot has retired",
     )
     require_compact(
         begin_view,
@@ -7834,7 +7963,8 @@ def validate_vulkan_receiver_scan_contract() -> None:
     # slot (no geometry, no shader, outside the light) receives nothing and must
     # not keep them; an unbuilt interaction stays unknown; an interaction being
     # built answers for every surface of its model. The verdict is memoized per
-    # view light, so every interaction state change must invalidate it.
+    # view light, so every interaction state change must reach the memo: it is
+    # corrected from the interaction that changed (FPS-08), never left stale.
     light = read("src/renderer/tr_light.cpp")
     admission = braced_body(light, "bool R_ShadowMapLightWillUseShadowMaps(",
                             "front-end shadow-map stencil-elision admission")
@@ -7851,19 +7981,51 @@ def validate_vulkan_receiver_scan_contract() -> None:
     # the model it last drew when it animates.
     require_order(scan, ("vLight->shadowMapReceiverScanValid", "return vLight->shadowMapReceiverScanAllowsMaps;",
                          "VK_MaterialPrograms_NeedsStencilGeneration()",
-                         "if ( inter->IsDeferred() ) {",
-                         "if ( entityDef->viewCount != tr.viewCount || inter->unbuiltVisitView == tr.viewCount ) {",
-                         "continue;",
-                         "if ( entityDef->viewEntity == NULL || entityDef->viewEntity->scissorRect.IsEmpty() ) {",
-                         "continue;",
-                         "if ( hModel != NULL && hModel->IsDynamicModel() == DM_STATIC && entityDef->parms.callback == NULL ) {",
-                         "R_ShadowMapNoteEntityModel( entityDef, hModel );",
-                         "if ( R_EntityReceiverVerdict( entityDef, generation, entityNeedsStencil )",
-                         "&& !entityNeedsStencil ) {",
-                         "continue;", "allowsMaps = false;",
-                         "if ( R_InteractionReceiverNeedsStencil( inter, generation ) ) {", "allowsMaps = false;",
-                         "vLight->shadowMapReceiverScanValid = true;"),
-                  "memoized Vulkan receiver scan keeps unbuilt interactions that may still gain receivers unknown")
+                         "const idInteraction *blocker = R_ShadowMapReceiverScanBlocker( lightDef, generation );",
+                         "const bool allowsMaps = blocker == NULL;",
+                         "vLight->shadowMapReceiverScanValid = true;",
+                         "vLight->shadowMapReceiverScanAllowsMaps = allowsMaps;",
+                         "vLight->shadowMapReceiverScanBlocker = blocker;"),
+                  "memoized Vulkan receiver scan remembers the interaction its verdict rests on")
+    whole = braced_body(light, "static const idInteraction *R_ShadowMapReceiverScanBlocker(", "whole receiver scan")
+    require_order(whole, ("inter = lightDef->firstInteraction; inter != NULL; inter = inter->lightNext",
+                          "if ( R_ShadowMapInteractionBlocksMaps( inter, generation ) ) {", "return inter;", "return NULL;"),
+                  "the whole scan stops at the first interaction that blocks maps")
+    blocks = braced_body(light, "static bool R_ShadowMapInteractionBlocksMaps(", "one interaction's receiver verdict")
+    require_order(blocks, ("if ( inter->IsDeferred() ) {",
+                           "if ( entityDef->viewCount != tr.viewCount || inter->unbuiltVisitView == tr.viewCount ) {",
+                           "return false;",
+                           "if ( entityDef->viewEntity == NULL || entityDef->viewEntity->scissorRect.IsEmpty() ) {",
+                           "return false;",
+                           "if ( hModel != NULL && hModel->IsDynamicModel() == DM_STATIC && entityDef->parms.callback == NULL ) {",
+                           "R_ShadowMapNoteEntityModel( entityDef, hModel );",
+                           "if ( R_EntityReceiverVerdict( entityDef, generation, entityNeedsStencil )",
+                           "&& !entityNeedsStencil ) {",
+                           "return false;", "return true;",
+                           "return R_InteractionReceiverNeedsStencil( inter, generation );"),
+                  "an unbuilt interaction that may still gain receivers in the view keeps its light unknown")
+    # One interaction changing corrects the memo in place. Allowed: only that
+    # interaction can block. Blocked: the verdict stands while its blocker still
+    # blocks, and is given up (never guessed) once it does not, or when the
+    # blocker leaves the list. Outside a view's front end it is simply dropped.
+    changed = braced_body(light, "void R_ShadowMapReceiverScanChanged(", "receiver scan correction")
+    require_order(changed, ("lightDef->viewCount != tr.viewCount", "#ifdef OPENQ4_RENDERER_VK_MODULE",
+                            "if ( tr.viewDef == NULL || inter == NULL || r_shadowMapReceiverScanIncremental.GetInteger() == 0 ) {",
+                            "vLight->shadowMapReceiverScanValid = false;",
+                            "const bool listed = !leavingList && ( inter->lightPrev != NULL || lightDef->firstInteraction == inter );",
+                            "if ( vLight->shadowMapReceiverScanAllowsMaps ) {",
+                            "if ( listed ) {",
+                            "if ( R_ShadowMapInteractionBlocksMaps( inter, generation ) ) {",
+                            "vLight->shadowMapReceiverScanAllowsMaps = false;",
+                            "vLight->shadowMapReceiverScanBlocker = inter;",
+                            "bool stillBlocked = blocker != NULL && ( blocker != inter || listed );",
+                            "stillBlocked = R_ShadowMapInteractionBlocksMaps( blocker, generation );",
+                            "if ( !stillBlocked ) {",
+                            "vLight->shadowMapReceiverScanValid = false;",
+                            "#else", "vLight->shadowMapReceiverScanValid = false;"),
+                  "a changed interaction corrects the memoized verdict or gives it up")
+    if "shadowMapReceiverScanAllowsMaps = true" in changed:
+        raise AssertionError("only a whole scan may conclude that a light's receivers allow maps")
     model_verdict = braced_body(light, "static bool R_ModelReceiverNeedsStencil(", "whole-model receiver verdict")
     require_order(model_verdict, ("surf->geometry == NULL",
                                   "R_RemapShaderBySkin( surf->shader, parms.customSkin, parms.customShader ), NULL )",
@@ -7893,25 +8055,43 @@ def validate_vulkan_receiver_scan_contract() -> None:
             "a visible entity whose interactions are all culled still records its model")
 
     interaction = read("src/renderer/Interaction.cpp")
-    for marker, context in (("idInteraction *idInteraction::AllocAndLink(", "new unbuilt interaction"),
-                            ("void idInteraction::FreeSurfaces(", "freed surfaces"),
-                            ("void idInteraction::Unlink(", "unlinked or emptied interaction")):
-        require(braced_body(interaction, marker, context), "R_InvalidateShadowMapReceiverScan(",
-                f"{context} invalidates the memoized receiver scan")
+    for marker, context, report in (
+            ("idInteraction *idInteraction::AllocAndLink(", "new unbuilt interaction",
+             "R_ShadowMapReceiverScanChanged( ldef, interaction, false );"),
+            ("void idInteraction::FreeSurfaces(", "freed surfaces",
+             "R_ShadowMapReceiverScanChanged( this->lightDef, this, false );"),
+            ("void idInteraction::Unlink(", "unlinked or emptied interaction",
+             "R_ShadowMapReceiverScanChanged( this->lightDef, this, true );")):
+        require(braced_body(interaction, marker, context), report,
+                f"{context} reports itself to the memoized receiver scan")
+    if "shadowMapReceiverScanValid" in interaction:
+        raise AssertionError("only tr_light.cpp may write the receiver scan memo")
+    # The scan may rest on the interaction that leaves: it has to hear before
+    # the links go, and an allocation only once the interaction is on the list.
+    require_order(braced_body(interaction, "void idInteraction::Unlink(", "unlinked or emptied interaction"),
+                  ("R_ShadowMapReceiverScanChanged( this->lightDef, this, true );",
+                   "this->lightDef->firstInteraction = this->lightNext;", "this->lightNext = this->lightPrev = NULL;"),
+                  "an interaction leaving its light's list is reported while it is still on it")
+    require_order(braced_body(interaction, "idInteraction *idInteraction::AllocAndLink(", "new unbuilt interaction"),
+                  ("ldef->firstInteraction = interaction;", "R_ShadowMapReceiverScanChanged( ldef, interaction, false );"),
+                  "a new interaction is reported once it is on its light's list")
     # Only an interaction AddActiveInteraction leaves unbuilt in this view may be
     # skipped; freeing its surfaces makes it unknown again.
     active = braced_body(interaction, "void idInteraction::AddActiveInteraction(", "interaction submission")
     require_order(active, ("struct unbuiltVisitMark_t {", "if ( inter->IsDeferred() ) {",
-                           "inter->unbuiltVisitView = tr.viewCount;", "R_InvalidateShadowMapReceiverScan( inter->lightDef );",
+                           "inter->unbuiltVisitView = tr.viewCount;",
+                           "R_ShadowMapReceiverScanChanged( inter->lightDef, inter, false );",
                            "} unbuiltVisitMark = { this };", "CreateInteraction( model );"),
                   "unbuilt-visit mark is recorded on every return of the only interaction builder")
-    require(braced_body(interaction, "void idInteraction::FreeSurfaces(", "freed surfaces"), "this->unbuiltVisitView = -1;",
-            "freed surfaces forget the unbuilt visit")
+    require_order(braced_body(interaction, "void idInteraction::FreeSurfaces(", "freed surfaces"),
+                  ("this->numSurfaces = -1;", "this->unbuiltVisitView = -1;",
+                   "R_ShadowMapReceiverScanChanged( this->lightDef, this, false );"),
+                  "freed surfaces forget the unbuilt visit before the scan is told")
     create = braced_body(interaction, "void idInteraction::CreateInteraction(", "interaction creation")
     require_order(create, ("R_ShadowMapNoteEntityModel( entityDef, model );",
-                           "buildModel = model;", "R_InvalidateShadowMapReceiverScan( lightDef );",
+                           "buildModel = model;", "R_ShadowMapReceiverScanChanged( lightDef, this, false );",
                            "const bool suppressRegeneratedShadowVolume =", "buildModel = NULL;",
-                           "R_InvalidateShadowMapReceiverScan( lightDef );", "MakeEmpty();"),
+                           "R_ShadowMapReceiverScanChanged( lightDef, this, false );", "MakeEmpty();"),
                   "interaction creation brackets its slots with the build model")
 
     programs = read("src/renderer/Vulkan/vk_MaterialPrograms.cpp")
@@ -8302,6 +8482,22 @@ def validate_point_cache_parity_and_receiver_cost_contract() -> None:
         "if ( !material->TestMaterialFlag( MF_NOSELFSHADOW ) ) { return false; }",
         "a material without noSelfShadow never takes its ownership",
     )
+    # #237: the world gun in a player's hands asks for the entity-level
+    # noSelfShadow its owner's body and head ask for, or the self-shadow
+    # option promotes the gun alone onto noSelfShadow props.
+    weapon = read("src/game/Weapon.cpp")
+    require(
+        braced_body(weapon, "void rvWeapon::InitWorldModel( void ) {", "world model setup"),
+        "worldModelRenderEntity->noSelfShadow = true;",
+        "a player's world gun keeps its owner's noSelfShadow rule when it is set up",
+    )
+    require(
+        braced_body(weapon, "void rvWeapon::Think ( void ) {", "weapon think"),
+        "worldModel->GetRenderEntity()->noSelfShadow = true;",
+        "a player's world gun keeps its owner's noSelfShadow rule after a restore",
+    )
+    require(read("src/game/Player.cpp"), "renderEntity.noSelfShadow = true;",
+        "a player's body keeps the entity-level noSelfShadow rule")
     require_compact(
         read("src/game/gamesys/SysCvar.cpp"),
         """return cvarSystem->GetCVarBool( "r_useShadowMap" )
@@ -8665,9 +8861,27 @@ def validate_atlas_tile_assignment_contract() -> None:
         "three[0].tileSize != 2048 || three[1].tileSize != 1024 || three[2].tileSize != 1024",
         "!R_ShadowMapFitAtlasTiles( 4096, many, 32 )",
         "R_ShadowMapFitAtlasTiles( 4096, many, 33 )",
-        "cascaded[0].tileSize != 1024 || cascaded[1].tileSize != 1024",
+        # the spotlight that halved before the sun takes its tile back from
+        # the three quarters of the atlas the sun's one halving frees
+        "cascaded[0].tileSize != 1024 || cascaded[1].tileSize != 2048",
+        "cascadedBoth[0].tileSize != 1024 || cascadedBoth[1].tileSize != 2048",
+        "full[0].tileSize != 1024 || full[1].tileSize != 1024 || full[2].tileSize != 2048",
     ):
         require(selftest, case, "the self-test pins the atlas fit")
+    require_order(
+        braced_body(classification, "bool R_ShadowMapFitAtlasTiles(", "atlas fit"),
+        (
+            "wanted[i] = requests[i].tileSize;",
+            "while ( demand > capacity ) {",
+            "for ( int i = count - 1; i >= 0 && demand <= capacity; --i ) {",
+            "while ( request.tileSize * 2 <= wanted[order[i]] ) {",
+            "if ( demand - before + after > capacity ) {",
+            "request.tileSize /= 2;",
+            "demand += after - before;",
+            "return demand <= capacity;",
+        ),
+        "room a round frees beyond its need goes back, largest light first",
+    )
     require(classification_h, "static const int SHADOWMAP_ATLAS_MAX_REQUESTS = 64;", "atlas request bound")
 
     # the front end: counted before the interactions are known, assigned after
@@ -9213,6 +9427,451 @@ def validate_static_cutout_caster_contract() -> None:
         read("docs/user/shadow-mapping.md"),
         "| `r_shadowMapStaticCutouts` | `1` |",
         "the switch is documented",
+    )
+
+
+def validate_source_plane_cascade_contract() -> None:
+    """A view slice that reaches behind a cascaded light's source plane is cut
+    where the light begins. It used to collapse the light to one map.
+
+    Looking up past the height of an outdoor lamp (mcc_landing's outdoor_Main
+    at Quality), one sample with a negative w traded three fitted cascades
+    for a map of the whole light at 66 units a texel. The fit now bounds the
+    part of the slice in front of the plane: its corners there and the points
+    where its edges cross the plane.
+    """
+    projected = read("src/renderer/ShadowMapProjected.cpp")
+    near_w = braced_body(projected, "static float R_ShadowMapLightNearW(", "light near w")
+    require_order(
+        near_w,
+        (
+            "if ( parms.pointLight ) {",
+            "parms.origin + local * parms.axis",
+            "lightDef->frustumTris->verts[i].xyz",
+            "if ( !( nearW > SHADOWMAP_CASCADE_W_EPSILON ) || nearW >= idMath::INFINITY ) {",
+            "return SHADOWMAP_CASCADE_W_EPSILON;",
+        ),
+        "the plane is where the light's own volume begins, or the old epsilon",
+    )
+    bounds = braced_body(projected, "static bool R_ShadowMapBuildCascadeBounds(", "cascade bounds")
+    require_order(
+        bounds,
+        (
+            "const float wClip = R_ShadowMapLightNearW( vLight, baseClipPlanes );",
+            "if ( clip.w <= wEpsilon || clip.w < wClip ) {",
+            "fit.mixedWSigns = ( fit.positiveWPoints > 0 && fit.negativeWPoints > 0 );",
+            "SHADOWMAP_SLICE_EDGES[edge][0]",
+            "if ( ( wa >= wClip ) == ( wb >= wClip ) ) {",
+            "const idVec4 crossing = cornerClip[a] + ( cornerClip[b] - cornerClip[a] ) * t;",
+            "planeCrossings++;",
+            "if ( fit.validPoints + planeCrossings < 4 ) {",
+            "fit.fallbackReason = SHADOWMAP_PROJECTED_FALLBACK_INSUFFICIENT_VALID_SAMPLES;",
+        ),
+        "a slice is bounded by its corners in front of the plane and its edges' crossings",
+    )
+    fit = braced_body(projected, "static void R_BuildShadowMapProjectedLightStateFit(", "projected state fit")
+    if "SHADOWMAP_PROJECTED_FALLBACK_MIXED_W_SIGNS" in fit:
+        raise AssertionError("A slice behind the source plane must not collapse the light's cascades")
+    selftest = braced_body(projected, "bool R_ShadowMapCascadeSourcePlaneSelfTest(", "source-plane self-test")
+    require_order(
+        selftest,
+        (
+            "R_ShadowMapCascadeSourcePlaneCase(",
+            "if ( receivers < 1000 || cutSlices < 4 || mixedSlices < 2 ) {",
+        ),
+        "the self-test's views reach behind the source",
+    )
+    case = braced_body(projected, "static bool R_ShadowMapCascadeSourcePlaneCase(", "source-plane case")
+    require_order(
+        case,
+        (
+            "if ( !state.valid || state.cascadeFallback || state.cascadeCount != cascades",
+            "state.worldTexelSize[0] < state.worldTexelSize[cascades - 1] * 0.25f",
+            "R_ShadowMapBuildSliceCorners( &view, state.sliceNear[cascade], state.sliceFar[cascade], corners );",
+            "R_ShadowMapTransformPointToClip( receiver, state.clipPlanes[cascade], clip );",
+        ),
+        "every point of a slice inside the light lands inside the slice's crop",
+    )
+    planner = read("src/renderer/ModernShadowPlanner.cpp")
+    require(planner, "if ( !R_ShadowMapCascadeSourcePlaneSelfTest() ) {", "diagnostic self-test runs the source-plane case")
+    ready = braced_body(planner, "static bool R_ModernShadowPlanner_ProjectedFallbackReasonReady(", "planner fallback contract")
+    if "projectedNegativeWPoints == 0" in ready:
+        raise AssertionError("A fitted light may have samples behind its source plane")
+    # A far-shell light scales its receiver bias to nothing; zero is valid there.
+    require_compact(
+        planner,
+        "( descriptor.receiverBiasScale <= 0.0f && descriptor.cascadeBiasScale[cascadeIndex] == 0.0f )",
+        "planner accepts the zero bias scale of a far-shell light",
+    )
+
+
+def validate_second_audit_followups_contract() -> None:
+    """The 27 November audit's follow-ups: off-screen live casters, idle
+    Vulkan shadow memory, one front face per caster pass."""
+    interaction = read("src/renderer/Interaction.cpp")
+    skips = braced_body(interaction, "static bool R_ShadowMapOffscreenLiveCasterSkips(", "off-screen live caster skip")
+    require_order(
+        skips,
+        (
+            "!r_shadowMapCullOffscreenLiveCasters.GetBool()",
+            # a sun's filter reaches past the frustum's edge
+            "vLight->parallel || R_ShadowMapUsesDistantPointProjection( lightDef->parms )",
+            "return false;",
+            # only what no cached map holds: the one live-caster rule, asked
+            # for the entity alone
+            "return R_ShadowMapCasterIsDynamic( entityDef, NULL );",
+        ),
+        "only a changing caster of a near light is skipped",
+    )
+    add = braced_body(interaction, "void idInteraction::AddActiveInteraction(", "active interaction")
+    require_order(
+        add,
+        (
+            "if ( CullInteractionByViewFrustum( tr.viewDef->viewFrustum ) ) {",
+            "if ( !shadowMapConservativeCandidate ) {",
+            "if ( R_ShadowMapOffscreenLiveCasterSkips( vLight, lightDef, entityDef ) ) {",
+            "R_RecordShadowMapRejectedCaster( vLight, SHADOWMAP_CASTER_REJECT_OFFSCREEN_LIVE );",
+            "return;",
+            "shadowMapViewFrustumCulled = true;",
+            # before the model is built
+            "idRenderModel *model = R_EntityDefDynamicModel( entityDef );",
+        ),
+        "the skip comes before the dynamic model is built",
+    )
+
+    vulkan = read("src/renderer/Vulkan/vk_ShadowMap.cpp")
+    idle = braced_body(vulkan, "static void VK_ShadowMap_ReleaseIdleResources(", "idle shadow memory")
+    require_order(
+        idle,
+        (
+            "now - vkShadow.pointUsedMsec > VK_SHADOW_IDLE_RELEASE_MSEC",
+            "now - vkShadow.mappedUsedMsec > VK_SHADOW_IDLE_RELEASE_MSEC",
+            "now - vkShadow.projectedUsedMsec > VK_SHADOW_IDLE_RELEASE_MSEC",
+            "vkDeviceWaitIdle( vkCtx.device );",
+            "VK_ShadowMap_DestroyPointCubes();",
+            "VK_Exec_UpdateShadowAtlasDescriptors( VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE );",
+            "VK_ShadowMap_DestroyAtlas();",
+            "VK_ShadowMap_DestroyProjectedCaches();",
+        ),
+        "each class of shadow memory is released on wall time, device idle",
+    )
+    begin_frame = braced_body(vulkan, "void VK_ShadowMap_BeginFrame(", "shadow frame start")
+    require_order(
+        begin_frame,
+        (
+            "VK_GuiExecutor_FrameIsOpen()",
+            "if ( !vkShadow.resizePending ) {",
+            "VK_ShadowMap_ReleaseIdleResources();",
+        ),
+        "idle memory is released between frames, never under a recording one",
+    )
+    require(vulkan, "vkShadow.pointUsedMsec = vkShadow.mappedUsedMsec;", "a prepared point light marks its class used")
+    require(vulkan, "vkShadow.projectedUsedMsec = vkShadow.mappedUsedMsec;", "a prepared projected light marks its class used")
+
+    # One front face for a caster pass on OpenGL, as on Vulkan: the shared
+    # face verdict already answers for a reflected model.
+    gl = read("src/renderer/draw_arb2.cpp")
+    for marker, context in (
+        ("static bool RB_ShadowMapDrawCasterChain(", "projected caster chain"),
+        ("static bool RB_PointShadowMapDrawCasterChain(", "point caster chain"),
+    ):
+        chain = braced_body(gl, marker, context)
+        require(chain, "RB_SetSurfaceWinding( NULL );", f"{context} keeps one front face")
+        if "RB_SetSurfaceWinding( backEnd.currentSpace );" in chain:
+            raise AssertionError(f"OpenGL {context} must not turn the front face per caster")
+    classification = read("src/renderer/ShadowMapClassification.cpp")
+    faces = braced_body(classification, "shadowMapCasterFaces_t R_ShadowMapCasterFaces(", "shared caster face policy")
+    require_order(
+        faces,
+        (
+            "if ( mode == 1 ) {",
+            "if ( haveGeometry && R_ShadowMapCasterTransformWinding( modelMatrix ) < 0 ) {",
+            "return R_ShadowMapSwapCasterFaces( nearShell );",
+            "return nearShell;",
+        ),
+        "the forced near shell answers for a reflected model too",
+    )
+    for marker, context in (
+        ("static bool RB_RenderTranslucentShadowMap(", "projected moment pass"),
+        ("static bool RB_RenderPointTranslucentShadowMap(", "point moment pass"),
+    ):
+        require(braced_body(gl, marker, context), "IsKnownIncomplete()", f"OpenGL {context} proves its framebuffer")
+
+
+def validate_point_pool_pressure_contract() -> None:
+    """A point light keeps its stencil volumes while the back end's cube pool
+    is close to full, so a pass that finds no cube falls back to stencil
+    shadows and is never drawn without any.
+
+    Vulkan's scratch cube pool is bounded by memory. At the top shadow level
+    its 1024 cubes leave it 21, Nexus Hub 2's hall sits at that limit, and a
+    light that overflowed had had its volumes elided: one frame unshadowed.
+    Projected lights are spared the same by R_ShadowMapAtlasHoldsView.
+    """
+    light = read("src/renderer/tr_light.cpp")
+    will_use = braced_body(light, "bool R_ShadowMapLightWillUseShadowMaps(", "front-end elision gate")
+    require_order(
+        will_use,
+        (
+            "if ( pointLightPath ) {",
+            "if ( !RB_ShadowMapPointPoolHasRoom() ) {",
+            "return false;",
+            "} else if ( !R_ShadowMapAtlasHoldsView() ) {",
+            "if ( !RB_ShadowMapResourcesKnownGood( pointLightPath ) ) { return false; }",
+        ),
+        "a point light sheds its volumes only while its pool has room",
+    )
+    require(read("src/renderer/tr_local.h"), "bool RB_ShadowMapPointPoolHasRoom( void );", "back-end hook")
+    vulkan = read("src/renderer/Vulkan/vk_ShadowMap.cpp")
+    room = braced_body(vulkan, "bool VK_ShadowMap_PointPoolHasRoom(", "Vulkan point pool room")
+    require_order(
+        room,
+        (
+            "if ( !vkShadowPointPoolPressureSeen ) {",
+            "return true;",
+            "Sys_Milliseconds() - vkShadowPointPoolPressureMsec > VK_SHADOW_POINT_POOL_PRESSURE_HOLD_MSEC",
+        ),
+        "pressure is held for a while after the last crowded view",
+    )
+    prepare = braced_body(vulkan, "int VK_ShadowMap_PrepareViewLights(", "Vulkan light preparation")
+    require_order(
+        prepare,
+        (
+            "const int scratchLimit = VK_ShadowMap_ScratchCubeLimit();",
+            "if ( vkShadow.pointCubesUsed + Max( 4, scratchLimit / 4 ) > scratchLimit ) {",
+            "VK_ShadowMap_NotePointPoolPressure();",
+            "return prepared;",
+        ),
+        "a view that leaves less than a quarter of the pool free reports pressure",
+    )
+    require_compact(
+        read("src/renderer/Vulkan/vk_Backend.cpp"),
+        "bool RB_ShadowMapPointPoolHasRoom( void ) { return VK_ShadowMap_PointPoolHasRoom(); }",
+        "Vulkan answers from its pool",
+    )
+    # OpenGL draws a light's receivers as soon as its cube is rendered: one
+    # scratch cube serves every uncached light and no view exhausts it.
+    require_compact(
+        read("src/renderer/draw_arb2.cpp"),
+        "bool RB_ShadowMapPointPoolHasRoom( void ) { return true; }",
+        "OpenGL's pool always has room",
+    )
+
+
+def validate_point_cache_budget_by_cube_size_contract() -> None:
+    """Point cubes above 512 texels a side get three times
+    r_shadowMapPointCacheMegs, for the cache and for Vulkan's scratch pool.
+
+    The figure was sized for 512 cubes, 64 of which fit in 512 MiB. The top
+    shadow level draws 1024 cubes, four times the texels: the same figure held
+    21, half of Nexus Hub 2's hall, and the rest were rendered again every
+    frame. The rule lives in the renderer and follows the cube size, so the
+    presets' closed footprint does not grow.
+    """
+    classification = read("src/renderer/ShadowMapClassification.cpp")
+    budget = braced_body(classification, "int R_ShadowMapPointCacheBudgetMegsFor(", "point cache budget")
+    require_order(
+        budget,
+        (
+            "const int megs = Max( 0, configuredMegs );",
+            "if ( faceSize <= SHADOWMAP_POINT_CACHE_BASE_FACE_SIZE ) {",
+            "return megs;",
+            "return megs * SHADOWMAP_POINT_CACHE_LARGE_CUBE_BUDGET_SCALE;",
+        ),
+        "larger cubes get a multiple of the configured figure",
+    )
+    header = read("src/renderer/ShadowMapClassification.h")
+    require(header, "static const int SHADOWMAP_POINT_CACHE_BASE_FACE_SIZE = 512;", "the size the figure is for")
+    require(header, "static const int SHADOWMAP_POINT_CACHE_LARGE_CUBE_BUDGET_SCALE = 3;", "the scale")
+    limit = braced_body(classification, "int R_ShadowMapPointCacheSlotLimit(", "shared point cache-size policy")
+    require_compact(
+        limit,
+        "R_ShadowMapPointCacheBudgetMegsFor( r_shadowMapPointCacheMegs.GetInteger(), faceSize ),",
+        "the cache's slot limit takes the scaled figure",
+    )
+    scratch = braced_body(read("src/renderer/Vulkan/vk_ShadowMap.cpp"),
+                          "static int VK_ShadowMap_ScratchCubeLimit(", "scratch cube ceiling")
+    require_compact(
+        scratch,
+        """R_ShadowMapPointCacheBudgetMegsFor(
+            r_shadowMapPointCacheMegs.GetInteger(),
+            VK_ShadowMap_PointSizeValue() )""",
+        "Vulkan's scratch pool takes the same scaled figure",
+    )
+    selftest = braced_body(classification, "bool R_ShadowMapCachePolicySelfTest(", "shared policy self-test")
+    for case in (
+        "R_ShadowMapPointCacheBudgetMegsFor( 512, 512 ) != 512",
+        "R_ShadowMapPointCacheBudgetMegsFor( 512, 1024 ) != 1536",
+        "R_ShadowMapPointCacheSlotLimitFor( 64, 512, 1024, 4, maxSlots ) != 21",
+    ):
+        require(selftest, case, "the self-test pins the budget rule")
+
+
+def validate_pbr_receiver_reach_contract() -> None:
+    """A PBR receiver skips the shadow filter where the light does not reach.
+
+    The PBR light evaluation builds its radiance from the light's falloff and
+    projection samples, so where their product is black the result is black
+    whatever the shadow says. The classic receivers already test this; the PBR
+    branch of the same four shaders ran the whole filter first.
+    """
+    for path, sampler in (
+        ("content/baseoq4/pak0/glprogs/shadow_interaction.fs", "pbrShadowInfo = SampleShadow();"),
+        ("content/baseoq4/pak0/glprogs/shadow_point_interaction.fs",
+         "pbrShadow = vec3( 1.0 ) * SamplePointShadow() * SamplePointTranslucentShadow();"),
+    ):
+        require_order(
+            read(path),
+            (
+                "vec3 pbrReach = texture2DProj( uLightFalloffMap, vLightFalloffTexCoord ).rgb",
+                "* texture2DProj( uLightProjectionMap, vLightProjectionTexCoord ).rgb;",
+                "bool pbrLit = max( pbrReach.r, max( pbrReach.g, pbrReach.b ) ) > 0.0 || ShadowVisualDebugMode();",
+                "if ( pbrLit ) {",
+                sampler,
+                "gl_FragColor = vec4( OpenQ4PBRDirect( pbrShadow ), OpenQ4PBRAlpha() );",
+            ),
+            f"{path}: the PBR branch filters only where the light reaches",
+        )
+    for path, translucent in (
+        ("src/renderer/Vulkan/shaders/interaction_shadow.frag", "packed *= SampleTranslucentShadow();"),
+        ("src/renderer/Vulkan/shaders/interaction_shadow_point.frag", "packed *= SamplePointTranslucentShadow();"),
+    ):
+        require_order(
+            read(path),
+            (
+                "vec3 reach = textureProj(lightFalloffMap, vLightFalloffTexCoord).rgb",
+                "* textureProj(lightProjectionMap, vLightProjectionTexCoord).rgb;",
+                "bool lit = max(reach.r, max(reach.g, reach.b)) > 0.0 || ShadowVisualDebugMode();",
+                "float shadowFactor = 1.0;",
+                "if (lit) {",
+                "shadowFactor = SampleShadowFactor();",
+                "diffuseTexCoord, specularTexCoord, shadowFactor);",
+                "if (lit) {",
+                translucent,
+            ),
+            f"{path}: the PBR branch filters only where the light reaches",
+        )
+    # The skip is exact only while the evaluation multiplies by the same two samples.
+    require_order(
+        read("src/renderer/Vulkan/shaders/pbr_direct.glsl"),
+        (
+            "vec3 radiance = PBRClassicLightIrradianceColor(",
+            "textureProj(lightFalloffMap, vLightFalloffTexCoord).rgb",
+            "* textureProj(lightProjectionMap, vLightProjectionTexCoord).rgb",
+            "* inter.diffuseColor.rgb) * shadowFactor;",
+        ),
+        "Vulkan PBR radiance is the light's falloff and projection times the shadow",
+    )
+    require_order(
+        read("src/renderer/draw_pbr.cpp"),
+        (
+            "vec3 radiance = PBRClassicLightIrradianceColor(",
+            "texture2DProj( uLightFalloffMap, vLightFalloffTexCoord ).rgb",
+            "* texture2DProj( uLightProjectionMap, vLightProjectionTexCoord ).rgb",
+            "* uDiffuseColor.rgb ) * shadow;",
+        ),
+        "OpenGL PBR radiance is the light's falloff and projection times the shadow",
+    )
+
+
+def validate_hybrid_receiver_report_contract() -> None:
+    """OpenGL counts the receiver passes drawn against the stencil of casters
+    their map cannot hold, and the passes that follow honour that stencil.
+
+    No stock view takes this path, so the report is the way to tell that a
+    test view does.
+    """
+    arb2 = read("src/renderer/draw_arb2.cpp")
+    prepare = braced_body(arb2, "static bool RB_ShadowMapPrepareMappedReceiverStencil(", "hybrid receiver stencil")
+    require_order(
+        prepare,
+        (
+            "g_shadowMapReceiverStencilSupplement = false;",
+            "glClear( GL_STENCIL_BUFFER_BIT );",
+            "RB_StencilShadowPass( globalSupplements );",
+            "RB_StencilShadowPass( localSupplements );",
+            "glStencilFunc( GL_GEQUAL, 128, 255 );",
+            "g_shadowMapReceiverStencilSupplement = true;",
+            "g_shadowMapStats.hybridReceiverPasses++;",
+        ),
+        "the supplement is stencilled, flagged and counted",
+    )
+    if arb2.count("glStencilFunc( g_shadowMapReceiverStencilSupplement ? GL_GEQUAL : GL_ALWAYS, 128, 255 );") != 2:
+        raise AssertionError("both mapped receiver draws test the supplement stencil")
+    require(arb2, "farSlot=%d/%d hybrid=%d", "the shadow report prints the hybrid pass count")
+
+
+def validate_cascade_stable_extent_contract() -> None:
+    """A cascade sized by its view slice's bounding sphere keeps its scale
+    while the view turns (r_shadowMapCascadeStableExtent nearest cascades).
+
+    The tight light-space box changes shape with the view's direction, and
+    each ladder step it crosses resamples the cascade's shadow edges: eight
+    times per cascade in a turn at Air Defense 1. The sphere's size is taken
+    over everywhere a turn can put its centre, so it follows the eye's place
+    alone, and its extents use a finer ladder.
+    """
+    projected = read("src/renderer/ShadowMapProjected.cpp")
+    box = braced_body(projected, "static bool R_ShadowMapSliceStableBox(", "stable slice box")
+    require_order(
+        box,
+        (
+            "nearRadiusSqr = Max( nearRadiusSqr,",
+            "farRadiusSqr = Max( farRadiusSqr,",
+            "const float depth = idMath::ClampFloat( sliceNear, sliceFar,",
+            "const float cornerDistance = idMath::Sqrt( sliceFar * sliceFar + farRadiusSqr );",
+            "const float wMin = eyeClip.w - cornerDistance * divideLength;",
+            # near the plane the light begins at the tight fit serves
+            "!( wMin > wClip ) || !( wMin > eyeClip.w * 0.5f )",
+            "return false;",
+            "const float wCentreMin = eyeClip.w - depth * divideLength;",
+            "const float swing = depth * ( row - divide * eyeNdc[axis] ).Length() / wCentreMin;",
+            "( row - divide * ( eyeNdc[axis] - swing ) ).Length(),",
+            "( row - divide * ( eyeNdc[axis] + swing ) ).Length() );",
+            "extent[axis] = radius * reach / wMin;",
+        ),
+        "the sphere's size is bounded over a whole turn, from the eye",
+    )
+    bounds = braced_body(projected, "static bool R_ShadowMapBuildCascadeBounds(", "cascade bounds")
+    require_order(
+        bounds,
+        (
+            "if ( stabilize && stableExtentWanted && sampleCount >= 8",
+            "&& R_ShadowMapSliceStableBox( viewDef, samplePoints, sliceNear, sliceFar,",
+            # the slice's own points are kept whatever the bound says
+            "ndcMins.x = Min( ndcMins.x, stableCentre[0] - stableExtent[0] );",
+            "ndcMaxs.x = Max( ndcMaxs.x, stableCentre[0] + stableExtent[0] );",
+            "tileSize, stabilize, stableExtent[0] );",
+            "tileSize, stabilize, stableExtent[1] );",
+        ),
+        "a stable cascade is the union of its slice's box and the sphere's",
+    )
+    axis = braced_body(projected, "static void R_ShadowMapFitCascadeAxis(", "cascade axis fit")
+    require_order(
+        axis,
+        (
+            "Min( 1.0f, Max( 0.0f, floorExtent ) )",
+            "floorExtent > 0.0f ? SHADOWMAP_CASCADE_STABLE_EXTENT_LADDER : SHADOWMAP_CASCADE_EXTENT_LADDER );",
+        ),
+        "a stable extent is kept at the projection's edge and uses the finer ladder",
+    )
+    fit = braced_body(projected, "static void R_BuildShadowMapProjectedLightStateFit(", "projected state fit")
+    require(
+        fit,
+        "const bool stableExtent = cascadeIndex < r_shadowMapCascadeStableExtent.GetInteger();",
+        "the nearest cascades take the stable extent first",
+    )
+    selftest = braced_body(projected, "bool R_ShadowMapCascadeTurnSelfTest(", "cascade turn self-test")
+    require(selftest, "if ( stableTotal != 0 || tightTotal < 12 ) {", "no scale change in a full turn")
+    require(
+        read("src/renderer/ModernShadowPlanner.cpp"),
+        "if ( !R_ShadowMapCascadeTurnSelfTest() ) {",
+        "the diagnostic self-test runs the turn",
+    )
+    require(
+        read("src/renderer/RenderSystem_init.cpp"),
+        'idCVar r_shadowMapCascadeStableExtent( "r_shadowMapCascadeStableExtent", "2", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER,',
+        "the setting counts cascades: the two nearest by default, the owner's choice of 27 November 2026",
     )
 
 
@@ -10185,10 +10844,13 @@ def validate_prelight_caster_contract() -> None:
     require_order(
         build,
         (
-            "const int first = shadowTri->numShadowIndexesNoFrontCaps;",
-            "const int count = shadowTri->numIndexes - first;",
-            "if ( first < 0 || count < 3 || count % 3 != 0 ) {",
+            "const bool folded = R_ShadowMapPrelightVolumeFoldsCaps( shadowTri );",
+            "const int first = folded ? 0 : shadowTri->numShadowIndexesNoFrontCaps;",
+            "const int range = shadowTri->numIndexes - first;",
+            "if ( first < 0 || range < 3 || range % 3 != 0",
             "return NULL;",
+            "R_ShadowMapPrelightCapOnCutout(",
+            "const int count = caps.Num() * 3;",
             "shadowTri->shadowVertexes[source].xyz.w != 1.0f",
             "R_AllocStaticTriSurfIndexes( tri, count * 2 );",
             "tri->indexes[i + 1] = b;",
@@ -10197,7 +10859,7 @@ def validate_prelight_caster_contract() -> None:
             "tri->indexes[count + i + 2] = b;",
             "R_BoundTriSurf( tri );",
         ),
-        "front caps only, on unprojected vertexes, in both windings",
+        "front caps only (recovered from a folded volume, less cutouts), on unprojected vertexes, in both windings",
     )
 
     caster = braced_body(light, "srfTriangles_t *R_ShadowMapPrelightCaster(", "per-light prelight caster")
@@ -10211,7 +10873,7 @@ def validate_prelight_caster_contract() -> None:
             "R_IsUsablePrelightModel( prelightModel )",
             "light->shadowMapPrelightCasterSource != shadowTri",
             "R_FreeStaticTriSurf( light->shadowMapPrelightCaster );",
-            "light->shadowMapPrelightCaster = R_ShadowMapBuildPrelightCaster( shadowTri );",
+            "light->shadowMapPrelightCaster = R_ShadowMapBuildPrelightCaster( shadowTri, &cutouts );",
             "return light->shadowMapPrelightCaster;",
         ),
         "rollback setting, scope, and one caster kept per light",
@@ -10254,7 +10916,7 @@ def validate_prelight_caster_contract() -> None:
             "prelightOwnsShadows && R_ShadowMapPrelightCaster( lightDef ) != NULL;",
             "const bool castsThroughPrelight =",
             "worldCastsFromPrelight &&",
-            "shadowShader->Coverage() != MC_PERFORATED &&",
+            "!R_ShadowMapPrelightKeepsCutout( lightDef, shadowShader, sint->ambientTris ) &&",
             "( allowShadowMapCaster || sint->shadowStencilEligible );",
             "if ( castsThroughPrelight ) {",
             "linkedShadowMapCaster = true;",
@@ -10304,6 +10966,171 @@ def validate_prelight_caster_contract() -> None:
                   "### A `noSelfShadow` receiver behind `noSelfShadow` world geometry"):
         require(audit, token, "the audit records the caster, its setting and the noSelfShadow image")
 
+    # 24 November: folded caps, cutouts, the far shell and its bias
+    light_source = read("src/renderer/tr_light.cpp")
+    for token in ("bool R_ShadowMapPrelightVolumeFoldsCaps(", "( tri[0] & 1 ) != 0 || ( tri[1] & 1 ) != 0 || ( tri[2] & 1 ) != 0",
+                  "bool R_ShadowMapPrelightKeepsCutout(", "r_shadowMapPrelightCutouts",
+                  "shadowTri->numIndexes * 2 + ( r_shadowMapPrelightCutouts.GetBool() ? 1 : 0 )"):
+        require(light_source, token, "folded volumes give their caps, cutouts inside the box keep their own casters")
+    require(read("src/renderer/Interaction.cpp"), "!R_ShadowMapPrelightKeepsCutout( lightDef, shadowShader, sint->ambientTris )",
+            "only the cutouts the caster leaves out cast surface by surface")
+    classification_source = read("src/renderer/ShadowMapClassification.cpp")
+    for token in ('"r_shadowMapDistantFarShell", "1"', '"r_shadowMapDistantFarShellBias", "0"',
+                  "return parms.parallel || R_ShadowMapUsesDistantPointProjection( parms );"):
+        require(classification_source, token, "distant and parallel lights store the far shell")
+    projected_source = read("src/renderer/ShadowMapProjected.cpp")
+    for token in ("return R_ShadowMapLightStoresFarShell( vLight ) ? !mirrored : mirrored;",
+                  "state.receiverBiasScale = scale;", "state.biasScale[cascadeIndex] *= scale;",
+                  "state.texelDepthBias[cascadeIndex] *= scale;",
+                  "* Max( 0.0f, state.receiverBiasScale );", "Caster face self-test FAILED: far-shell light"):
+        require(projected_source, token, "the far-shell verdict and receiver bias live in the shared projected state")
+    require(audit, "### The rest of the off-centre lights", "the audit records the folded caps, the far shell and outdoor_Main")
+
+
+def validate_layered_point_cube_contract() -> None:
+    """r_shadowMapPointLayered on Vulkan, and the cascade cache that was left out.
+
+    A point cube was six rendering scopes, twelve when it publishes and composes.
+    Where the device lets a vertex stage write gl_Layer the cube is bound once as
+    a six-layer attachment and each draw names its face, so the faces are still
+    walked one at a time with their own matrices and caster culling and hold the
+    depth they held before. Measured on hub2 with ten cubes redrawn a view, the
+    recording time of the shadow pass fell from 0.74 to 0.60 ms; captures are
+    bit-identical. A device without the extension keeps one scope a face.
+
+    The other OpenGL saving, the cached still scenery of the whole-light cascade
+    (r_shadowMapCascadeFarCache), was prototyped and left out: on Vulkan it
+    saved 20 to 176 caster draws but its tile copy cost as much GPU time as the
+    drawing it replaced, and more at Ultra. The cvar stays an OpenGL switch.
+    """
+    selection = read("src/renderer/Vulkan/VulkanDeviceSelection.cpp")
+    device = read("src/renderer/Vulkan/VulkanDevice.cpp")
+    executor = read("src/renderer/Vulkan/vk_GuiExecutor.cpp")
+    shadow_map = read("src/renderer/Vulkan/vk_ShadowMap.cpp")
+    per_face = read("src/renderer/Vulkan/shaders/shadow_point_caster.vert")
+    layered = read("src/renderer/Vulkan/shaders/shadow_point_caster_layered.vert")
+
+    require(selection, "VK_EXT_SHADER_VIEWPORT_INDEX_LAYER_EXTENSION_NAME ) == 0 ) { candidate.hasShaderViewportIndexLayer = true; }",
+            "the admission scan records whether a vertex stage may write gl_Layer")
+    require_compact(
+        device,
+        """vkCtx.shaderViewportIndexLayer = selected.hasShaderViewportIndexLayer;
+        if ( vkCtx.shaderViewportIndexLayer ) {
+            deviceExtensions[ deviceExtensionCount++ ] = VK_EXT_SHADER_VIEWPORT_INDEX_LAYER_EXTENSION_NAME;
+        }""",
+        "the extension is enabled only where the device offers it",
+    )
+    require(device, "const char *deviceExtensions[ 8 ];", "the extension list has room for it")
+
+    # The layered stage is the per-face stage plus the layer: any other
+    # difference would let the two paths draw different depth.
+    def statements(source: str) -> list[str]:
+        body = source[source.index("layout(location = 0) in vec3 inPosition;"):]
+        return [line.strip() for line in body.splitlines()
+                if line.strip() and not line.strip().startswith("//")]
+
+    layered_statements = statements(layered)
+    require(layered, "#extension GL_ARB_shader_viewport_layer_array : require",
+            "the layered stage declares the capability it needs")
+    if layered_statements.count("gl_Layer = face;") != 1:
+        raise AssertionError("the layered caster stage must name the face exactly once")
+    layered_statements.remove("gl_Layer = face;")
+    if layered_statements != statements(per_face):
+        raise AssertionError("shadow_point_caster_layered.vert must stay shadow_point_caster.vert plus gl_Layer")
+    require(read("tools/tests/vk_shader_header_pin.py"), '"shadow_point_caster_layered.vert"',
+            "the committed SPIR-V header carries the layered stage")
+
+    # The module declares a capability only the extension allows.
+    require_compact(
+        executor,
+        """vkExec.pointCasterLayeredVertModule = VK_NULL_HANDLE;
+        if ( vkCtx.shaderViewportIndexLayer ) {
+            smci.codeSize = vk_shadow_point_caster_layered_vert_spv_size;""",
+        "the layered module is only created with the extension",
+    )
+    layered_pipeline = braced_body(executor, "VkPipeline VK_Exec_PointCasterLayeredPipeline( void ) {",
+                                   "layered point caster pipeline")
+    require_compact(
+        layered_pipeline,
+        "if ( vkExec.pointCasterLayeredVertModule == VK_NULL_HANDLE || vkExec.pointCasterFragModule == VK_NULL_HANDLE ) { return VK_NULL_HANDLE; }",
+        "no layered pipeline without the module",
+    )
+    require_compact(
+        layered_pipeline,
+        "VK_Exec_CreatePipeline( vkExec.pointCasterLayeredVertModule, vkExec.pointCasterFragModule, &vertexInput, 0, vkExec.pipelineLayout, true, false, target );",
+        "the layered pipeline differs from the per-face one in its vertex stage alone",
+    )
+
+    create_cube = braced_body(shadow_map, "static bool VK_ShadowMap_CreatePointCube(", "point cube creation")
+    require_compact(
+        create_cube,
+        """cube.layeredView = VK_NULL_HANDLE;
+        if ( vkCtx.shaderViewportIndexLayer ) {
+            ivci.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+            ivci.subresourceRange.aspectMask = VK_ShadowMap_DepthAspectMask();
+            ivci.subresourceRange.baseArrayLayer = 0;
+            ivci.subresourceRange.layerCount = 6;""",
+        "a cube gets a six-layer attachment view beside its face views",
+    )
+    require_compact(
+        braced_body(shadow_map, "static void VK_ShadowMap_DestroyPointCube(", "point cube teardown"),
+        "if ( cube.layeredView != VK_NULL_HANDLE ) { vkDestroyImageView( vkCtx.device, cube.layeredView, NULL ); }",
+        "the layered view goes with its cube",
+    )
+
+    render = braced_body(shadow_map, "bool VK_ShadowMap_RenderAtlas(", "shadow render")
+    require_compact(
+        render,
+        """const VkPipeline pointCasterLayeredPipeline =
+            r_shadowMapPointLayered.GetBool()
+                ? VK_Exec_PointCasterLayeredPipeline() : VK_NULL_HANDLE;""",
+        "the cvar and the device decide the layered path",
+    )
+    require_compact(
+        render,
+        """const bool layered =
+            pointCasterLayeredPipeline != VK_NULL_HANDLE
+            && target.layeredView != VK_NULL_HANDLE;""",
+        "a cube without a layered view is drawn face by face",
+    )
+    require_order(
+        render,
+        (
+            "if ( layered ) {",
+            "depth.imageView = target.layeredView;",
+            "ri.layerCount = 6;",
+            "vkCmdBeginRendering( cmd, &ri );",
+            "for ( int cubeFace = 0 ; cubeFace < 6 ; cubeFace++ ) {",
+            "if ( !layered ) {",
+            "depth.imageView = target.faceViews[ cubeFace ];",
+            "ri.layerCount = 1;",
+            "vkCmdBeginRendering( cmd, &ri );",
+            "VK_ShadowMap_DrawPointCasterChain( ctx, vLight, faceViewMatrix,",
+            "if ( !layered ) {",
+            "vkCmdEndRendering( cmd );",
+            "if ( layered ) {",
+            "vkCmdEndRendering( cmd );",
+        ),
+        "one scope for the cube or one a face, around the same per-face caster walk",
+    )
+    # every draw still carries its face, for both walkers
+    if shadow_map.count("push.depthRow[ 3 ] = static_cast<float>( cubeFace );") != 2:
+        raise AssertionError("both the classic and the sealed point caster walks must name the face")
+
+    require(shadow_map, "cubeScopes=%d", "the report counts the rendering scopes point cubes opened")
+    require(shadow_map, "casterDraws=%d casterIndexes=%d", "the report carries the deterministic cost of the caster walk")
+    require(shadow_map, "cpuMs=%.3f/%.3f prepare/render", "the report times the shadow pass on the recording thread")
+
+    # The cascade cache stays an OpenGL mechanism: measured, and left out.
+    if "r_shadowMapCascadeFarCache" in shadow_map:
+        raise AssertionError("the Vulkan back end keeps no whole-light cascade cache")
+    require(read("src/renderer/RenderSystem_init.cpp"),
+            'idCVar r_shadowMapCascadeFarCache( "r_shadowMapCascadeFarCache", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "OpenGL: keep',
+            "the cascade cache switch is described as an OpenGL one")
+    roadmap = read("docs/dev/roadmap.md")
+    for token in ("`r_shadowMapPointLayered`", "`r_shadowMapCascadeFarCache`", "VK_EXT_shader_viewport_index_layer"):
+        require(roadmap, token, "VK-06 records what landed and what was measured and left out")
+
 
 def main() -> None:
     validate_shadow_effectiveness_image_gate()
@@ -10348,6 +11175,14 @@ def main() -> None:
     validate_scratch_cube_pool_contract()
     validate_resident_projected_sampling_contract()
     validate_prelight_caster_contract()
+    validate_layered_point_cube_contract()
+    validate_source_plane_cascade_contract()
+    validate_second_audit_followups_contract()
+    validate_point_pool_pressure_contract()
+    validate_point_cache_budget_by_cube_size_contract()
+    validate_cascade_stable_extent_contract()
+    validate_pbr_receiver_reach_contract()
+    validate_hybrid_receiver_report_contract()
     validate_ci_registration()
     print("renderer_vulkan_shadow_compatibility: ok")
 

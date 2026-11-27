@@ -63,6 +63,10 @@ static bool R_ShadowMapProjectedLightNeedsAuthoredSingleProjection( const viewLi
 		|| R_ShadowMapProjectedLightUsesStockFlashlightShader( vLight );
 }
 
+idCVar r_shadowMapDistantFarShell( "r_shadowMapDistantFarShell", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL,
+	"distant point and parallel lights store every shadow caster by the stencil rule, the faces turned away from the light, and their receivers keep r_shadowMapDistantFarShellBias of the receiver bias; 0 = sealed hulls keep their near shell, the earlier face verdict and the whole bias" );
+idCVar r_shadowMapDistantFarShellBias( "r_shadowMapDistantFarShellBias", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT,
+	"share of the receiver depth bias, normal offset and filter-tap bias kept by the receivers of a light whose map holds only far faces (r_shadowMapDistantFarShell): a receiver that faces the light is not in such a map, and the bias only lets light through to a receiver close behind a caster", 0.0f, 1.0f );
 idCVar r_shadowMapWideSources( "r_shadowMapWideSources", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL,
 	"while sunlight is cascaded, a large point light whose source sits just outside one face of its radius box "
 	"(the big outdoor lights) is shadowed through fitted cascades seen down that axis instead of one cube; 0 keeps the cube" );
@@ -413,6 +417,32 @@ int R_ShadowMapDynamicCasterFrames( void ) {
 	return shadowMapDynamicCasterFrames;
 }
 
+// r_shadowMapResidentFrames is a count of frames at 60 a second: its default
+// of 120 keeps the map of a light that has left the view for two seconds.
+// Counted in frames as drawn, the same setting kept it 0.83 seconds under
+// Enhanced's 144 Hz cap and a quarter of a second at 480 Hz, and a glance away
+// from a room rendered its maps again on the glance back. Nothing is freed
+// when a map expires; only its depth is thrown away. A display slower than 60
+// a second keeps the count it always had.
+int R_ShadowMapResidentFramesFor( int configuredFrames, float frameMsec ) {
+	const int configured = Max( 1, configuredFrames );
+	if ( !std::isfinite( static_cast<double>( frameMsec ) ) || frameMsec <= 0.0f ) {
+		return configured;
+	}
+	// less a thousandth: sixty a second in single precision is not quite it
+	const double frames = std::ceil(
+		static_cast<double>( configured ) * ( 1000.0 / 60.0 ) / frameMsec - 1.0e-3 );
+	if ( frames >= 1048576.0 ) {
+		return 1048576;
+	}
+	return Max( configured, static_cast<int>( frames ) );
+}
+
+int R_ShadowMapResidentFrames( void ) {
+	return R_ShadowMapResidentFramesFor(
+		r_shadowMapResidentFrames.GetInteger(), shadowMapSmoothedFrameMsec );
+}
+
 bool R_ShadowMapEmptyPassNeedsStencil( const bool globalVolumesLinked, const bool localVolumesLinked,
 		const int elidedStencilMask, const int receiverMask ) {
 	if ( globalVolumesLinked ) {
@@ -461,11 +491,19 @@ int R_ShadowMapPointCacheSlotLimitFor( int requestedSlots, int budgetMegs,
 		Max( SHADOWMAP_POINT_CACHE_MIN_BUDGET_SLOTS, budgetSlots ) );
 }
 
+int R_ShadowMapPointCacheBudgetMegsFor( int configuredMegs, int faceSize ) {
+	const int megs = Max( 0, configuredMegs );
+	if ( faceSize <= SHADOWMAP_POINT_CACHE_BASE_FACE_SIZE ) {
+		return megs;
+	}
+	// the cvar's ceiling is 8192: three times it is far inside an int
+	return megs * SHADOWMAP_POINT_CACHE_LARGE_CUBE_BUDGET_SCALE;
+}
 int R_ShadowMapPointCacheSlotLimit( int faceSize, int bytesPerTexel,
 		int maxSlots ) {
 	return R_ShadowMapPointCacheSlotLimitFor(
 		r_shadowMapPointCacheSize.GetInteger(),
-		r_shadowMapPointCacheMegs.GetInteger(),
+		R_ShadowMapPointCacheBudgetMegsFor( r_shadowMapPointCacheMegs.GetInteger(), faceSize ),
 		faceSize, bytesPerTexel, maxSlots );
 }
 
@@ -521,7 +559,9 @@ bool R_ShadowMapFitAtlasTiles( int atlasSize, shadowMapAtlasRequest_t *requests,
 
 	long long demand = 0;
 	int order[SHADOWMAP_ATLAS_MAX_REQUESTS];
+	int wanted[SHADOWMAP_ATLAS_MAX_REQUESTS];
 	for ( int i = 0; i < count; ++i ) {
+		wanted[i] = requests[i].tileSize;
 		demand += R_ShadowMapAtlasRequestArea( requests[i] );
 		// ascending extent; among equals the later light gives way first
 		int slot = i;
@@ -549,6 +589,25 @@ bool R_ShadowMapFitAtlasTiles( int atlasSize, shadowMapAtlasRequest_t *requests,
 		}
 		if ( !halved ) {
 			break;
+		}
+	}
+
+	// A round halves every light once, and the last light of a round can free
+	// far more than the round still needed: a cascaded sun's block is four
+	// tiles on a side, so its one halving releases three quarters of a Quality
+	// atlas after the spotlight beside it has already given up its own. Hand
+	// the room back, largest light first, a doubling at a time.
+	for ( int i = count - 1; i >= 0 && demand <= capacity; --i ) {
+		shadowMapAtlasRequest_t &request = requests[order[i]];
+		while ( request.tileSize * 2 <= wanted[order[i]] ) {
+			const long long before = R_ShadowMapAtlasRequestArea( request );
+			request.tileSize *= 2;
+			const long long after = R_ShadowMapAtlasRequestArea( request );
+			if ( demand - before + after > capacity ) {
+				request.tileSize /= 2;
+				break;
+			}
+			demand += after - before;
 		}
 	}
 	return demand <= capacity;
@@ -641,11 +700,27 @@ bool R_ShadowMapCachePolicySelfTest( void ) {
 		if ( R_ShadowMapFitAtlasTiles( 4096, many, 33 ) || many[32].tileSize != 512 ) {
 			return false;
 		}
-		// a cascaded light's block is the whole Quality atlas until it halves
+		// a cascaded light's block is the whole Quality atlas until it halves,
+		// and the spotlight that halved before it takes its tile back from
+		// the three quarters that frees
 		shadowMapAtlasRequest_t cascaded[2] = {
 			{ 2048, 512, 2, 1, 1.0e9f }, { 2048, 512, 1, 1, 400.0f } };
 		if ( !R_ShadowMapFitAtlasTiles( 4096, cascaded, 2 )
-				|| cascaded[0].tileSize != 1024 || cascaded[1].tileSize != 1024 ) {
+				|| cascaded[0].tileSize != 1024 || cascaded[1].tileSize != 2048 ) {
+			return false;
+		}
+		// with both ownerships the same spotlight still fits beside the sun
+		shadowMapAtlasRequest_t cascadedBoth[2] = {
+			{ 2048, 512, 2, 1, 1.0e9f }, { 2048, 512, 1, 2, 400.0f } };
+		if ( !R_ShadowMapFitAtlasTiles( 4096, cascadedBoth, 2 )
+				|| cascadedBoth[0].tileSize != 1024 || cascadedBoth[1].tileSize != 2048 ) {
+			return false;
+		}
+		// nothing is handed back that the atlas cannot hold
+		shadowMapAtlasRequest_t full[3] = {
+			{ 2048, 512, 2, 1, 1.0e9f }, { 2048, 512, 1, 2, 400.0f }, { 2048, 512, 1, 2, 500.0f } };
+		if ( !R_ShadowMapFitAtlasTiles( 4096, full, 3 )
+				|| full[0].tileSize != 1024 || full[1].tileSize != 1024 || full[2].tileSize != 2048 ) {
 			return false;
 		}
 	}
@@ -682,6 +757,21 @@ bool R_ShadowMapCachePolicySelfTest( void ) {
 	if ( R_ShadowMapPointCacheSlotLimitFor( 64, 512, 512, 4, maxSlots ) != 64 ) {
 		return false;
 	}
+	// Cubes above 512 get three times the configured figure: the top shadow
+	// level's 1024 depth cubes are 24 MiB each and all 64 fit in 1536 MiB,
+	// where 512 MiB held 21. Cubes of 512 and below keep the figure itself.
+	if ( R_ShadowMapPointCacheBudgetMegsFor( 512, 512 ) != 512
+			|| R_ShadowMapPointCacheBudgetMegsFor( 512, 256 ) != 512
+			|| R_ShadowMapPointCacheBudgetMegsFor( 512, 1024 ) != 1536
+			|| R_ShadowMapPointCacheBudgetMegsFor( 512, 2048 ) != 1536
+			|| R_ShadowMapPointCacheBudgetMegsFor( -5, 1024 ) != 0
+			|| R_ShadowMapPointCacheSlotLimitFor( 64, 512, 1024, 4, maxSlots ) != 21
+			|| R_ShadowMapPointCacheSlotLimitFor( 64,
+				R_ShadowMapPointCacheBudgetMegsFor( 512, 1024 ), 1024, 4, maxSlots ) != 64
+			|| R_ShadowMapPointCacheSlotLimitFor( 64,
+				R_ShadowMapPointCacheBudgetMegsFor( 512, 1024 ), 1024, 8, maxSlots ) != 32 ) {
+		return false;
+	}
 	// 2048 cubes are 192 MiB each, yet the first twelve slots stay available
 	if ( R_ShadowMapPointCacheSlotLimitFor( 64, 512, 2048, 8, maxSlots ) != 12 ) {
 		return false;
@@ -706,6 +796,17 @@ bool R_ShadowMapCachePolicySelfTest( void ) {
 		}
 	}
 	// a stalled or broken clock holds casters live rather than freezing them
+	// a resident map keeps its two seconds at any display rate, and the frames
+	// it always had below sixty a second
+	if ( R_ShadowMapResidentFramesFor( 120, 1000.0f / 60.0f ) != 120
+			|| R_ShadowMapResidentFramesFor( 120, 1000.0f / 30.0f ) != 120
+			|| R_ShadowMapResidentFramesFor( 120, 1000.0f / 144.0f ) != 288
+			|| R_ShadowMapResidentFramesFor( 120, 2.0f ) != 1000
+			|| R_ShadowMapResidentFramesFor( 120, 0.0f ) != 120
+			|| R_ShadowMapResidentFramesFor( 0, 1000.0f / 60.0f ) != 1
+			|| R_ShadowMapResidentFramesFor( 3600, 1.0e-6f ) != 1048576 ) {
+		return false;
+	}
 	if ( R_ShadowMapDynamicCasterFramesFor( 0.0f ) != SHADOWMAP_DYNAMIC_CASTER_MAX_FRAMES
 			|| R_ShadowMapDynamicCasterFramesFor( 1000.0f ) != SHADOWMAP_DYNAMIC_CASTER_MIN_FRAMES ) {
 		return false;
@@ -819,6 +920,14 @@ static shadowMapCasterFaces_t R_ShadowMapSwapCasterFaces(
 	}
 }
 
+bool R_ShadowMapLightStoresFarShell( const viewLight_t *vLight ) {
+	if ( vLight == NULL || vLight->lightDef == NULL || !r_shadowMapDistantFarShell.GetBool() ) {
+		return false;
+	}
+	const renderLight_t &parms = vLight->lightDef->parms;
+	return parms.parallel || R_ShadowMapUsesDistantPointProjection( parms );
+}
+
 shadowMapCasterFaces_t R_ShadowMapCasterFaces( const int cullingMode,
 		const viewLight_t *vLight, const bool windingMirrored,
 		const bool haveGeometry, const bool perfectHull,
@@ -838,6 +947,15 @@ shadowMapCasterFaces_t R_ShadowMapCasterFaces( const int cullingMode,
 		nearShell = R_ShadowMapSwapCasterFaces( nearShell );
 	}
 	if ( mode == 1 ) {
+		// The shell is named by the side the material shows, and the caster
+		// passes keep one front face for the whole pass. A reflected model
+		// reaches the rasterizer wound the other way round, so the face to
+		// discard is the other one, as for every mode below. Without this the
+		// forced near shell of a mirrored model was its far shell on Vulkan,
+		// and only OpenGL's per-surface front face hid it there.
+		if ( haveGeometry && R_ShadowMapCasterTransformWinding( modelMatrix ) < 0 ) {
+			return R_ShadowMapSwapCasterFaces( nearShell );
+		}
 		return nearShell;
 	}
 	if ( !haveGeometry ) {
@@ -847,7 +965,11 @@ shadowMapCasterFaces_t R_ShadowMapCasterFaces( const int cullingMode,
 	if ( winding == 0 ) {
 		return SHADOWMAP_CASTER_FACES_BOTH;
 	}
-	if ( ( mode == 2 || mode == 4 ) && perfectHull ) {
+	// A light whose map stores the far shell takes it for sealed hulls too:
+	// stencil builds every volume from the faces turned away from the light,
+	// and such a light's receivers keep almost none of the bias a near shell
+	// needs (R_BuildShadowMapProjectedLightState).
+	if ( ( mode == 4 || ( mode == 2 && !R_ShadowMapLightStoresFarShell( vLight ) ) ) && perfectHull ) {
 		if ( winding < 0 || R_ShadowMapLightOriginInsideCasterBounds( vLight,
 				modelMatrix, boundsMin, boundsMax ) ) {
 			return SHADOWMAP_CASTER_FACES_BOTH;

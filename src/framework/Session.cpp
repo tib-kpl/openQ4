@@ -37,6 +37,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "BuildVersion.h"
 #include "SaveGameReleases.h"
 #include "VRSystemLocal.h"
+#include "SessionVR.h"
 #include "../sys/NetworkEndpoint.h"
 #if defined( __has_include )
 #if __has_include( "openq4_savegame_compat_generated.h" )
@@ -11298,17 +11299,20 @@ void idSessionLocal::RunGameTic() {
 ===============
 Session_DeclareMultiplayerMenuGameCVars
 
-The create-server menu and Player Setup edit multiplayer settings that only game_mp declares,
-but it is reachable while game_sp is loaded - the module is not swapped until
-spawnServer. A GUI widget resolves its cvar once, when the gui is parsed, and
-idChoiceWindow::InitVars warns and then does nothing at all when the name is
-absent, so those rows would be inert for anyone who reaches multiplayer from a
-cold start or straight out of single player.
+The create-server menu and Player Setup edit multiplayer settings, and the
+menu is reachable while the game module runs as game_sp - it is not reloaded
+as game_mp until spawnServer. A GUI widget resolves its cvar once, when the gui
+is parsed, and idChoiceWindow::InitVars warns and then does nothing at all when
+the name is absent. The split single-player library never declared these, so
+the rows were inert for anyone who reached multiplayer from a cold start or
+straight out of single player.
 
-Declare them here instead, with the same defaults game_mp uses so its later
-static registration matches. That registration keeps the current value and only
-adopts the reset value and range, so whatever the player picked in the menu is
-what the match starts with.
+Since CORE-07 the one game module declares them in both modes, and the menu is
+parsed after it loads, so this declaration is now a safety net for the time
+before the module loads (removing it is a CORE-07 follow-up). It keeps the
+module's defaults so the static registration matches. That registration keeps
+the current value and only adopts the reset value and range, so whatever the
+player picked in the menu is what the match starts with.
 
 Common::Init declares them before it executes the configs, so a saved value
 lands on this declaration. Declared afterwards, the config's seta created a bare
@@ -11429,6 +11433,9 @@ void idSessionLocal::Init() {
 #endif
 
 	cmdSystem->AddCommand( "disconnect", Session_Disconnect_f, CMD_FL_SYSTEM, "disconnects from a game" );
+	cmdSystem->AddCommand( "vr_offer", Session_VROffer_f, CMD_FL_SYSTEM,
+		"the one-time question at the title when a VR runtime is installed: status, yes, no, open, or reset to ask again" );
+	cmdSystem->AddCommand( "vr_setup", Session_VRSetup_f, CMD_FL_SYSTEM, "opens VR SETUP (play space, height, turning, weapon hand) over the retained title or pause" );
 
 #ifdef ID_DEMO_BUILD
 	cmdSystem->AddCommand( "endOfDemo", Session_EndOfDemo_f, CMD_FL_SYSTEM, "ends the demo version of the game" );

@@ -36,7 +36,7 @@ VK_INTERACTIONS = (
     "interaction_shadow",
     "interaction_shadow_point",
 )
-GAME_COPIES = ("game", "mpgame")
+GAME_COPIES = ("game",)
 
 SWEEP_STRENGTH = 0.30
 SWEEP_CYCLES_PER_SECOND = 0.28
@@ -571,7 +571,7 @@ def test_render_entity_render_demo_and_module_abi_are_versioned():
     require(gate, "ent.flatDiffuseFlags", "version 10 demos must restore flat flags")
 
     api = read(RENDERER / "RenderModuleAPI.h")
-    require(api, "#define RENDER_API_VERSION\t\t\t38", "the current renderer ABI must be version 38")
+    require(api, "#define RENDER_API_VERSION\t\t\t39", "the current renderer ABI must be version 39")
 
     loader = read(RENDERER / "RendererModule.cpp")
     require(

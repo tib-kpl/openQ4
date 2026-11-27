@@ -12,6 +12,967 @@ does not restore the withdrawn release. See
 protocol 2.42 and render demo v14 do not interoperate with 0.14.1. Its
 player-facing notes are [releases/v0.15.0.md](releases/v0.15.0.md).
 
+## Menus that fit phones, tablets and the Steam Deck, 27 November 2026
+
+- **The new interface now knows what it is running on.** On a phone, a
+  tablet or a Steam Deck it takes a touch layout: Game Options, Controls,
+  Audio and Display stand in one column with taller rows that are easier to
+  tap, and a tap just beside a small button or tab still reaches it.
+  Connecting a mouse switches the menus to their desktop layout at once;
+  touching the screen switches back. Desktop players see no change.
+- **Touch controls in the game's own Settings (Android).** **Settings →
+  Controls → Touch** holds **Show in Play**, **Layout Preset**, **Control
+  Size**, **Look Sensitivity** and **Touch Layout**, applied at once. Without
+  a mouse the mouse-only settings step aside; with one the tab reads
+  **Mouse** and shows both.
+- **Readable text from the first launch.** A new Android install starts menu
+  text at 150% on a phone and 125% on a tablet, and the Steam Deck profile at
+  125%; a size you already chose is kept. Android setup's Automatic text size
+  follows the same base times your Android font size.
+- For testers and modders: `ui_interfaceVariant` (auto, desktop, touch or vr)
+  forces a layout, and `ui_interfaceVariantActive` shows the one in use.
+- Evidence: `openq4-ui-scrollbar-runtime` (variant resolution, the
+  pointer-held latch, view sources, touch reach at two densities),
+  `openq4-ui-retained-screens --controls/--game/--audio`, Android
+  setup JVM/JNI tests, and hidden-window OpenGL captures of Game Options,
+  Controls and Audio at desk, phone and tablet sizes in both orientations.
+  No phone, tablet, Steam Deck or desktop touchscreen has been used by hand.
+  Contract: [ui/interface-variants.md](ui/interface-variants.md).
+
+## VR finds your headset, and the menus fit the headset, 27 November 2026
+
+- **VR Mode has three choices: Off, On and Automatic.** Off never asks your
+  VR software for anything. On is what turning VR on always did. Automatic
+  asks your VR runtime for a headset as the game starts: if one answers, you
+  start in VR (on OpenGL when the renderer is left to choose); if none does
+  within 20 seconds, you play on the desktop. A headset you switch on later
+  shows **VR headset found** in the menus with **Play in VR**, and never takes
+  over in the middle of play.
+- **The title asks once.** If a VR runtime is installed and you never chose a
+  VR Mode, the title asks whether to play in VR by itself whenever a headset
+  is connected. Yes sets Automatic, No keeps VR off, and the answer is kept.
+  openQ4 finds the runtime by reading which one is active, without starting
+  it, so a desktop start never opens SteamVR on its own.
+- **VR SETUP.** The first time VR starts, a short dialog opens over the title
+  or pause menu: seated or standing, Measure My Height, Recentre View, snap or
+  smooth turning, weapon hand and the comfort vignette. It stays on the pause
+  menu (VR SETUP, beside EXIT) and on the Virtual Reality tab (Comfort Setup).
+- **Menus in the headset.** Settings > Game Options opens on Virtual Reality;
+  the flat gun's position and field of view and stereoscopic 3D leave the page
+  while you're in VR; menu text is at least a quarter larger
+  (`ui_retainedVRTextScale`); typing opens the game's own keyboard for the
+  laser instead of the desktop's; and the desktop mirror shows the menu while
+  one is up. **Look for Headset** on the Virtual Reality tab asks the runtime
+  on demand.
+- **What to do.** Nothing. `vr_enable 0` and `1` keep their meaning, and
+  `+set vr_enable 1` still starts in VR. Every decision is logged
+  (`VR_RUNTIME`, `VR_MODE`, `VR_OFFER`, `VR_DETECT`), which helps reports.
+- Not yet checked on a real headset or runtime: how SteamVR, Meta Link, WMR,
+  Monado and Virtual Desktop answer with the headset off or asleep, and how
+  the larger text and the pointer's targets read in a headset (VR headset
+  checklist section 8).
+- Evidence: `tools/tests/openxr_vr_detection_smoke.py` on the OpenXR test
+  runtime, whose `OPENQ4_XR_TEST_HEADSET` makes it a runtime with no headset
+  or one that connects later: no runtime (missing manifest: no question, no
+  instance, `vr_detect` says no runtime answered); a runtime without a
+  headset and VR Mode off (the title asks once, No is kept across a relaunch,
+  and the runtime is never loaded: its log never opens); Yes with a headset
+  (Automatic presents and VR SETUP opens over the title); Automatic with a
+  headset appearing after 24 s (desktop, then an offer, then VR on
+  `vr_start`); and Automatic with a headset at launch under
+  `r_renderApi best` (OpenGL chosen, airdefense1 in stereo with the HUD).
+  `openxr_vr_menu_smoke.py` sets VR SETUP's Turning to Smooth with the
+  pointer before its Laser Sight round. The native
+  `OpenXRRuntimeProbeTest.cpp` pins the manifest parsing and the Linux
+  search order.
+- Development: stage one is `src/sys/openxr/OpenXRRuntimeProbe.cpp`
+  (`XR_RUNTIME_JSON`, `HKLM\SOFTWARE\Khronos\OpenXR\1`, the XDG
+  `active_runtime[.<arch>].json` files); `idVRSystemOpenXR::BootDecide` runs
+  from `R_RendererModule_BootEarly` before the renderer is chosen
+  (`RM_AutomaticApi(VR_WantsRenderer())`); `StartIfRequested` creates an
+  instance only while `InstanceWanted()`; the session side is
+  `src/framework/Session_vr.cpp`; the menus' VR parts are
+  `tools/ui/retained_vr.py`, keyed on the shared interface variant (`view.variant` is
+  `vr`; [ui/interface-variants.md](ui/interface-variants.md)). A restated `vr_renderScale` no longer
+  restarts the session at launch, so the runtime is asked once. No game or
+  renderer ABI change.
+
+## One Shadows setting with six levels, and Custom settings you can undo, 27 November 2026
+
+- **Settings > Display > Effects has one Shadows list:** Off, Original,
+  Soft (Low), Soft (Medium), Soft (High) and Soft (Ultra). It replaces the
+  Enable Shadows and Shadow Maps switches. Until now the soft shadow maps
+  were one switch, and their quality could only be changed by picking a
+  whole preset or from the console. Each level is the shadow recipe of a
+  preset: Original is what Performance and Balanced draw, Soft (Low) is
+  Enhanced, Medium is Quality, High is Ultra and Ultra is Maximum. The
+  classic interface keeps its Enable Shadows row.
+- **A setting you change away from its preset is marked, and one click puts
+  it back.** Performance Preset reads Custom once you change anything it
+  fills, and each changed setting shows a small orange return arrow before
+  its name. Select the arrow to return that setting to the preset's value,
+  or the arrow beside Performance Preset to return them all. Frame Rate Cap
+  never counts, because Auto-Detect matches it to your display.
+- **Presets are unchanged.** Every preset sets exactly what it set before,
+  so the System Check does not come up again for this update and nothing
+  needs choosing again.
+- Turning soft shadows on from the menu no longer keeps a low preset's limit
+  on shadow updates, which could leave moving shadows a frame or more
+  behind.
+- Evidence: the preset model test (551,767 checks) pins the preset system
+  version unchanged and covers the shadow ladder. The SYSTEM page runtime
+  test (520,030 checks, twelve languages) reads every level, follows a
+  changed row to its mark, resolves the mark to the preset's values and
+  shows Custom. The page source test evaluates all nine presets: none is
+  marked as written, and every mark returns exactly what the preset wrote.
+  In a hidden-window OpenGL client on a detected Enhanced, the list opened
+  with six levels, Soft (Medium) marked the row and Performance Preset read
+  Custom, the mark returned Soft (Low), and Soft (High) applied as 4096
+  shadow maps in an 8192 atlas with cascaded sunlight. Frame rates were not
+  measured: no preset's values changed.
+## Less shadow work on physically based materials, 27 November 2026
+
+- **Materials with physically based (PBR) textures cost a little less to
+  light.** Where a light does not reach such a surface, the game no longer
+  works out a soft shadow for it first. The picture is identical. This applies
+  to PBR materials added by mods and texture packs on both OpenGL and Vulkan;
+  the stock game has none, so it looks and runs the same.
+- **What to do.** Nothing.
+- Developer detail:
+  [PBR receivers and the light's reach](shadowmapping-audit-2026-11-27.md#pbr-receivers-and-the-lights-reach)
+  and [the stencil supplement on screen](shadowmapping-audit-2026-11-27.md#the-stencil-supplement-on-screen):
+  the OpenGL fix for lights that need a shadow map and stencil shadows together
+  was verified with a forced case, and `r_shadowMapReport` now prints
+  `hybrid=`, the number of light passes drawn that way. No ABI change.
+
+## Sunlight shadows near you hold still when you turn, 27 November 2026
+
+- **Shadows close to you no longer shift as you look around outdoors.** On
+  Quality and above, sunlight is drawn in slices, finest near you. Each slice
+  used to be fitted to the exact shape of your view, which changes as you
+  turn, so its sharpness changed in steps and every shadow edge in it shifted
+  a little each time: eight times in a full turn on Air Defense 1. The two
+  slices nearest you now keep one sharpness whichever way you face, and their
+  edges stay put.
+- **What it costs.** Those two slices used to be a little sharper in some
+  directions than others; they now hold the sharpness of the least favourable
+  direction (0.72 units a texel where it ranged from 0.47 to 0.73 on Air
+  Defense 1). The far slice is unchanged. How much shadow is drawn does not
+  change.
+- **What to do.** Nothing. `r_shadowMapCascadeStableExtent 0` restores the old
+  fit, and `4` steadies the far slice as well, at a larger cost in sharpness.
+- Developer detail:
+  [cascades that keep their scale while the view turns](shadowmapping-audit-2026-11-27.md#cascades-that-keep-their-scale-while-the-view-turns).
+  No ABI change.
+
+## The highest Shadows setting keeps every light's shadow stored, 27 November 2026
+
+- **The highest Shadows setting no longer redraws half a room's shadows every
+  frame.** Its larger point-light shadow maps take four times the memory of the
+  other settings', but the store for them was sized for the small ones, so in
+  a room with dozens of lights only about half fitted and the rest were drawn
+  again on every frame. Larger shadow maps now get three times the memory
+  (1536 MiB at the default). In the hub level's processing hall on Vulkan at
+  the Maximum preset, five point-light shadows were redrawn per frame and now
+  almost none are, and shadow drawing falls from about 690 objects a frame to
+  about 250.
+- **Memory.** Shadow memory in that hall stays about the same, 1.9 to 2.4 GiB
+  on Vulkan, because the temporary maps the unstored lights used are no longer
+  needed. In levels with more stored lights it can grow by up to 1 GiB over
+  before. The other Shadows settings are unchanged.
+- **What to do.** Nothing. `r_shadowMapPointCacheMegs` still sets the figure;
+  it now means the budget for the standard size, and larger maps get three
+  times it.
+- Developer detail:
+  [the top level's point cache](shadowmapping-audit-2026-11-27.md#the-top-levels-point-cache).
+  No ABI change.
+
+## No more one-frame shadowless flashes in crowded rooms on Vulkan, 27 November 2026
+
+- **A light no longer flashes without its shadow on Vulkan's highest shadow
+  setting.** In rooms with dozens of shadow-casting lights the memory set
+  aside for point-light shadows can run out, and the lights that do not fit
+  are drawn with the classic stencil shadows instead. One of those lights
+  could be drawn for a single frame with no shadow at all, each time it came
+  into view. It now goes straight to its stencil shadow. Seen in the hub
+  level's processing hall at the Maximum preset; the lower shadow settings use
+  smaller shadow maps and do not run out there.
+- **What to do.** Nothing.
+- Developer detail:
+  [a point light with no cube and no volumes](shadowmapping-audit-2026-11-27.md#a-point-light-with-no-cube-and-no-volumes).
+  No ABI change.
+
+## Smooth soft shadow edges on Vulkan, 27 November 2026
+
+- **Soft shadow edges are smooth on Vulkan.** The soft edge of a spotlight's or
+  the sun's shadow was drawn from nine all-or-nothing samples, which gave it a
+  grainy, stepped look up close. Vulkan now blends each sample across the four
+  shadow-map pixels around it, and the edge is an even ramp. Measured grain on
+  Air Defense 1 at Quality falls by more than half; where shadows fall does
+  not change.
+- **OpenGL is unchanged**, so soft shadow edges now look a little different
+  between the two renderers. `r_vkShadowBilinearPCSS 0` gives Vulkan the old
+  edge.
+- **Cost.** Roughly a tenth of a millisecond of graphics time at 1440p on the
+  test laptop, measured on a busy machine and still to be confirmed.
+- **What to do.** Nothing.
+- Developer detail:
+  [bilinear PCSS-lite taps on Vulkan](shadowmapping-audit-2026-11-27.md#bilinear-pcss-lite-taps-on-vulkan).
+  No ABI change.
+
+## Characters behind you stop costing shadow time, and Vulkan hands back unused shadow memory, 27 November 2026
+
+- **Animated characters you cannot see no longer take shadow-map time.** A
+  squad mate behind you used to be posed and drawn into the shadow map of
+  every lamp around him on every frame, although none of his shadow could
+  reach the screen. He is now left out until it can. With eight marines behind
+  the camera in the hub level on Vulkan at Quality, the game's own thread
+  spends about half a millisecond less on a frame (3.5 to 3.0 ms). Sunlight
+  keeps every caster. `r_shadowMapCullOffscreenLiveCasters 0` restores the old
+  behaviour.
+- **Vulkan gives back shadow memory you are no longer using.** Lowering the
+  Shadows setting, or switching shadow maps off, used to leave their memory
+  allocated until the next video restart: up to several hundred megabytes of
+  graphics memory on the settings meant for weaker cards. It is now released
+  after half a minute without use, and comes back if you raise the setting.
+- **Mirrored models cast the same shadow on both renderers**, for mods and
+  maps that use them.
+- **What to do.** Nothing.
+- Developer detail:
+  [five more leads](shadowmapping-audit-2026-11-27.md#five-more-leads).
+  No ABI change.
+
+## Outdoor lamps keep their sharp shadows when you look up, 27 November 2026
+
+- **Looking up no longer blurs every shadow of a big outdoor lamp.** On
+  Quality and Ultra the large lamps that light open areas draw their shadows
+  in several slices, finest near you. As soon as the view rose past the height
+  of the lamp itself, the game gave up on the slices and drew one coarse map
+  of the whole light, so the shadows around you went soft whenever you looked
+  up. The slices are now kept. On the landing site, looking up from under its
+  main lamp, the shadows near you resolve about 1 unit a texel where they
+  resolved 66, and 87% of the reference shadow is kept where 68% was, on
+  OpenGL and Vulkan alike. Spotlights on Maximum gain the same way when you
+  stand beside them.
+- **What to do.** Nothing.
+- Developer detail:
+  [a slice behind the source plane](shadowmapping-audit-2026-11-27.md#a-slice-behind-the-source-plane).
+  No ABI change.
+
+## Sharper sunlight shadows close to you, and a shadow-map tidy-up on both renderers, 27 November 2026
+
+- **Sunlight shadows near the player are finer on Quality and Ultra.** A
+  cascaded light keeps a safety margin around each slice of the view, and the
+  margin was being measured in the wrong unit: close to the player it was as
+  wide as the slice itself, so the nearest shadows were drawn coarser than the
+  map could hold. On Air Defense 1 the nearest slice now resolves 0.58 units a
+  texel where it resolved 0.91, and the next one is a step finer in most
+  views. The ground right at your feet also stops borrowing the next, coarser
+  slice. OpenGL and Vulkan both; no setting changes and no extra cost.
+- **A spotlight sharing the view with the sun keeps its full resolution** when
+  the shadow atlas has room for it, where it used to be halved along with
+  everything else.
+- **Shadows you looked away from are still there when you look back at high
+  frame rates.** A light's cached shadow map was kept for a number of frames,
+  which is two seconds at 60 FPS and a quarter of a second at 480. It is now
+  two seconds at any frame rate (`r_shadowMapResidentFrames`).
+- **OpenGL gives back shadow memory** when a larger point-shadow size or a
+  smaller cache lowers the number of cached lights, instead of holding up to
+  several hundred megabytes until the next video restart, and no longer
+  re-reads and recompiles a shadow shader every frame if one fails to load.
+  On lights that need both a shadow map and stencil shadows, the stencil part
+  now takes effect.
+- **Vulkan: cel-shaded highlights look the same under a shadow-mapped light**
+  as under any other (`r_celShading 1`).
+- **What to do.** Nothing. Each cached shadow map is rendered once more after
+  the update.
+- Developer detail, measurements and the leads left open:
+  [27 November shadow-mapping audit](shadowmapping-audit-2026-11-27.md).
+  No ABI change.
+
+## The start-up screen stays up through the first launch's settings restart, 27 November 2026
+
+- **The game window no longer vanishes and comes back black on a first
+  launch.** A new install starts on a cautious graphics preset until it has
+  looked at the graphics card, then restarts the renderer on the preset it
+  picked. That restart used to close the game window and open a new one,
+  which came up black until the menu or a level drew and was not always given
+  the focus, so the menu could ignore the mouse. The renderer is now rebuilt
+  on the window you are already looking at, as a game-module swap does, and
+  the start-up screen is drawn again straight away. The window is still
+  replaced in the one case that needs it: a window that carries its own
+  multisampling (`r_glWindowMultisample 1` or `r_glesContext 1`) whose sample
+  count the preset changes.
+- **What to do.** Nothing. Only a fresh profile runs this restart.
+- Ported from openQC, where it was found and fixed first (openQC 75595dba8).
+- Evidence: hidden-window `+map game/airdefense1` launches on a fresh
+  `fs_savepath` with OpenGL and Vulkan picked the Enhanced preset, logged
+  `SDL3: reusing preserved OpenGL window` (and `Vulkan`) for the restart,
+  loaded the map and quit with exit 0, no warnings or errors. A fresh-profile
+  log from the previous build shows the window torn down and created again at
+  the same point.
+
+## Settings that explain themselves, 27 November 2026
+
+- **Every option on the new interface's Settings pages now has a tooltip.**
+  Rest the pointer on an option for a moment, or stop on it with the
+  keyboard or a controller, and a short note says what it does and what it
+  costs: around 190 options across Game Options, Display, Audio and
+  Controls, in all twelve languages. Tooltips stay out of the way: they wait
+  until you stop, sit clear of the pointer, vanish on any click, key or
+  scroll, and don't return on that option until you move on. Touch screens
+  don't show them. **Menu Tooltips** under Game Options → Accessibility
+  (`ui_tooltips`) turns them off. The classic menus are unchanged.
+- Evidence: `UiDocumentTest` (`CheckTooltipSchema`) and `RetainedUiTest`
+  (`CheckTooltip`: delays, keyed focus, replacement, press dismissal, touch,
+  placement); the generator refuses a settings row without a tooltip.
+  In a hidden-window OpenGL client (`capture_retained_screens.py`
+  scenario `settings-tooltips`, English and French), Game Options showed
+  none for program focus, the focused row's under it after a key step,
+  none after a key, the pointer's row's beside the pointer, none after a
+  click, the second column's on Accessibility, and none with
+  `ui_tooltips 0`. Touch is covered by the native test only.
+  Contract: [ui/tooltips.md](ui/tooltips.md).
+
+## Window Mode and several monitors, 27 November 2026
+
+- **Exclusive Fullscreen is greyed out in Window Mode while Expand Across
+  Displays is on** (#263). Exclusive fullscreen switches one display's mode,
+  so it can't stretch across monitors, and choosing it with spanning on used
+  to fail only when you pressed Apply. Turn spanning off to choose it.
+- **The line under Expand Across Displays names the new modes:** spanning
+  needs the Borderless or Fullscreen Window Mode, in all twelve languages.
+- Evidence: the SYSTEM display-lists test (two published displays) checks
+  that Exclusive Fullscreen reads as unavailable and is skipped while the
+  draft spans, and is offered again on one display; it fails on the previous
+  page. In a hidden-window OpenGL client started with spanning on, the list
+  showed Exclusive Fullscreen dimmed and End stopped on Fullscreen. Spanning
+  itself was not run: the test machine has one display.
+
+## One Window Mode choice instead of three display switches, 27 November 2026
+
+- **Settings > Display > Screen now has a single Window Mode list:**
+  Windowed, Borderless, Fullscreen and Exclusive Fullscreen (#264). It
+  replaces the Fullscreen and Borderless Window switches and the Fullscreen
+  Policy choice, which could be combined in ways that did nothing. Only the
+  size and resolution rows that the chosen mode uses can be changed:
+  Windowed uses Window Width and Height, Exclusive Fullscreen uses Display
+  Resolution, the custom size and Refresh Rate, and Borderless and
+  Fullscreen use the desktop's own size. Your current setup shows as the
+  matching mode, so nothing needs setting again. The classic interface keeps
+  its three rows.
+- Evidence: the SYSTEM display-controls test checks that each mode sets the
+  three display settings in one change and reads back as that mode, in seven
+  languages; the page's choice, text-size, catalog and preset tests pass with
+  the new row. In a running game (hidden window, OpenGL, Air Defense 1) the
+  list opened with its four modes, and choosing Borderless and then Exclusive
+  Fullscreen greyed out and enabled the matching size rows. Applying each mode
+  in a running game was not tried.
+
+## Window Width and Height grey out when Borderless Window fills the screen, 27 November 2026
+
+- **The display settings no longer offer a window size that does nothing**
+  (#265, #263). Borderless Window is a frameless window that covers the
+  whole display, so it ignores Window Width and Height, but those boxes
+  stayed editable while it was on. Players who set a size there still got a
+  full-screen game. The boxes are now greyed out with Borderless Window on,
+  as they already were in fullscreen. For a window of your chosen size, choose
+  the Windowed Window Mode.
+- Evidence: the SYSTEM display-controls test drives the production page in
+  seven languages and checks that both rows are disabled and dimmed with
+  Borderless Window on and editable with it off; it fails on the previous
+  page. Not yet checked in a running game.
+
+## Loading a save no longer closes the game when a light goes out at that moment, 26 November 2026
+
+- **Saves that closed the game on loading now load.** A save made at the
+  opening of The Awakening's first level, by 0.15.0 or any later build,
+  loaded, then closed the game silently (0.15.0 itself froze) a moment after
+  play resumed. Any load, or a level start, whose first moment of play turns
+  off a light could do the same: the renderer kept the switched-off light's
+  lighting records past the point where the level's lighting table was built,
+  then found them missing from it and stopped with a fatal error. The light's
+  records now leave the table as soon as it goes out. No save needs fixing:
+  the same saves load and play on.
+- Evidence: the first level's saves from 0.15.0, the pre-merge build and the
+  current build each restore, play on and save again; every campaign level's
+  save made by the current build loads in it again (42 of 42)
+  (`renderer_deferred_light_interaction_table.py` pins the fix).
+
+## Vulkan keeps lights' triangle lists on the graphics card as well, 26 November 2026
+
+- **Vulkan no longer re-sends the triangle lists that belong to a light.**
+  For every surface a light touches, the engine keeps a list of just the
+  triangles that light reaches, and for static shadows cast by map objects a
+  list of the shadow's triangles. Both were copied into the frame's upload
+  buffer every frame. Once such a pairing of light and surface has lasted a
+  moment, its lists now stay on the graphics card. In the hub level the
+  upload each frame falls from 0.69 MB to 0.59 MB at Quality and from 0.66 MB
+  to 0.54 MB at Balanced, on top of the two Vulkan changes further down; what remains is
+  geometry that really moves. The time this saves is small (an estimated
+  0.04 to 0.11 ms a frame there) and was not measured on the busy test
+  machine. Pictures are identical. `r_vkStaticInteractionIndexes 0` restores
+  the copying.
+- Evidence and what the upload buffers still carry:
+  [performance report section 27](performance-report.md#27-an-interactions-index-lists-on-vulkan-fps-08-26-november-2026).
+  No ABI change.
+
+## Saves from 0.15.0 load on every campaign level, the hover-tank levels included, 26 November 2026
+
+- **Your 0.15.0 saves keep working.** Development builds since 23 November
+  refused a 0.15.0 save of a level with a hover tank (Convoy, Convoy 2, the
+  second half of Convoy 2, Core 2, and The Awakening's final level) and
+  returned you to the menu: the tank's machine-gun sight had been reorganised,
+  and the save's copy of that screen no longer matched it. A save holding the
+  machine gun's, nail gun's or railgun's scope screen would have failed the
+  same way. Such saves now load with the sight as it was saved; only an
+  animation it was running restarts. Saves of every campaign level, Quake 4
+  and The Awakening, made by the released 0.15.0 now load, play on and save
+  again.
+- For modders and developers: a retained (`.rui`) GUI saved from an earlier
+  revision of its document is rebuilt from its saved state instead of failing
+  the load, so editing such a document no longer breaks older saves. See the
+  [savegame compatibility policy](savegame-compatibility-policy.md#retained-gui-document-revisions).
+- Evidence: the official 0.15.0 package saved every campaign map (29 Quake 4,
+  13 Awakening) 300 tics in, and the current build restored each with the same
+  saved objects, played on and saved again; five of them (convoy1, convoy2,
+  convoy2b, core2, m09) needed the fix. See
+  [savegame reliability](savegame-reliability.md#original-release-writer-0150-26-november-2026).
+
+## VR: adult-sized hands, a HUD out of your line of fire, and a quicker weapon wheel, 26 November 2026
+
+From a player's first report on a real headset (Steam Frame over SteamVR):
+
+- **Your hands are full size.** Quake 4 builds its first-person guns and
+  the hands holding them at about half life size, which a flat screen never
+  shows; in VR the hands looked like a child's next to your body's arms. They
+  are now drawn 1.75 times as large, and so are the guns, so a hand is about
+  17 cm long and the machinegun about 76 cm. The forearms keep their length,
+  so your elbows bend where they did. `vr_weaponScale` sets the size; 1 draws
+  them as modelled. A long gun reaches further back too: held about 35 cm
+  in front of your eyes, the rocket launcher's rear now comes up to your face,
+  where at the old size it stopped about 12 cm short.
+- **The HUD hangs below your line of sight.** It used to sit 0.1 m below eye
+  level, with its panels round the middle of your view, over what you were
+  aiming at. It now hangs 0.3 m below, its top edge at about eye level; glance
+  down for health and ammunition. A configuration still holding the old
+  default moves to the new one once; any other height stays.
+  `vr_hudHeightOffset -0.1` restores the old placement.
+- **Pick a weapon without swinging your gun.** With the weapon wheel open,
+  push the weapon-hand stick towards a weapon and let go of the grip; turning
+  the gun hand still works too. The stick doesn't turn you or page weapons
+  while the wheel is open, and multiplayer's quick chat takes the stick the
+  same way.
+- **Menu prompts name your controller's buttons.** Pointing at a menu used to
+  switch every button prompt to keyboard keys, because the pointer moves and
+  clicks like a mouse. The menu pointer is also a round dot now, not a square.
+- **What to do.** Nothing. Players who set their own HUD height keep it.
+- Not changed: shots already leave the hand along the laser's line in single
+  player, so the report's "aiming feels off" has no separate cause found in
+  code; the half-size hands, which put the visible grip well inside the real
+  hand, are the likely one. Still unverified on a headset.
+- Development: `rvWeapon::ForeshortenAxis` scales the hand-held view model by
+  `idPlayer::GetVRWeaponScale`, `GetVRWeaponTransform` scales the grip with
+  it, and `rvWeapon::PoseVRArms` maps world points back by the scaled axis's
+  inverse and presses each forearm back to its modelled length along itself
+  (`ShortenVRViewForearm`), so `SolveVRViewArm` is unchanged. The engine
+  publishes the weapon-hand stick as `vr_wheelStickX/Y` while `ui_radialOwner`
+  is set; `WeaponWheelAdvanceCursor` takes a push past 35% under
+  `BUTTON_VRAIM`. `idKeyInput::PreliminaryMouseEvent` and mouse buttons count
+  as controller input while `VR_HasInputFocus()`, and `Sys_PostVRPointer`
+  marks the controller for retained menus, whose pointer bypasses the event
+  loop. `Common_MigrateLegacyVRHudHeight` moves an archived -0.1 once. No ABI
+  change. Contracts: `tools/tests/weapon_wheel_behavior.py` (VR stick case),
+  `tools/tests/openxr_vr_contract.py`.
+
+## Vulkan keeps the level's index lists on the graphics card too, 26 November 2026
+
+- **Vulkan no longer re-sends the triangle lists of static geometry every
+  frame.** The vertices of level geometry and of anything else that does not
+  animate were already kept on the graphics card; the list that says which
+  vertices make up each triangle was still copied into the frame's upload
+  buffer every frame. A surface's own list now sits beside its vertices. In
+  the hub level the upload each frame falls from 0.8 MB to 0.7 MB, at
+  Balanced and at Quality alike, on top of the shadow volume change below.
+  The time this saves is small (an estimated 0.05 to 0.1 ms a frame there)
+  and was not measured apart from the test machine's noise. Pictures are
+  identical. `r_vkStaticSurfaceIndexes 0` restores the copying.
+- Evidence and what the upload buffers still carry:
+  [performance report section 25](performance-report.md#25-a-surfaces-own-index-list-on-vulkan-fps-08-26-november-2026).
+  No ABI change.
+
+## Vulkan stops copying static shadows to the graphics card every frame, 26 November 2026
+
+- **Vulkan keeps the shadow volumes of the static world on the graphics card.**
+  At Performance and Balanced, which draw every shadow as a stencil volume,
+  each volume's vertices and indexes were copied into the frame's upload
+  buffers again every frame, although most of them never change: the
+  level's own precomputed volume for each static light. Those now sit beside
+  the level geometry in the buffer that already held it, and so do the
+  vertices of volumes cast by anything that does not animate. In the hub level
+  the upload each frame falls from 1.5 MB to 0.8 MB, and the game's own thread
+  spends 0.3 to 0.7 ms less on a frame there (9 to 24% of its time in that
+  view). Maps whose shadows come mostly from animated characters and props
+  gain less. Enhanced, which still draws its point lights' shadows as volumes,
+  uploads less in the same way; its gain in time was too small to tell from
+  the test machine's noise. Pictures are identical. Presets that use shadow
+  maps for every light (Quality and above) draw no volumes in such scenes and
+  gain nothing; OpenGL is not changed. `r_vkStaticShadowVolumes 0` restores
+  the copying.
+- Evidence and what the upload buffers still carry:
+  [performance report section 24](performance-report.md#24-resident-stencil-shadow-volumes-on-vulkan-fps-08-26-november-2026).
+  No ABI change.
+
+## OpenGL stops questioning its driver every frame, and Vulkan's shadow-map bookkeeping gets lighter, 25 November 2026
+
+- **OpenGL no longer asks the graphics driver for state the game set itself.**
+  To turn the scissor test off around a clear or a copy and back on afterwards,
+  to put the viewport back after a pass into another target, or to restore
+  blending after a shadow map, the renderer asked the driver what the current
+  value was: 49 questions a frame at the Quality preset, about 70 in a
+  firefight. A driver that hands the game's commands to a worker thread
+  (NVIDIA's threaded optimisation, Mesa's glthread) has to finish everything
+  queued before it can answer one, so each question made the game wait for
+  the driver, and where such a driver was seen at work a fifth to a third of
+  the game's own thread went on that wait. The renderer now remembers what it
+  set and answers those questions itself; between one and two a frame still
+  reach the driver.
+  Pictures are identical, and a check mode that asks the driver as well found
+  no difference in any preset. What this is worth in frames a second depends on
+  the driver and was not measured: with a driver that draws on the game's
+  thread, as the test machine's did in every timed launch, the cost is
+  unchanged. `r_glStateQueries 0` and `r_glCopyTargetState 0` restore the
+  questions, `2` checks every answer, and `r_glStateQueryReport 300` prints
+  which call sites still ask.
+- **Vulkan decides faster whether a shadow-mapped light can leave its stencil
+  volumes out.** That depends on every receiver of the light, and the answer
+  was thrown away whenever one of the light's interactions changed, which an
+  animating character makes happen for every light it touches in every frame.
+  The answer is now corrected from the interaction that changed. In the
+  benchmark firefight a frame tests 651 interactions where it tested 4,948,
+  and the verdicts are the same (206,899 compared, none different).
+  `r_shadowMapReceiverScanIncremental 0` restores the whole scans, `2`
+  compares every answer.
+- Smaller: both renderers settle "is this image the screen copy" and the
+  light-panel test on the first letter of the name before comparing the rest;
+  `rendererVulkanMemoryInfo` says what Vulkan's frame rings were filled with
+  and how the receiver verdicts were reached.
+- Evidence, and what became of each lead of the first round:
+  [performance report section 23](performance-report.md#23-the-renderer-round-continued-state-queries-and-the-receiver-scan-fps-08-25-november-2026).
+  No ABI change.
+
+## Fewer wasted copies every frame, cheaper bounds for animated characters, and Vulkan fixes, 25 November 2026
+
+- **OpenGL copies the screen and the depth buffer only for something that reads
+  the copy.** The post-process pass copied the whole view into a float image
+  whenever its first surface sorted as post-process, though the game's own
+  resolve, anti-aliasing and composite passes sort there and read only their
+  own targets: one full-window copy a frame on every preset from Performance
+  up. And once a map with a light grid had been loaded, every view copied the
+  depth buffer for the light grid pass, the HUD and each of the game's
+  fullscreen passes included. On a light grid map (every multiplayer map) a
+  Quality frame now makes 3 depth copies and 2 colour copies where it made 10
+  and 3; a campaign map loses the one colour copy. Pictures are identical.
+  `r_postProcessCaptureOnDemand 0` and `r_lightGridDepthOnDemand 0` restore the
+  old copies. Neither renderer repeats its depth copy after the fog pass any
+  more, which writes no depth.
+- **Animated characters are no longer skinned a second time each frame for
+  their bounds.** A pose drawn between two game tics had every vertex of its
+  model skinned just to find its bounds, on every rendered frame. Its bounds
+  are now the tic's exact bounds, widened by the distance the joints travelled
+  since: a few operations a joint. A pose further than 16 units from the tic's
+  is still skinned, and so is every tic, so nothing the game logic reads has
+  changed. In the stock firefight at one rendered frame a tic, the main
+  thread's skinning for bounds fell from 0.99 to 0.62 of what it spends
+  skinning for drawing; the tic's own skin is what remains, so the saving
+  should grow with the frame rate (not measured). The widened bounds always
+  hold the mesh (checked against the skinned mesh for 20,000 poses in play,
+  none outside) and are about one unit wider on average, which only makes
+  culling slightly more cautious.
+  `r_posedBoundsFromReference 0` skins every pose again, `2` checks every
+  answer, and `r_posedBoundsReferenceLimit` sets the distance.
+- **Underwater shimmer runs at the same speed at any frame rate.** The warp,
+  caustics and drifting particles of the underwater view were timed in rendered
+  frames, so they ran four times as fast at 240 frames a second as at 60, half
+  as fast under a 30 frame cap, and kept moving while the game was paused. They
+  now follow the view's clock on both renderers.
+- **Vulkan keeps multisampled depth where it is drawn.** Unbinding the scene
+  target moved its multisampled depth image to the sampled layout and the next
+  frame's bind moved it back, though nothing samples a multisampled depth image
+  (every reader takes a resolved copy); the frame's depth resolve left its
+  source there too. It now stays an attachment: two fewer layout changes a
+  frame, identical pictures and a clean validation layer. At 2560x1440 on
+  the RTX 4060 Laptop the frame is about 0.1 ms shorter on the GPU at 2x
+  anti-aliasing and 0.3 ms at 8x; at 4x the difference (0.05 ms) is inside the
+  noise of a GPU that other sessions were using.
+  `r_vkDepthTargetLayoutReference 1` restores the old layouts.
+- **Vulkan can no longer leak memory when a busy frame overflows its staging
+  arena.** A frame whose effects, decals and interface geometry overflowed the
+  shared 2 MB arena gave each overflowing allocation a block of its own that
+  was freed at birth. Touching such a block, which the effect pass does, moved
+  it back among the live blocks, and nothing freed it or its memory again. A
+  freed block now stays freed, and Vulkan's arena is 8 MB: the stock firefight
+  filled 1.8 MB of the old one without overflowing it.
+- **Vulkan recovers when a pipeline set fills up.** Pipelines are keyed on the
+  scene target's format and sample count and nothing evicted them, so each
+  anti-aliasing or HDR setting tried in a session left its pipelines behind. A
+  full set dropped every surface that needed a new pipeline, the depth fill
+  among them, until the renderer restarted. A full set now retires every
+  pipeline at the next frame and rebuilds the ones in use, and the stage set
+  holds 256. Sixteen setting changes in one session did not fill the old set of
+  64, so this is a safeguard; `rendererVulkanMemoryInfo` now prints the counts.
+- **A light that changes while effects are drawn can no longer upset the
+  view.** Effects are serviced while a view's effects are being added, and an
+  effect whose light started, moved or changed size there rebuilt that light's
+  area references. That bumped the counter the view keeps its visible areas,
+  entities and lights under, so for the rest of the view every "is this in the
+  view" test failed: later effects would be culled as out of sight, and an
+  entity or light asked for again added a second time. Area references now
+  have a stamp of their own. Found by reading the code; the stock firefight
+  used for the measurements never triggered it.
+- Smaller: the automatic temporal anti-aliasing rule no longer looks a cvar up
+  by name for every animated surface; an entity that is in a view only to cast
+  a shadow no longer has its bounds projected for a scissor it cannot use;
+  `r_debugRenderToTexture 1` counts colour and depth copies on OpenGL, and
+  `bse_frameCounters` the area references rebuilt while effects are added.
+- Evidence, and the list of what was read and left for later:
+  [performance report section 22](performance-report.md#22-a-renderer-round-copies-layouts-and-posed-bounds-fps-08-25-november-2026).
+  Renderer module ABI 39 and game module ABI 65 (a model method for the
+  widened bounds).
+
+## Depth of field costs about a third less, 25 November 2026
+
+- **The game's depth of field takes the samples its blur needs** (REN-12,
+  priced). The weapon wheel, a focused in-world screen and scripted focus
+  used to take their full sample count on every blurred pixel. Now the
+  samples sit 1.5 gather texels apart on the largest blur (or as far as the
+  quality's count puts them, if that is wider), a smaller blur takes
+  proportionally fewer, down to 16. A focused screen takes 51 samples at 1080p
+  instead of 128; the wheel keeps 64 from 1080p up. The `r_dof` capture camera
+  keeps its full count. The cheat `r_dofFixedSamples 1` restores the full count
+  for comparisons.
+- Exact changes on both backends: the 3x3 tent after the gather is four
+  bilinear taps, the composite skips the pixels it would not change, and the
+  gather loop is lighter. Vulkan's `r_vkGpuPhaseProfile` gains a `dof` phase.
+- Evidence: hidden-window ladders on airdefense1 (2538x1312, RTX 4060 Laptop,
+  frozen, lens driven by `script` with no input). The Vulkan `dof` phase went
+  from 1.93 to 1.34 ms for the screen-focus lens, from 1.85 to 1.18 ms for an
+  85 mm cinematic lens, from 0.89 to 0.67 ms for the camera at quality 2 and
+  from 2.41 to 1.88 ms at quality 3. Spaced against full samples in one launch:
+  at most 6-8 levels at the 99.9th percentile, PSNR 44 dB, crops
+  indistinguishable. At the full count the new shaders match the old ones to
+  1-2 levels on the static part of the frame. The OpenGL saving was not
+  resolved: whole-frame GPU time moved more between windows than the change,
+  and OpenGL has no phase timer for the pass. `DepthOfFieldCoreTest`,
+  `vk_shader_header_pin.py` and `renderer_gpu_frame_timing.py` pass. Details:
+  [performance report section 21](performance-report.md#21-depth-of-field-ren-12-25-november-2026).
+
+## Your gun's shadow follows your body's, 25 November 2026
+
+- **No more floating gun shadow on crates** (#237). With **Character
+  Self-Shadows** on, the gun in your hands cast its shadow onto crates,
+  consoles and other props that your body's shadow stays off, so a gun
+  silhouette appeared on a crate with no body attached. The gun now follows
+  the same rule as the body holding it: both shadow the floor, walls and
+  scenery, and neither lands on those props. Monsters and marines still
+  shadow them with the option on.
+- **What to do.** Nothing. With Character Self-Shadows off (the default), and
+  with the original stencil shadows, nothing changes.
+- Why the body stays off those props: Quake 4 marks characters and many props
+  so their shadows keep off each other, and openQ4 keeps that rule for your own
+  body and weapons because they sit around your first-person view. Your body's
+  shadow on those props would also fall on the gun and arms in your view.
+- Development: `rvWeapon::InitWorldModel` and `rvWeapon::Think` set the world
+  model's entity-level `noSelfShadow`, as `idPlayer::Spawn` does for the body
+  and head, so `R_InteractionMaterialNoSelfShadow` no longer promotes the gun
+  alone under `r_shadowMapCharacterSelfShadow`. `Think` covers a world model
+  restored from a save. Contract: `tools/tests/renderer_vulkan_shadow_compatibility.py`.
+- Evidence (25 November, Windows x64, Vulkan, Ultra, retail packs only, Air
+  Defense 1 at the reporter's open crate, one fixed test light with
+  `r_singleLight`, the player's own shadow isolated by toggling
+  `g_showPlayerShadow`): before, a gun-shaped shadow lay on the crate's front
+  and back walls only with Character Self-Shadows on; after, the crate shows
+  no player shadow in any mode, and the floor and view frames are otherwise
+  unchanged. Stencil and shadow maps agree that the body's shadow stops at the
+  crate. No new log warnings.
+
+## Fast-polling mice lose nothing in a slow frame, and controllers cost less, 25 November 2026
+
+- **Mice that report up to 8000 times a second keep every movement.** Each
+  report used to become its own input event and two queued movements, so an
+  8000 Hz mouse filled the engine's event queue in any frame slower than about
+  32 ms, during a hitch, a save or a heavy fight. The oldest events were then
+  thrown away, key and button presses among them, with a console line for each
+  one, which made the slow frame slower still. Reports that arrive together are
+  now added into one movement: the same total, in the same order relative to
+  every press, at any polling rate and frame rate.
+- **Menus and the console with a fast mouse.** The menu cursor, the retained
+  menus and the console take one step per run of reports instead of one per
+  report, so a fast-polling mouse no longer makes the menus do hundreds of
+  pointer updates a frame.
+- **Controllers.** Every stick and trigger report re-read the whole controller
+  and rewrote two settings, though all reports of one frame read the same
+  state. The controller is now read once a frame. Sticks, triggers, the radial
+  selector and the active-controller switch behave exactly as before.
+- **Typing.** While the console or a text field is open, the position of the
+  system's input-method window is passed on only when it moves, not twice a
+  frame.
+- **When the queue still overflows** (a very long stall), the console says so
+  once, then reports how many events were dropped, instead of one line per
+  event.
+- **What to do.** Nothing. To see it work, play for a while and enter
+  `inputStats` in the console: it shows how many mouse reports arrived and how
+  few movements they became, and the same for controller axis events.
+- For developers: the join rule is `src/sys/MouseMotionRun.h`; the platform
+  layer joins only reports queued one straight after another, from one window
+  and one mouse, below the per-event clamp. See the roadmap under HF-09.
+- Evidence, Windows x64: `tools/tests/sdl3_input_coalescing.py` runs the
+  production joining code against a model of SDL 3.4's queue and compares every
+  flood with the report-by-report path: equal motion, in order, 9,294 reports in
+  19 runs, nine mutants rejected; `sys_event_queue_ownership.py` checks the
+  overflow report on the Windows and POSIX queues. In the game, on
+  `airdefense1` with an SDL virtual Xbox pad (inside the process, no system
+  input), six axes moved in one frame arrived as 12 axis events in one poll
+  cycle and were read once, and the sticks, triggers and radial selector showed
+  the final state exactly, then released together. The controller runtime
+  scenarios (handover, twins, turn rate, layout, aim assist, feedback, gyro)
+  pass on this build; turn rate and gyro also fail at times on a fully loaded
+  machine, and do so on the previous build too in alternating runs. Not yet run
+  on a physical high-polling-rate mouse: a hidden test window has no captured
+  mouse to drive.
+
+## The menu pointer starts in the corner of the screen, 25 November 2026
+
+- **On a widescreen display, the menu pointer now starts in the top-left corner
+  of the screen**, not at the top-left of the centred 4:3 area, where it used
+  to appear partway across the screen. A stock-interface menu that has not had
+  its cursor placed yet now starts it at the corner of its aspect-expanded
+  canvas on first activation. Once the player moves the pointer, or a save or
+  demo restores it, the cursor keeps its position as before. World-surface
+  GUIs keep the retail 0,0 start, which in-world interaction relies on.
+- Evidence: `ui_cursor_state_safety.py` pins the canvas-origin start and the
+  shared bounds helper, and the changed file compiles under MSVC. Not yet
+  checked in a running game.
+
+## The briefing hologram hides the squad's uniform patches, 25 November 2026
+
+- **The rank patches and badges on the marines' uniforms no longer show
+  through the reconnaissance briefing hologram on the MCC** (#256). The
+  hologram is a see-through screen in front of the squad, and Quake 4 draws
+  screens like it before decals. Raven's own map script works around that: when
+  the hologram starts, it moves the uniform decals ahead of the screen
+  (`sys.setMatSort ... SS_PREGUI`), and puts them back when the table closes.
+  An early port had disabled that sort in the campaign, and the unified game
+  module carried it over as multiplayer-only, so in single-player the script
+  was ignored and the patches drew on top of the hologram on every renderer.
+  `setMatSort` now applies every sort it names in both modes, as the Quake 4
+  SDK does.
+- Evidence: the briefing played through its own cinematic camera on Windows
+  shows the patches over the hologram before the fix and behind it after, on
+  OpenGL and Vulkan. The retail decompile draws GUIs before decals in one
+  ordered pass, so the script's re-sort is what keeps retail correct.
+  `script_set_mat_sort_contract.py` pins the mapping. Not yet run on a Mac.
+
+## Android builds link their renderer again, 25 November 2026
+
+- **The Android build, and desktop builds with the OpenGL ES renderer,
+  compile again.** Two recent features, the modern renderer's alpha-tested
+  surface matching and desktop stereoscopic 3D (`r_stereo3D`), each added a
+  call that the OpenGL ES renderer could not link, so neither an APK nor
+  `-Dbuild_renderer_gles=enabled` could be built from the source. The shared
+  texture-matrix helper now lives where the ES renderer builds it, so
+  alpha-tested surfaces match there as on desktop OpenGL; the stereo composite,
+  which the ES renderer has never offered, is left out of it. Desktop OpenGL
+  and Vulkan are unchanged.
+- **What to do.** Nothing; this affects builds from source, not 0.15.0.
+- Evidence: `librenderer-gles_arm64.so` links with `-z defs` in the Android
+  arm64 NDK r30 configuration. `renderer_gles_symbol_closure.py`, run by the
+  validation profiles and both workflows, reports exactly these two calls on
+  the previous tree and fails any new call from the ES renderer into a source
+  it does not build, since no push lane builds that renderer.
+
+## Maps compiled with dmap keep their sky, 25 November 2026
+
+- **A map rebuilt with openQ4's `dmap` no longer has a black sky** (#255).
+  Quake 4's outdoor maps draw their sky as a portal sky, seen through
+  `textures/common/skycaulk` faces, and the `.proc` marks each area where
+  such a face is visible as a sky area. The renderer draws the portal sky only
+  through marked areas. openQ4's `dmap` wrote no marks, so a rebuilt Air
+  Defense 1 drew a black sky and lost its distant towers. It now marks every
+  area that holds a visible face of a `sky` material.
+- **What to do.** Rebuild any map compiled with an earlier openQ4 `dmap`.
+  Maps that were not rebuilt are unaffected.
+- Evidence: retail Air Defense 1 flags `_area1`, `_area5`, `_area6` and
+  `_area39`; the fixed `dmap` flags the same four. On Vulkan with the
+  reporter's sky faces, the reporter's rebuilt map draws black and a map
+  compiled by the fixed `dmap` draws the sky and towers as retail does.
+  `dmap_sky_areas.py` pins the marking.
+
+## Graphics presets apply in fullscreen on notched MacBooks, and a steadier OpenGL 2.1 scene, 25 November 2026
+
+- **Changing a preset or display setting no longer stops at "Settings need
+  attention" on a MacBook with a notch** (#260). In fullscreen, macOS keeps
+  the strip beside the camera out of the game's window, so a 16-inch MacBook
+  Pro's 3456x2234 display gives a 3456x2168 window. Before applying anything,
+  openQ4 records the current display so it can put it back, and that record
+  required a fullscreen window exactly the display's size, so every change
+  was refused. A desktop fullscreen window may now be smaller than its
+  display, never larger, in that record, in the check after a change, and in
+  the window service. Evidence: the reporter's 0.15.0 log
+  (`Recorded display mode does not match available exact pixel modes`);
+  `ui_system_display.py` models that display and fails without the fix;
+  `sdl3_strict_window.py` passes. Not yet run on a Mac.
+- **Macs on the OpenGL 2.1 path stop rebuilding the HDR scene every frame**
+  (#257). That context cannot make multisampled textures, but its window
+  carries MSAA, so the HDR scene target kept asking for them. Each image
+  dropped the samples as it was made, never matched the request, and was made
+  again on the next frame, with two warnings each time: about 20,000 pairs in
+  one reporter's session. The target now asks the same capability question
+  first and stays single-sample, which is what it already drew with. Evidence:
+  the reporter's 0.15.0 log; `renderer_gl_display_policy.py` covers a context
+  without multisample textures and `macos_apple_gl21_arb2_corridor.py` pins the
+  shared check. Not yet run on a Mac.
+
+## One game module for single-player and multiplayer, 24 November 2026
+
+- **One game file serves the campaign and multiplayer.** openQ4 built its game
+  code twice, as Quake 4 itself did: `game-sp` for the campaign and The
+  Awakening, `game-mp` for multiplayer. Both now come from one source tree and
+  ship as one file, `baseoq4/game_<arch>` (`game_x64.dll` on Windows). Nothing
+  changes in play: the campaign, multiplayer rules, bots, Arena and The
+  Awakening behave as before, and switching between the campaign and
+  multiplayer works as it did.
+- **Your saves, servers and demos keep working.** Campaign saves (Quake 4 and
+  The Awakening) load as before, and saves made by this build load in the
+  previous one. Servers and players on the previous build and this one join
+  each other. Network demos, including Quake 4 1.4.2's, and MVD recordings
+  play in either build.
+- **Settings are no longer split between two modules.** Every game setting now
+  exists in both modes, so a multiplayer setting changed from the campaign's
+  menus, or a campaign setting changed during multiplayer, is a real setting
+  rather than a placeholder until the other module loads. Five "declared
+  multiple times" warnings the split caused are gone.
+- **Upgrade note:** packages, the Windows installer and local staging remove the
+  old `game-sp_<arch>` and `game-mp_<arch>` files. An in-game update from
+  0.15.0 cannot delete them, because 0.15.0 plans that update. They are never
+  loaded, the next in-game update moves them to its backup folder, and you can
+  also delete them by hand. Mods that ship their own game code must rebuild it
+  as one `game_<arch>` module for the current game API; until then such a mod
+  runs on openQ4's own game code, and the console says so. Content-only mods
+  are unaffected.
+- For developers: `src/mpgame/` is merged into `src/game/`. Behaviour that
+  differs between the modes is a runtime gate (`gameLocal.isMultiplayer`, or
+  `gameLocal.IsMultiplayerMode()` outside a map), and the few cvars whose
+  defaults differ are `idModeCVar`s. `build_game_sp` and `build_game_mp` are
+  deprecated and ignored. See [unified game module](unified-game-module.md)
+  (CORE-07).
+- Evidence, Windows x64: a clean build; the save and network serializers of
+  every function match their original trees, and two merged constants that would
+  have changed campaign saves are guarded; base and Awakening saves cross-load
+  with the pre-merge build on four maps, and 25 older saves behave as they do in
+  it; the dedicated-server client-demo smoke, both-direction network play
+  against the pre-merge build, the retail 1.4.2 netdemo smoke (64/64), MVDs
+  across builds and a campaign, network play and campaign switch in one
+  process pass. 315 of 326 native tests pass and the remaining 11 fail the same
+  way on the previous tree.
+- Evidence, 25 November: Linux x64 smokes and saves crossing between Linux and
+  Windows; the Linux ARM64 and Android builds and packages; every official map
+  (42 campaign, 49 multiplayer in each game type) against the previous build,
+  with eleven cross-mode leaks found and gated. A third review compared every
+  cvar, command and merged hunk with both old trees: seven more minor leaks are
+  gated, five game regression tests the merge had broken pass again, and the
+  mode-dependent settings follow the mode even where the system keeps the game
+  module loaded between modes. Switching between the campaign and multiplayer
+  no longer logs "declared multiple times" warnings for the settings whose
+  defaults differ by mode. Campaign maps, servers and a listen server checked
+  again against the previous build log the same warnings and hold the same
+  entities and saved objects. Not yet run: macOS, an Android device, and a
+  human session across both modes.
+
+## Point-light shadows cost less processor time on Vulkan, 24 November 2026
+
+- **Less work for every shadowed lamp.** A point light's shadow has six faces,
+  and Vulkan drew each in a pass of its own, twelve when a moving object was
+  added over a stored shadow. Where the graphics driver supports it, all six
+  now go into one pass, as on OpenGL since 18 November. With ten lamps
+  redrawn every frame the shadow pass took a fifth less processor time, and
+  less whenever a moving object stands under a stored lamp. Shadows look
+  exactly as before.
+- **What to do.** Replace the renderer modules. `r_shadowMapPointLayered 0`
+  draws the faces one at a time, for comparison, on both renderers now.
+  Drivers without the needed feature keep the old path by themselves; the log
+  says which is in use.
+- **Not changed.** OpenGL keeps the still scenery of the cascades' whole-light
+  shadow between frames (`r_shadowMapCascadeFarCache`). The same was built
+  and measured for Vulkan and left out: it saved a little processor time and
+  cost the graphics card as much or more, so Vulkan keeps redrawing that map.
+- Details: [Vulkan executor resource profiling](vulkan-resource-profiling.md#shadow-map-savings-from-opengl-24-november-2026)
+  and the roadmap under VK-06.
+
+## Vulkan: settings that did nothing now work, and less copying every frame, 24 November 2026
+
+A pass-by-pass comparison of the Vulkan renderer with OpenGL. Automatic picks
+Vulkan on desktop, so these reached most players.
+
+- **Ambient Light works on Vulkan.** The setting (`r_forceAmbient`) brightened
+  nothing there. It now lifts the picture exactly as on OpenGL.
+- **Weapon FOV works on Vulkan.** The view weapon ignored **Weapon FOV**
+  (`cl_gunfov`, `cl_gunfov_adjust`) and always followed the view's field of
+  view. It now takes its own, and temporal anti-aliasing and motion blur
+  follow it.
+- **Less work per frame on Vulkan.** Level geometry was copied to the
+  graphics card again every frame, the largest single cost of drawing a
+  frame there. It is now copied once and kept, which about halves that work
+  (measured on Air Defense 1; the picture is bit-identical). `r_vkStaticGeometry 0`
+  restores the old behaviour, and `r_vkStaticGeometryMegs` sizes the buffer
+  (96 MiB by default).
+- **Smaller shadow maps on AMD and Apple graphics.** Vulkan shadow maps took
+  a depth format with an unused stencil channel on devices without packed
+  24-bit depth. They now take half the memory there, with the same picture,
+  and the point-light shadow cache keeps its full 64 slots within its budget.
+- **Diagnostics.** `com_speeds` showed a back-end time of zero on both
+  renderers and now shows the frame's. On Vulkan, `r_skipRender`,
+  `r_singleTriangle` (the `benchmark` command's "single tri" row), the debug
+  clear colours and the renderer metrics' command counts now behave as on
+  OpenGL. `rendererVulkanMemoryInfo` reports the resident geometry.
+
+Evidence and the gaps still open are in the roadmap under VK-06 and VK-07 and
+in [Vulkan executor resource profiling](vulkan-resource-profiling.md#resident-static-geometry-24-november-2026).
+
+## Sunlight shadows reach into corners and under ledges, 24 November 2026
+
+- **Shadows from sunlight and distant lamps no longer stop short of the wall
+  or ledge that casts them.** With shadow maps on (Quality and above), a
+  strip just behind a wall, under a roof or at the foot of a rock stayed lit
+  where the original shadows are dark: up to tens of units under a large
+  outdoor light. These lights now record every object the way the original
+  shadows do, by the surfaces facing away from the light, and drop the
+  safety margin that let that light through. Against the original shadows,
+  the area wrongly lit in the worst view of twelve such lights falls from 29
+  to 5 points summed, on OpenGL and Vulkan alike; Hub 2's large fill light
+  goes from 13% of a view to under half a percent.
+- **More of these lights cast the original shape of the level's shadows.**
+  About a fifth of the lamps mounted outside the area they light, those whose
+  stored shadow also holds a grating, now use that stored shadow as well.
+  A grating inside the lit area keeps the holes in its shadow; one that
+  reaches outside it casts solid, as in the original game
+  (`r_shadowMapPrelightCutouts 0` casts every grating solid).
+- **What you need to do.** Nothing. `r_shadowMapDistantFarShell 0` brings
+  back the earlier behaviour; `r_shadowMapDistantFarShellBias` (0 to 1) puts
+  part of the margin back if speckles appear in sunlight on your system. The
+  original stencil shadows and the Balanced tier are unchanged.
+- **What is not shown.** The tube lights of Network 1 still darken part of a
+  grate ring the original shadows leave lit (as before this change), and the
+  lights the map compiler gave no stored shadow keep the earlier behaviour.
+  The area the shadow map darkens where the original shadows do not rises
+  slightly on some lights (a few tenths of a percent of a view). One graphics
+  card on Windows was measured.
+- **Checks.** The stencil parity scan on OpenGL and Vulkan; the moving-door,
+  caster-cycle, Air Defense 1 outdoor and cascade-motion scenarios and the
+  continuous-motion receiver check on both; the in-engine shadow self-tests.
+- **Developer detail:** [the rest of the off-centre lights](shadowmapping-audit-2026-11-09.md#the-rest-of-the-off-centre-lights)
+  and REN-03 in the [roadmap](roadmap.md).
+
 ## Faster pack reads and cache writes, oversized screenshots and cleaner mirrors, from openPR06, 24 November 2026
 
 Fixes and speed-ups first made in openPR06, the PREY port built on openQ4,
@@ -244,27 +1205,6 @@ gave the pack-read, cache-write, shader-startup and Ogg improvements.
   airdefense1 gameplay capture's Classic shot shows the fills, the ring, the
   shotgun's arc and arrow. Not yet run: Vulkan.
 
-## Point lights keep their shadows in crowded views on Vulkan, 23 November 2026
-
-- **Lights no longer shine through walls when a view runs out of shadow
-  maps** (#258). Vulkan renders a view's point-light shadows into a bounded
-  pool of cubes, and some views of `mcc_landing` see 240 to 265 lights, more
-  than a hundred of them point lights that cast shadows. A light that found
-  no cube left fell back to its stencil shadows only when they were
-  complete. Most lights also cast from surfaces only shadow maps draw, such
-  as grates, so they drew with no shadow at all. They now draw the stencil
-  shadows they have: the original game's shadows, without the map-only ones.
-  On a 56-spot sweep of `mcc_landing` this cut unshadowed light-frames by 87%
-  on Maximum and 79% on Ultra, and the result matches OpenGL, which renders
-  each cube in turn and never runs out. The rest are lights in the frame they
-  switch to stencil, which has no volumes yet.
-- **Maximum's point-light shadows are 1024 pixels, not 2048.** A 2048 cube
-  is 96 MB, so the default budget held five and a Vulkan view's pool twelve.
-  The preset change brings up the System Check once.
-- Evidence: scripted camera sweeps (no input) on Vulkan and OpenGL, and
-  side-by-side captures against OpenGL. Not yet run: a frame-time
-  comparison.
-
 ## Lighter zoom scopes and cannon optics, smaller HUD files, 23 November 2026
 
 - **Scopes and the cannon draw once.** The user asked for a round of HUD
@@ -301,6 +1241,27 @@ gave the pack-read, cache-write, shader-startup and Ogg improvements.
   and after (OpenGL, no input), and `enableWeapon`/`disableWeapon` from the
   console bringing the stance and the gun back and dropping them again.
   Not yet seen: Kane's Strogg body on `mcc_2`, and Vulkan.
+
+## Point lights keep their shadows in crowded views on Vulkan, 23 November 2026
+
+- **Lights no longer shine through walls when a view runs out of shadow
+  maps** (#258). Vulkan renders a view's point-light shadows into a bounded
+  pool of cubes, and some views of `mcc_landing` see 240 to 265 lights, more
+  than a hundred of them point lights that cast shadows. A light that found
+  no cube left fell back to its stencil shadows only when they were
+  complete. Most lights also cast from surfaces only shadow maps draw, such
+  as grates, so they drew with no shadow at all. They now draw the stencil
+  shadows they have: the original game's shadows, without the map-only ones.
+  On a 56-spot sweep of `mcc_landing` this cut unshadowed light-frames by 87%
+  on Maximum and 79% on Ultra, and the result matches OpenGL, which renders
+  each cube in turn and never runs out. The rest are lights in the frame they
+  switch to stencil, which has no volumes yet.
+- **Maximum's point-light shadows are 1024 pixels, not 2048.** A 2048 cube
+  is 96 MB, so the default budget held five and a Vulkan view's pool twelve.
+  The preset change brings up the System Check once.
+- Evidence: scripted camera sweeps (no input) on Vulkan and OpenGL, and
+  side-by-side captures against OpenGL. Not yet run: a frame-time
+  comparison.
 
 ## Depth of field for captures and the weapon wheel, 23 November 2026
 
@@ -435,6 +1396,34 @@ gave the pack-read, cache-write, shader-startup and Ogg improvements.
   which AUD-03 and the native-resolution presets changed without re-binding.
   Human judgement while casting, 21:9 and 9:16 captures and the rosters in MVD
   playback remain.
+
+## Record video of the game, 23 November 2026
+
+- **`recordVideo`, `stopVideo` and `toggleVideo`** record the window as it is
+  presented, HUD, menus and console included, with the game's sound, to
+  `baseoq4/videos` in the save folder. `aviGame` and `aviDemo` record video
+  too, in place of their unfinished screenshot path.
+- **Smooth by default.** Single-player and demo recordings run a whole number
+  of game steps per video frame, so the video never stutters; the game slows
+  down instead if encoding falls behind. Online recordings follow the clock.
+- **Good quality out of the box.** MP4, H.264 + AAC, the window's
+  resolution, 60 frames a second, quality 80 (about 7 Mbit/s at 1280x720).
+  On Windows Media Foundation writes it with no other program, on the GPU's
+  encoder where the driver has one. MKV, WebM, MOV and GIF, and HEVC, AV1,
+  VP9 and ProRes, go through the player's own FFmpeg, which uses NVENC, AMF,
+  Quick Sync or VideoToolbox when a test encode passes. Without FFmpeg a
+  recording falls back to a built-in Motion JPEG AVI.
+- **Settings:** `com_videoFormat`, `com_videoCodec`, `com_videoFPS`,
+  `com_videoQuality`, `com_videoBitrate`, `com_videoHeight`, `com_videoAudio`,
+  `com_videoAudioBitrate`, `com_videoTiming`, `com_videoHardware`,
+  `com_videoEncoder`, `com_videoPreset`, `com_videoFFmpeg`, `com_videoFolder`;
+  `videoEncoders` lists what the system has.
+- Evidence (Windows, decoded with FFmpeg 7.1): Media Foundation MP4 on OpenGL
+  and Vulkan, FFmpeg MKV with NVENC in real time (300 of 301 frames
+  distinct), WebM with libvpx and Opus, GIF, the built-in AVI (300 distinct
+  frames, PCM) and `aviGame` at 30 fps, each with audible sound. Not yet run:
+  a multiplayer recording, `aviDemo` of a render demo, Linux and macOS.
+- Render API 37: replace the engine and the renderer modules together.
 
 ## The Classic ruleset plays by its own numbers, 23 November 2026
 
@@ -833,9 +1822,11 @@ gave the pack-read, cache-write, shader-startup and Ogg improvements.
 ## Controllers: the one in your hands, aim in degrees, gyro, layouts and haptics, 22 November 2026
 
 - **The controller in your hands is the one in charge.** Every connected
-  controller is ready: press a button or push a stick on another and it takes
-  over, with the prompts changing to its buttons and anything the first one
-  held released. **Settings → Controls → Controller → Active Controller** can
+  controller is ready: put one down, press a button or push a stick on another
+  and it takes over, with the prompts changing to its buttons and anything the
+  first one held released. A remapping tool's or Steam Input's second,
+  virtual copy of the controller you are holding no longer fights it for
+  control, which made turning speed jump about. **Settings → Controls → Controller → Active Controller** can
   keep one controller in charge instead, which helps with a Steam Deck and an
   external pad, or a remapping tool's second, virtual controller.
 - **Losing your controller no longer leaves you helpless.** In single-player
@@ -5415,7 +6406,6 @@ there is no double-click word selection.
   with clean logs, a dedicated-server connect, 334 of 337 native tests (the other
   three fail on unrelated in-progress or older work), and the affected Python
   contract tests.
-
 
 ## Rebuilt maps keep their textures where patches meet (CORE-05, #209), 9 November 2026
 
@@ -13047,10 +14037,10 @@ Complete this section before release notes claim macOS support beyond the curren
 - [ ] Each bridge report includes `renderer-smoke`, `renderer-mp-smoke`, and `renderer-matrix` evidence.
 - [ ] The release follows `docs/dev/macos-renderer-backend-policy.md` and `docs/dev/macos-native-backend-containment-policy.md`: OpenGL and Metal bridge evidence are kept separate, the Metal package is not described as native Metal, and native Cocoa/OpenGL backend results are not counted as release support evidence.
 - [ ] SP entered an in-game map on real Apple hardware.
-- [ ] MP loaded `game-mp`, started `mp/q4dm1`, connected a local client, and exited cleanly.
+- [ ] MP loaded the game module as `game_mp`, started `mp/q4dm1`, connected a local client, and exited cleanly.
 - [ ] Dedicated server startup was covered or explicitly documented as unsupported for this release.
 - [ ] Finder or Desktop launcher startup and terminal startup were both checked.
-- [ ] The package layout contract in `docs/dev/macos-package-layout-and-release-policy.md` was followed: app data was under `Contents/Resources/baseoq4`, signed SP/MP modules were under `Contents/Frameworks`, and no adjacent `baseoq4` duplicate shipped.
+- [ ] The package layout contract in `docs/dev/macos-package-layout-and-release-policy.md` was followed: app data was under `Contents/Resources/baseoq4`, the signed game module was under `Contents/Frameworks`, and no adjacent `baseoq4` duplicate shipped.
 - [ ] Runtime macOS packages contain `SYMBOLS.txt`, do not contain `.dSYM` bundles, and have matching `openq4-<version>-macos-arm64-<bridge>-symbols.tar.xz` artifacts recorded for crash symbolication.
 - [ ] Launch from a mounted signed/notarized DMG was checked, or unsigned archive behavior was recorded as an unsigned-package exception.
 - [ ] Dragging only `openQ4.app` to `/Applications` or another user-writable location was checked.

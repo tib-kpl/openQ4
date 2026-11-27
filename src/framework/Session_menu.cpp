@@ -35,6 +35,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "NativeInputDispatch.h"
 #include "Session_local.h"
 #include "SessionPresetCheck.h"
+#include "SessionVR.h"
 #include "NativeInputPublications.h"
 #include "../ui/Rectangle.h"
 #include "../sys/ControllerRoster.h"
@@ -6268,6 +6269,8 @@ void idSessionLocal::GuiFrameEvents() {
 	UpdateRetainedSettingsPage();
 	PrefetchRetainedNextPages();
 	UpdateControllerNotices();
+	// VR's question, notices and setup (Session_vr.cpp)
+	Session_UpdateVR();
 	UpdateControllerTestPanel();
 	UpdateOnScreenKeyboard();
 	UpdateRetainedNotices();
@@ -6699,14 +6702,18 @@ void idSessionLocal::HandleMsgCommands( const char *menuCommand ) {
 		guiMsgRestore = NULL;
 		msgRunning = false;
 		msgRetIndex = 0;
-		DispatchCommand( guiActive, msgFireBack[ 0 ].c_str() );
+		if ( !Session_VROfferAnswer( msgFireBack[ 0 ].c_str() ) ) {
+			DispatchCommand( guiActive, msgFireBack[ 0 ].c_str() );
+		}
 	} else if ( idStr::Icmp( cmd, "right" ) == 0 ) {
 		openq4::NativeInputBeforeSessionChange();
 		guiActive = guiMsgRestore;
 		guiMsgRestore = NULL;
 		msgRunning = false;
 		msgRetIndex = 1;
-		DispatchCommand( guiActive, msgFireBack[ 1 ].c_str() );
+		if ( !Session_VROfferAnswer( msgFireBack[ 1 ].c_str() ) ) {
+			DispatchCommand( guiActive, msgFireBack[ 1 ].c_str() );
+		}
 	}
 }
 
@@ -8263,6 +8270,11 @@ void idSessionLocal::HandleRetainedSessionRequest( idUserInterface *gui, const c
 		}
 		return;
 	}
+	// VR SETUP's and the Virtual Reality tab's verbs (Session_vr.cpp), from
+	// whichever page carries them.
+	if ( request != NULL && gui != NULL && gui == guiActive && Session_VRRequest( gui, request ) ) {
+		return;
+	}
 	// The retained AUDIO and GAME OPTIONS pages' verbs, while they present.
 	if ( request != NULL && gui != NULL && gui == guiRetainedAudio ) {
 		if ( gui == guiActive ) {
@@ -9352,7 +9364,7 @@ a stock page. A page or a change of level under way takes no further request.
 // card's Settings page): the weapons ui_weaponOrder ranks, by the game's
 // weapon names and their stock labels, in the default order Use Weapon Order
 // starts from (the strongest first). The game reads the setting itself
-// (src/mpgame/mp/WeaponOrder.h); a name or alias it lists that the dialog
+// (src/game/mp/WeaponOrder.h); a name or alias it lists that the dialog
 // does not know keeps its place no longer once the dialog moves a weapon.
 // RETAINED_WEAPON_ORDER is WEAPON_ORDER_ROWS in tools/ui/retained_player_setup.py.
 typedef struct retainedWeaponOrder_s {
@@ -9837,7 +9849,7 @@ static int Session_RetainedCreateGameType( void ) {
 }
 
 // Weapon Arena's choices: si_weaponArena's tokens, "none" and then the game's
-// table in its order (mpWeaponArenaTable in src/mpgame/mp/Modifiers.cpp).
+// table in its order (mpWeaponArenaTable in src/game/mp/Modifiers.cpp).
 static const char *const RETAINED_CREATE_WEAPON_ARENAS[] = {
 	"none", "machinegun", "shotgun", "hyperblaster", "grenadelauncher", "nailgun", "rocketlauncher", "railgun",
 	"lightninggun", "dmg", "napalmgun"
@@ -9845,7 +9857,7 @@ static const char *const RETAINED_CREATE_WEAPON_ARENAS[] = {
 static const int RETAINED_CREATE_WEAPON_ARENA_COUNT = static_cast<int>( sizeof( RETAINED_CREATE_WEAPON_ARENAS ) / sizeof( RETAINED_CREATE_WEAPON_ARENAS[0] ) );
 
 // Preset's choices after Custom: the game's built-in presets, row for row
-// (mpPresetTable in src/mpgame/mp/Presets.cpp). The page is also shown while
+// (mpPresetTable in src/game/mp/Presets.cpp). The page is also shown while
 // the single-player module is loaded, so the session applies a preset itself:
 // the standard row's settings and then the chosen row's, and si_preset.
 typedef struct retainedCreatePreset_s {
@@ -10815,7 +10827,9 @@ void idSessionLocal::UpdateOnScreenKeyboard() {
 		}
 		return;
 	}
-	const bool wanted = edit != 0 && ( mode == 2 ||
+	// In a headset the system's own screen keyboard would open on the desktop
+	// no one is looking at: the laser pointer types on this one (VR-09).
+	const bool wanted = edit != 0 && ( mode == 2 || VR_HasInputFocus() ||
 		( ( idKeyInput::LastInputWasController() || idKeyInput::LastPointerWasTouch() ) && !Sys_HasScreenKeyboardSupport() ) );
 	if ( !wanted ) {
 		if ( oskOwner != NULL ) {
@@ -11167,6 +11181,9 @@ void idSessionLocal::HandleRetainedNoticeAction( idUserInterface *gui, int slot 
 		return;
 	}
 	retainedNotice_t &notice = retainedNotices[ index ];
+	if ( notice.undo == RETAINED_NOTICE_UNDO_VR_START ) {
+		Session_VRTakeOffer();
+	}
 	if ( notice.undo == RETAINED_NOTICE_UNDO_FAVORITE ) {
 		idServerScan &servers = idAsyncNetwork::client.serverList;
 		for ( int i = 0; i < servers.Num(); ++i ) {

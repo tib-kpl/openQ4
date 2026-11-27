@@ -663,10 +663,52 @@ static bool R_ShadowMapCasterIsDynamic( const idRenderEntityLocal *entityDef, co
 	return hasDynamicGeometry && entityDef->dynamicModelRegenFrame >= recentFrame;
 }
 
+/*
+=================
+R_ShadowMapOffscreenLiveCasterSkips
+
+A caster that is changing is in no cached map: it is drawn into its lights'
+maps afresh every view, and skinned first if nothing else needed its model. If
+the volume its shadow can fall in (the interaction's frustum: the entity's
+bounds carried away from the light, cut to the light) misses the view, all of
+that is for nothing. A squad mate behind the player was skinned and drawn into
+six cube faces of every lamp around him, and kept each of those lamps
+composing over a copy of its map instead of sampling the map where it lives.
+
+A static caster is never skipped: cached depth must not follow the camera.
+
+Skipping does not turn an animating caster static. Its model is not rebuilt
+while it is skipped, so after the live window it no longer reads as changing
+and is let through; the rebuild that follows marks it changing again before
+its surfaces are sorted into chains, so it is drawn as the live caster it is
+for that one view and skipped again from the next. An off-screen animation
+costs one skin and one draw a quarter second instead of one a frame, and never
+enters a static map. One that has really come to rest is let through, is not
+rebuilt, and joins the static map as it always did.
+
+Suns and other distant sources keep every caster: their filter reaches tens
+of world units past a shadow's edge at the whole-light map's texel, and the
+frustum does not carry that margin.
+=================
+*/
+static bool R_ShadowMapOffscreenLiveCasterSkips( const viewLight_t *vLight,
+		const idRenderLightLocal *lightDef, const idRenderEntityLocal *entityDef ) {
+	if ( !r_shadowMapCullOffscreenLiveCasters.GetBool() || vLight == NULL || lightDef == NULL
+			|| entityDef == NULL || entityDef->parms.hModel == NULL ) {
+		return false;
+	}
+	if ( vLight->parallel || R_ShadowMapUsesDistantPointProjection( lightDef->parms ) ) {
+		return false;
+	}
+	// the entity's own share of the rule: asked without a material, a cutout
+	// whose coverage animates on a still entity is not this function's business
+	return R_ShadowMapCasterIsDynamic( entityDef, NULL );
+}
+
 static void R_RecordShadowMapCaster( viewLight_t *vLight,
 		const idRenderEntityLocal *entityDef, const idMaterial *shader,
 		const srfTriangles_t *casterTris, const bool translucent,
-		const bool expandedCaster ) {
+		const bool expandedCaster, const bool localOwnership ) {
 	if ( vLight == NULL ) {
 		return;
 	}
@@ -711,6 +753,12 @@ static void R_RecordShadowMapCaster( viewLight_t *vLight,
 	hash = R_ShadowMapHashInt( hash,
 		shader != NULL ? static_cast<int>( shader->GetCullType() ) : -1 );
 	hash = R_ShadowMapHashInt( hash, translucent ? 1 : 0 );
+	// Which of the light's two maps holds the caster: a noSelfShadow caster
+	// is drawn into the GLOBAL pass only, any other into both. Turning
+	// r_shadowMapCharacterSelfShadow moves a resting body from one to the
+	// other with nothing else about it changed, and the LOCAL map cached
+	// without it, or with it, was reused as it stood.
+	hash = R_ShadowMapHashInt( hash, localOwnership ? 1 : 0 );
 	// expandedCaster is not part of it. It says whether this view also sees
 	// the caster's stencil volume, which changes as the camera moves, and the
 	// depth the caster writes into the map is the same either way. Hashed, it
@@ -911,7 +959,11 @@ static bool R_ShouldSkipPointLightEmitterCaster( const idMaterial *shadowShader,
 	if ( shadowShader == NULL || ambientTris == NULL ) {
 		return false;
 	}
-	if ( shadowShader->GetName() == NULL || idStr::Icmpn( shadowShader->GetName(), "textures/common_lights/", 23 ) != 0 ) {
+	// Asked for every surface of every interaction that is built, which for an
+	// animating model is every frame: settle the common case on the first letter.
+	const char *shadowShaderName = shadowShader->GetName();
+	if ( shadowShaderName == NULL || ( shadowShaderName[0] | 0x20 ) != 't'
+			|| idStr::Icmpn( shadowShaderName, "textures/common_lights/", 23 ) != 0 ) {
 		return false;
 	}
 	if ( ambientTris->numIndexes < 3 ) {
@@ -1388,6 +1440,52 @@ Packed MD5R prim-batch shadows manage their own geometry stream, so they don't
 go through the classic cache upload path here.
 ===================
 */
+/*
+====================
+R_InteractionIndexBlockDue
+
+Vulkan draws a stream that outlives its frame from a resident copy, and knows
+such a stream by the vertex cache block it lives in. The index lists that
+belong to an interaction (the part of a surface a light reaches, a stencil
+volume cast from an entity's surface) live in no block: r_useIndexBuffers
+gives them one only where a buffer object draws faster, which is not here.
+So a surface interaction that has lasted is given blocks for those lists, and
+one that is rebuilt every tic (a moving light, an animated model) never is:
+its surfaces are freed, this record with them, before the time has passed.
+
+The time is read once a frame, so every view of a frame answers alike.
+====================
+*/
+#ifdef OPENQ4_RENDERER_VK_MODULE
+static const int INTERACTION_INDEX_BLOCK_MSEC = 150;
+
+static bool R_InteractionIndexBlockDue( surfaceInteraction_t *sint ) {
+	extern bool VK_StaticGeo_InteractionIndexesWanted( void );
+	// a frame snapshot copies what a block holds, and its copy is not served
+	if ( R_RenderThread_OverlapRequested() || !VK_StaticGeo_InteractionIndexesWanted() ) {
+		return false;
+	}
+	static int clockFrame = -1;
+	static int clockMsec = 1;
+	if ( clockFrame != tr.frameCount ) {
+		clockFrame = tr.frameCount;
+		clockMsec = Sys_Milliseconds();
+		if ( clockMsec == 0 ) {
+			clockMsec = 1;
+		}
+	}
+	if ( sint->firstLinkMsec == 0 ) {
+		sint->firstLinkMsec = clockMsec;
+		return false;
+	}
+	return clockMsec - sint->firstLinkMsec >= INTERACTION_INDEX_BLOCK_MSEC;
+}
+#else
+static ID_INLINE bool R_InteractionIndexBlockDue( surfaceInteraction_t * ) {
+	return false;
+}
+#endif
+
 static bool R_EnsureInteractionShadowCache( surfaceInteraction_t *sint, const idRenderEntityLocal *entityDef ) {
 	srfTriangles_t *shadowTris = sint->shadowTris;
 
@@ -1423,7 +1521,12 @@ static bool R_EnsureInteractionShadowCache( surfaceInteraction_t *sint, const id
 
 	R_TouchVertexCache( shadowTris->shadowCache );
 
-	if ( !shadowTris->indexCache && shadowTris->numIndexes > 0 && R_StaticIndexCacheAllowed( entityDef ) ) {
+	// A volume with projected vertices owns its vertex block, and its list
+	// already rides on that; one cast from an entity's surface borrows the
+	// surface's block and needs a block for its list.
+	if ( !shadowTris->indexCache && shadowTris->numIndexes > 0 && shadowTris->indexes != NULL
+			&& ( R_StaticIndexCacheAllowed( entityDef )
+				|| ( !shadowTris->shadowVertexes && R_InteractionIndexBlockDue( sint ) ) ) ) {
 		vertexCache.Alloc(
 			shadowTris->indexes,
 			shadowTris->numIndexes * sizeof( shadowTris->indexes[0] ),
@@ -1461,20 +1564,10 @@ idInteraction::idInteraction( void ) {
 	shadowVolumesSuppressed	= false;
 }
 
-/*
-===============
-R_InvalidateShadowMapReceiverScan
-
-R_ShadowMapLightWillUseShadowMaps memoizes the Vulkan receiver scan of a light
-on its view light for the current view. Any change to the set or state of the
-light's interactions can change that verdict.
-===============
-*/
-static void R_InvalidateShadowMapReceiverScan( const idRenderLightLocal *lightDef ) {
-	if ( lightDef != NULL && lightDef->viewCount == tr.viewCount && lightDef->viewLight != NULL ) {
-		lightDef->viewLight->shadowMapReceiverScanValid = false;
-	}
-}
+// R_ShadowMapLightWillUseShadowMaps memoizes the Vulkan receiver scan of a
+// light on its view light for the current view. Any change to the set or
+// state of the light's interactions can change that verdict, so each one is
+// reported with the interaction it happened to (R_ShadowMapReceiverScanChanged).
 
 /*
 ===============
@@ -1528,8 +1621,9 @@ idInteraction *idInteraction::AllocAndLink( idRenderEntityLocal *edef, idRenderL
 		edef->lastInteraction = interaction;
 	}
 
-	// update the interaction table
-	if ( renderWorld->interactionTable ) {
+	// update the interaction table (a freed light awaiting its frame's end has
+	// left it, and its handle may already belong to another light)
+	if ( renderWorld->interactionTable && !ldef->interactionTableDetached ) {
 		int index = ldef->index * renderWorld->interactionTableWidth + edef->index;
 		if ( renderWorld->interactionTable[index] != NULL ) {
 			common->Error( "idInteraction::AllocAndLink: non NULL table entry" );
@@ -1538,7 +1632,7 @@ idInteraction *idInteraction::AllocAndLink( idRenderEntityLocal *edef, idRenderL
 	}
 
 	// an unbuilt interaction leaves the light's receivers unknown
-	R_InvalidateShadowMapReceiverScan( ldef );
+	R_ShadowMapReceiverScanChanged( ldef, interaction, false );
 
 	return interaction;
 }
@@ -1585,7 +1679,7 @@ void idInteraction::FreeSurfaces( void ) {
 	this->buildModel = NULL;
 	this->unbuiltVisitView = -1;
 	this->shadowVolumesSuppressed = false;
-	R_InvalidateShadowMapReceiverScan( this->lightDef );
+	R_ShadowMapReceiverScanChanged( this->lightDef, this, false );
 }
 
 /*
@@ -1595,7 +1689,8 @@ idInteraction::Unlink
 */
 void idInteraction::Unlink( void ) {
 
-	R_InvalidateShadowMapReceiverScan( this->lightDef );
+	// before it leaves the list: the scan may be resting on this interaction
+	R_ShadowMapReceiverScanChanged( this->lightDef, this, true );
 
 	// unlink from the entity's list
 	if ( this->entityPrev ) {
@@ -1635,7 +1730,8 @@ void idInteraction::UnlinkAndFree( void ) {
 
 	// clear the table pointer
 	idRenderWorldLocal *renderWorld = this->lightDef->world;
-	if ( renderWorld->interactionTable ) {
+	// a light freed while its frame draws left the table when it was freed
+	if ( renderWorld->interactionTable && !this->lightDef->interactionTableDetached ) {
 		int index = this->lightDef->index * renderWorld->interactionTableWidth + this->entityDef->index;
 		if ( renderWorld->interactionTable[index] != this ) {
 			common->Error( "idInteraction::UnlinkAndFree: interactionTable wasn't set" );
@@ -1910,7 +2006,7 @@ void idInteraction::CreateInteraction( const idRenderModel *model ) {
 	// covers every surface of the model (R_ShadowMapLightWillUseShadowMaps).
 	buildModel = model;
 	stencilReceiverGeneration = -1;
-	R_InvalidateShadowMapReceiverScan( lightDef );
+	R_ShadowMapReceiverScanChanged( lightDef, this, false );
 	shadowVolumesSuppressed = false;
 
 	// The model handed in is the entity's instantiated snapshot, which is
@@ -2113,7 +2209,7 @@ void idInteraction::CreateInteraction( const idRenderModel *model ) {
 	// the slots are final: only the filled ones are receivers from now on
 	buildModel = NULL;
 	stencilReceiverGeneration = -1;
-	R_InvalidateShadowMapReceiverScan( lightDef );
+	R_ShadowMapReceiverScanChanged( lightDef, this, false );
 
 	// if none of the surfaces generated anything, don't even bother checking?
 	if ( !interactionGenerated ) {
@@ -2246,7 +2342,7 @@ void idInteraction::AddActiveInteraction( void ) {
 		~unbuiltVisitMark_t() {
 			if ( inter->IsDeferred() ) {
 				inter->unbuiltVisitView = tr.viewCount;
-				R_InvalidateShadowMapReceiverScan( inter->lightDef );
+				R_ShadowMapReceiverScanChanged( inter->lightDef, inter, false );
 			}
 		}
 	} unbuiltVisitMark = { this };
@@ -2299,6 +2395,12 @@ void idInteraction::AddActiveInteraction( void ) {
 		// view frustum and the entity bounds are outside the view frustum
 		if ( CullInteractionByViewFrustum( tr.viewDef->viewFrustum ) ) {
 			if ( !shadowMapConservativeCandidate ) {
+				return;
+			}
+			// before the model is built and before the surfaces are walked:
+			// a skipped caster is no missing caster
+			if ( R_ShadowMapOffscreenLiveCasterSkips( vLight, lightDef, entityDef ) ) {
+				R_RecordShadowMapRejectedCaster( vLight, SHADOWMAP_CASTER_REJECT_OFFSCREEN_LIVE );
 				return;
 			}
 			shadowMapViewFrustumCulled = true;
@@ -2496,7 +2598,11 @@ void idInteraction::AddActiveInteraction( void ) {
 								} else {
 									lightTris->indexCache = NULL;
 								}
-							} else if ( !lightTris->indexCache && lightTris->indexes != NULL && lightTris->numIndexes > 0 && R_StaticIndexCacheAllowed( entityDef ) ) {
+							} else if ( !lightTris->indexCache && lightTris->indexes != NULL && lightTris->numIndexes > 0
+									&& ( R_StaticIndexCacheAllowed( entityDef )
+										// a light that reaches the whole surface draws the surface's
+										// own list, which rides on the surface's vertex block
+										|| ( lightTris->indexes != ambientTris->indexes && R_InteractionIndexBlockDue( sint ) ) ) ) {
 								vertexCache.Alloc(
 									lightTris->indexes,
 									lightTris->numIndexes * sizeof( lightTris->indexes[0] ),
@@ -2667,12 +2773,15 @@ void idInteraction::AddActiveInteraction( void ) {
 
 			// The prelight's front caps hold every world triangle stencil casts
 			// from, so a world surface that would be drawn into the map, or that
-			// stencil has a volume for, is in the map already. A cutout is not:
-			// dmap gives a volume with a perforated caster no front caps, and
-			// such a light has no caster of this kind.
+			// stencil has a volume for, is in the map already. A cutout that
+			// lies inside the light's box is not: the caster leaves out its
+			// caps, and the surface casts through its holes as before
+			// (R_ShadowMapPrelightKeepsCutout). One that reaches outside the
+			// box casts solid from the caps, as stencil does: drawn whole, it
+			// would shadow from where stencil has no volume.
 			const bool castsThroughPrelight =
 				worldCastsFromPrelight &&
-				shadowShader->Coverage() != MC_PERFORATED &&
+				!R_ShadowMapPrelightKeepsCutout( lightDef, shadowShader, sint->ambientTris ) &&
 				( allowShadowMapCaster || sint->shadowStencilEligible );
 			if ( castsThroughPrelight ) {
 				linkedShadowMapCaster = true;
@@ -2684,7 +2793,7 @@ void idInteraction::AddActiveInteraction( void ) {
 					R_TouchShadowMapCache( casterTris->ambientCache );
 					R_TouchShadowMapCache( casterTris->indexCache );
 					R_RecordShadowMapCaster( vLight, entityDef, shadowShader,
-						casterTris, false, shadowMapCasterOnly );
+						casterTris, false, shadowMapCasterOnly, shadowMapNoSelfShadow );
 
 					// dynamic casters go to their own chains so cached static
 					// tiles stay valid while they move (composed per frame)
@@ -2708,7 +2817,7 @@ void idInteraction::AddActiveInteraction( void ) {
 					R_TouchShadowMapCache( casterTris->ambientCache );
 					R_TouchShadowMapCache( casterTris->indexCache );
 					R_RecordShadowMapCaster( vLight, entityDef, shadowShader,
-						casterTris, true, shadowMapCasterOnly );
+						casterTris, true, shadowMapCasterOnly, shadowMapNoSelfShadow );
 
 					if ( shadowMapNoSelfShadow ) {
 						R_LinkShadowMapCasterSurf( &vLight->localTranslucentShadowMapCasters,

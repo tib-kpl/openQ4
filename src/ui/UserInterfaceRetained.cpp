@@ -206,6 +206,7 @@ bool ApplicationState(const DocumentModel& model, const idDict& dictionary, Stat
 	const auto read = [&](const std::string& name, const StateDeclaration& declaration) {
 		if (declaration.HostSourced() || name.starts_with("settings.") || NumberDraftState(name.c_str())) return true;
 		if (model.detail && name == model.detail->state) return true; // The runtime writes the detail subject.
+		if (model.tooltip && name == model.tooltip->state) return true; // And the shown tooltip.
 		StateValue value = declaration.initial;
 		// A key state's glyph, and the key state as its label.
 		if (name.ends_with(".glyph") && declaration.initial.index() == 0) {
@@ -261,7 +262,7 @@ bool SessionMenuCommand(const std::string& command) {
         "joinSortGameType","joinSortMap","joinSortDedicated","joinSortRepeater","joinFavorite","joinModPrevious","joinModNext",
         "joinFilterFull","joinFilterEmpty","joinFilterPassword","joinGameTypePrevious","joinGameTypeNext","joinClearFilters",
         "msgLeft","msgRight","msgMid","presetCheckApply","presetCheckKeep","presetCheckLater",
-        "noticeAction0","noticeAction1","noticeAction2","audioBack","gameBack","controlsBind","controlsClear","controlsBack","controlsTouchLayout",
+        "noticeAction0","noticeAction1","noticeAction2","vrRecenter","vrCalibrateHeight","vrDetect","audioBack","gameBack","controlsBind","controlsClear","controlsBack","controlsTouchLayout",
         "controlsResetController","controlsResetKeyboard","controlsCalibrateGyro","controlsRumbleTest",
         "oskKey","oskShift","oskLayer","oskSpace","oskLeft","oskRight","oskBackspace","oskDone","oskCancel",
         "settingsBack","settingsControls","settingsGame","settingsDisplay","settingsAudio","settingsDefaults",
@@ -417,6 +418,9 @@ const PlayerSetting* FindPlayerSetting(const std::string& cvar) {
 		{"in_joystickTriggerThreshold",{0,0,1,false}},{"in_joystickRumble",{1}},{"in_joystickRumbleScale",{0,0,2,false}},{"in_gyro",{1}},
 		{"in_gyroSensitivity",{0,0,8,false}},{"in_touchpadMode",{0,0,3,true,{},{0,1,2,3}}},{"in_touchpadSensitivity",{0,0,8,false}},
 		{"in_touchscreen",{1}},{"in_joystickLowBatteryRumbleThreshold",{0,0,100,true}},
+		// The built-in touch controls (CONTROLS' ON-SCREEN CONTROLS, Android).
+		{"in_touchControls",{1}},{"in_touchLayoutPreset",{0,0,2,true,{},{0,1,2}}},{"in_touchControlsScale",{0,0.75,1.5,false}},
+		{"in_touchLookSensitivity",{0,0.1,4,false}},
 		{"in_joystickLowBatteryRumbleScale",{0,0,2,false}},{"in_promptStyle",{0,0,5,true,{},{0,1,2,3,4,5}}},
 		{"in_swapConfirmBack",{0,0,2,true,{},{0,1,2}}},
 		// The controller's own tabs on CONTROLS (PAD-01 to PAD-08): the device
@@ -440,11 +444,11 @@ const PlayerSetting* FindPlayerSetting(const std::string& cvar) {
 		{"hud_hitMarker",{1}},{"hud_crosshairAnimated",{1}},{"ui_hudLayout",{0,0,3,true,{},{0,1,2,3}}},{"ui_hudScale",{0,0.5,2,false}},
 		{"ui_hudWidth",{0,0,2,true,{},{0,1,2}}},{"ui_hudSafeInset",{0,0,10,false}},{"g_objectivesToggle",{1}},
 		{"ui_hudOpacity",{0,0.25,1,false}},{"ui_hudDamageDirection",{1}},{"ui_hudPickups",{1}},{"ui_hudWeaponStrip",{1}},
-		{"ui_reducedFlashing",{1}},{"ui_retainedOpaqueBacking",{1}},{"g_corpseSink",{0,0,2,true,{},{0,1,2}}},{"con_allowConsole",{0,0,1,true,{},{0,1}}},
+		{"ui_reducedFlashing",{1}},{"ui_retainedOpaqueBacking",{1}},{"ui_tooltips",{1}},{"g_corpseSink",{0,0,2,true,{},{0,1,2}}},{"con_allowConsole",{0,0,1,true,{},{0,1}}},
 		{"r_screenshotFormat",{0,0,1,true,{},{0,1}}},{"g_autoSkipCinematics",{1}},{"ui_cinematicShake",{0,0,1,false}},{"g_screenShake",{0,0,1,false}},{"g_enhancedPhysics",{1}},
 		{"cl_gunfov",{0,0,179,false}},{"cl_gunfov_adjust",{0,0,1,true,{},{0,1}}},
 		{"cl_gun_x",{0,-5,5,false}},{"cl_gun_y",{0,-5,5,false}},{"cl_gun_z",{0,-5,5,false}},{"g_weaponMuzzleKick",{1}},{"g_viewKick",{0,0,1,false}},
-		{"vr_enable",{1}},{"vr_aimMode",{0,0,1,true,{},{1,0}}},{"vr_leftHanded",{0,0,1,true,{},{0,1}}},
+		{"vr_enable",{0,0,2,true,{},{0,1,2}}},{"vr_aimMode",{0,0,1,true,{},{1,0}}},{"vr_leftHanded",{0,0,1,true,{},{0,1}}},
 		{"vr_turnMode",{0,0,1,true,{},{0,1}}},{"vr_snapTurnAngle",{0,30,90,true,{},{30,45,60,90}}},
 		{"vr_moveDirection",{0,0,1,true,{},{0,1}}},{"vr_roomScale",{1}},{"vr_aimLaser",{0,0,2,true,{},{0,1,2}}},
 		{"vr_hapticStrength",{2,0,0,false,{"0","0.5","1"}}},{"vr_twoHanded",{1}},
@@ -2121,7 +2125,22 @@ bool idUserInterfaceRetained::ReadFromSaveGame(idFile* file) {
 	// Snapshot validation is atomic; outer dictionary/flags follow on success.
 	const auto textDocument = UI_NextTextLifetime();
 	if (!textDocument) { impl->Error("GUI text lifetime exhausted"); return false; }
-	if (!impl->RuntimeView()->RestoreSnapshot(snapshot,error,RetainedUI_PresentationTime())) { impl->Error(error); return false; }
+	if (!impl->RuntimeView()->RestoreSnapshot(snapshot,error,RetainedUI_PresentationTime())) {
+		// A save made before this document was last edited names the same
+		// document at other source text: a 0.15.0 save of a hover-tank level holds
+		// the tank's machine-gun scope from before its 23 November restructuring.
+		// That revision's presentation cannot be replayed here, so rebuild the
+		// GUI from its saved state dictionary, as reloading a changed document
+		// does, rather than refusing the whole save.
+		StateValues application;
+		std::string rebuildError;
+		if (!impl->RuntimeView()->SnapshotNamesOtherRevision(snapshot) ||
+			!ApplicationState(impl->document.Model(),state,application,rebuildError) ||
+			!impl->RuntimeView()->SetState(application,rebuildError,RetainedUI_PresentationTime())) {
+			impl->Error(error); return false;
+		}
+		common->Printf("retained GUI %s: saved with an earlier revision of its document; restored from its saved state\n", Name());
+	}
 	openq4::NativeInputBeforeUiChange(0,impl->textBackend);
 	impl->textDocument = textDocument;
 	impl->Quarantine(false,false,true); impl->state = state; impl->state.Set("name",Name());

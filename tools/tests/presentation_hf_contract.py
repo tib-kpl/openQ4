@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-TREES = ("src/game", "src/mpgame")
+TREES = ("src/game",)
 
 
 def read(relative: str) -> str:
@@ -162,7 +162,7 @@ def check_engine(usercmd_h: str, usercmd_cpp: str, game_h: str, common_cpp: str)
     require(console, "if ( Usercmd_ConsumeLatencyFlash() && com_latencyFlash.GetBool() ) {", "latency flash consumed every frame, drawn when enabled")
     require(console, '"latencyFlashTest", Con_LatencyFlashTest_f, CMD_FL_SYSTEM | CMD_FL_CHEAT', "latency flash test is cheat-gated")
 
-    require(game_h, "const int GAME_API_VERSION\t\t= 63;", "game ABI v63")
+    require(game_h, "const int GAME_API_VERSION\t\t= 65;", "game ABI v65")
     require(game_h, "idUsercmdGen *\t\t\t\tusercmdGen;", "gameImport_t carries the generator")
     require(common_cpp, "gameImport.usercmdGen\t\t\t\t= ::usercmdGen;", "engine hands the generator to the game")
 
@@ -256,7 +256,8 @@ def check_frame_rate_policy(common: str | None = None) -> None:
     require(load, "return Max( ceilingMsec, common->GetUserCmdMsecFloat() );", f"{context}: uncapped dedicated pacifier at most once per tick")
     presets = read("src/framework/PerformancePreset.cpp")
     caps = {}
-    for name, fps in re.findall(r'\{ "(\w+)", \d+, "[\w-]+",\s*\d+, \d+, \d+, (\d+),', presets):
+    # A preset row: name, machine spec, renderer class, then MSAA, post AA and the cap.
+    for name, fps in re.findall(r'\{ "(\w+)", \d+, "[\w-]+",\s*\d+, \d+, (\d+),', presets):
         caps[name] = int(fps)
     expected = {"minimum": 30, "lowpower": 30, "low": 60, "performance": 60, "balanced": 120, "enhanced": 144, "quality": 144, "ultra": 240, "maximum": 240}
     if caps != expected:

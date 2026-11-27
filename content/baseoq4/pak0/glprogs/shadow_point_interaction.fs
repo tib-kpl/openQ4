@@ -490,7 +490,7 @@ float SamplePointShadow() {
 	}
 
 	float depth = length( vPointShadowVector ) / uPointShadowFar;
-	if ( depth <= 0.0 || depth >= 1.0 ) {
+	if ( !( depth > 0.0 && depth < 1.0 ) ) {
 		return 1.0;
 	}
 
@@ -599,7 +599,7 @@ vec4 PointShadowDebugOutput() {
 	}
 
 	float depth = length( vPointShadowVector ) / uPointShadowFar;
-	if ( depth <= 0.0 || depth >= 1.0 ) {
+	if ( !( depth > 0.0 && depth < 1.0 ) ) {
 		return vec4( 1.0, 1.0, 0.0, 1.0 );
 	}
 	vec3 direction = SafeNormalize( vPointShadowVector );
@@ -628,7 +628,7 @@ vec3 SamplePointTranslucentShadow() {
 	}
 
 	float depth = length( vPointShadowVector ) / uPointShadowFar;
-	if ( depth <= 0.0 || depth >= 1.0 ) {
+	if ( !( depth > 0.0 && depth < 1.0 ) ) {
 		return vec3( 1.0 );
 	}
 
@@ -652,7 +652,17 @@ void main() {
     receiverNormal *= inversesqrt(max(dot(receiverNormal, receiverNormal), 1.0e-20));
     gPointReceiverPlane = vec4(receiverNormal, dot(receiverNormal, vPointShadowVector) / max(uPointShadowFar, 1.0));
 #ifdef OPENQ4_PBR
-	vec3 pbrShadow = vec3( 1.0 ) * SamplePointShadow() * SamplePointTranslucentShadow();
+	// OpenQ4PBRDirect builds its radiance from these two samples, so where
+	// they are black the result is black whatever the shadow says: outside
+	// the projected image and past the falloff the filter, most of this
+	// shader's cost, has nothing to resolve.
+	vec3 pbrReach = texture2DProj( uLightFalloffMap, vLightFalloffTexCoord ).rgb
+		* texture2DProj( uLightProjectionMap, vLightProjectionTexCoord ).rgb;
+	bool pbrLit = max( pbrReach.r, max( pbrReach.g, pbrReach.b ) ) > 0.0 || ShadowVisualDebugMode();
+	vec3 pbrShadow = vec3( 1.0 );
+	if ( pbrLit ) {
+		pbrShadow = vec3( 1.0 ) * SamplePointShadow() * SamplePointTranslucentShadow();
+	}
 	if ( ShadowVisualDebugMode() ) {
 		gl_FragColor = PointShadowDebugOutput();
 		return;
