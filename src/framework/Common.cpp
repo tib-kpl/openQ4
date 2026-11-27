@@ -73,6 +73,7 @@ If you have questions concerning this license or the applicable additional terms
 #include <SDL3/SDL_locale.h>
 #include <SDL3/SDL_timer.h>
 #include <SDL3/SDL_cpuinfo.h>
+#include <SDL3/SDL_system.h>
 // The refresh of the display the game window is on, 0 when unknown (sdl3_backend.cpp).
 float Sys_SDL_GetWindowRefreshHz( void );
 // Reads the operating system's window messages into SDL's queue during a load (sdl3_backend.cpp).
